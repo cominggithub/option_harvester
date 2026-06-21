@@ -21,7 +21,13 @@ Strategy screens (`src/lib/securities.ts`, computed at read time):
   (SPY/QQQ/VOO/VTI/IWM/DIA) or ≥ $1T mega-cap stocks — with ≥4 weekly buckets.
   Selecting it defaults the sort to **IV desc** (act when IV spikes; sell Δ0.10–0.15 puts).
 - **downtrend** (the strict ▾ flag) = 1Y "down", or 3M & 6M both "down".
-No history charts (out of scope by request).
+Price history: each row shows an inline **Sparkline** (the close line for the
+window picked in the Trend filter, colored green/red/grey by that window's trend
+label), and **clicking a row expands an inline detail panel** (`HistoryChart`)
+with a full-resolution line chart and a 1M/3M/6M/1Y toggle + per-window stats
+(return / fitted slope / R²). Sparkline data ships in the page payload
+(downsampled ~1Y close series, `SecurityRow.spark`); the detail panel fetches
+full daily closes on demand from `GET /api/history/[ticker]`.
 
 ## Stack
 
@@ -185,12 +191,15 @@ Notes: Wikipedia class-share tickers use a dot (`BRK.B`); Yahoo uses a dash
 
 - `src/app/page.tsx` — server component (`force-dynamic`): fetch + render `<Dashboard>`.
 - `src/app/api/marks/route.ts` — `POST /api/marks` upserts favorite/target.
+- `src/app/api/history/[ticker]/route.ts` — `GET` full daily close history for one ticker (detail chart).
 - `src/app/layout.tsx`, `src/app/globals.css` (incl. `.scrollbar-none`/`.scrollbar-thin`), `src/app/icon.svg`.
 - `src/components/Dashboard.tsx` — **client** orchestrator: view/sort state, live
   marks (optimistic), counts, filtering. Owns the app shell (nav + main).
 - `src/components/LeftNav.tsx` — left sidebar: Screens + Sectors, counts, active state.
 - `src/components/DataTable.tsx` — sortable table, mark toggles, green-scale Harvester chip.
 - `src/components/icons.tsx` — star / bullseye / sprout / sort-arrow SVGs.
+- `src/components/Sparkline.tsx` — inline per-row SVG price line + `sliceWindow()`/`WINDOW_FRACTION`.
+- `src/components/HistoryChart.tsx` — expanded-row detail chart (on-demand fetch, 1M/3M/6M/1Y toggle).
 - `src/lib/db.ts` — Prisma client singleton.
 - `src/lib/securities.ts` — `getDashboardData()` (flat rows + marks + bestHarvest), `isBestHarvest()`.
 - `src/lib/harvester.ts` — `computeHarvester()` score + `harvesterColor()` green scale.

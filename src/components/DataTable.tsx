@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, type MouseEvent } from "react";
 import type { SecurityRow } from "@/lib/securities";
 import type { SortKey, SortDir, TrendWindowKey } from "@/lib/view";
 import { TREND_WINDOW_LABEL } from "@/lib/view";
@@ -15,9 +16,11 @@ import {
   formatVolume,
 } from "@/lib/format";
 import { StarIcon, TargetIcon, SortArrow, SproutIcon } from "@/components/icons";
+import { Sparkline } from "@/components/Sparkline";
+import { HistoryChart } from "@/components/HistoryChart";
 
 const GRID =
-  "grid-cols-[60px_96px_minmax(180px,1fr)_152px_92px_72px_74px_96px_84px_116px_100px]";
+  "grid-cols-[60px_96px_minmax(160px,1fr)_152px_120px_92px_72px_74px_96px_84px_116px_100px]";
 const PAD = "pl-5 pr-8";
 
 const TREND_STYLE: Record<TrendLabel, { cls: string; glyph: string }> = {
@@ -107,6 +110,7 @@ export function DataTable({
   onToggle,
   emptyMessage,
 }: Props) {
+  const [openTicker, setOpenTicker] = useState<string | null>(null);
   return (
     <div className="w-full">
       <div
@@ -139,6 +143,9 @@ export function DataTable({
           ))}
           <SortArrow dir={sortKey === "trend" ? sortDir : null} />
         </button>
+        <span className="text-[11px] font-medium uppercase tracking-wider text-ink-faint">
+          {TREND_WINDOW_LABEL[trendWindow]} chart
+        </span>
         <HeadCell label="Harvester" col="harvesterScore" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
         <HeadCell label="Edge" col="ccScore" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
         <div className="flex justify-end">
@@ -163,7 +170,17 @@ export function DataTable({
       ) : (
         <ul>
           {rows.map((s) => (
-            <Row key={s.ticker} s={s} showSector={showSector} onToggle={onToggle} />
+            <Row
+              key={s.ticker}
+              s={s}
+              showSector={showSector}
+              onToggle={onToggle}
+              trendWindow={trendWindow}
+              expanded={openTicker === s.ticker}
+              onToggleExpand={() =>
+                setOpenTicker((cur) => (cur === s.ticker ? null : s.ticker))
+              }
+            />
           ))}
         </ul>
       )}
@@ -175,10 +192,16 @@ function Row({
   s,
   showSector,
   onToggle,
+  trendWindow,
+  expanded,
+  onToggleExpand,
 }: {
   s: SecurityRow;
   showSector: boolean;
   onToggle: (ticker: string, field: "favorite" | "target") => void;
+  trendWindow: TrendWindowKey;
+  expanded: boolean;
+  onToggleExpand: () => void;
 }) {
   const hc = harvesterColor(s.harvesterScore);
   const ec = ccEdgeColor(s.ccScore);
@@ -191,9 +214,16 @@ function Row({
         : s.changePct < 0
           ? "text-negative"
           : "text-ink-muted";
+  const stop = (e: MouseEvent) => e.stopPropagation();
   return (
+    <>
     <li
-      className={`grid ${GRID} ${PAD} items-center border-b border-line py-1.5 transition-colors hover:bg-canvas`}
+      onClick={onToggleExpand}
+      aria-expanded={expanded}
+      title={`${expanded ? "Hide" : "Show"} price history for ${s.ticker}`}
+      className={`grid ${GRID} ${PAD} cursor-pointer items-center border-b border-line py-1.5 transition-colors hover:bg-canvas ${
+        expanded ? "bg-canvas" : ""
+      }`}
       style={s.bestHarvest ? { boxShadow: "inset 3px 0 0 #1f7a44" } : undefined}
     >
       <div className="flex items-center gap-1.5 text-ink-faint">
@@ -201,7 +231,10 @@ function Row({
           type="button"
           aria-pressed={s.favorite}
           aria-label={s.favorite ? "Remove favorite" : "Add favorite"}
-          onClick={() => onToggle(s.ticker, "favorite")}
+          onClick={(e) => {
+            stop(e);
+            onToggle(s.ticker, "favorite");
+          }}
           className="rounded p-0.5 transition-colors hover:bg-line hover:text-ink"
         >
           <StarIcon filled={s.favorite} />
@@ -210,7 +243,10 @@ function Row({
           type="button"
           aria-pressed={s.target}
           aria-label={s.target ? "Remove option target" : "Add option target"}
-          onClick={() => onToggle(s.ticker, "target")}
+          onClick={(e) => {
+            stop(e);
+            onToggle(s.ticker, "target");
+          }}
           className="rounded p-0.5 transition-colors hover:bg-line hover:text-ink"
         >
           <TargetIcon filled={s.target} />
@@ -218,6 +254,12 @@ function Row({
       </div>
 
       <div className="flex items-center gap-1.5">
+        <span
+          className={`text-[9px] leading-none text-ink-faint transition-transform ${expanded ? "rotate-90" : ""}`}
+          aria-hidden
+        >
+          ▶
+        </span>
         {showSector && (
           <span
             className="dot"
@@ -266,6 +308,14 @@ function Row({
 
       <TrendStrip w={s.trend} />
 
+      <div className="flex items-center">
+        <Sparkline
+          series={s.spark}
+          window={trendWindow}
+          label={s.trend?.[trendWindow]?.label ?? null}
+        />
+      </div>
+
       <div>
         {s.harvesterScore == null ? (
           <span className="text-[13px] text-ink-faint">—</span>
@@ -307,5 +357,11 @@ function Row({
       </span>
       <span className="tnum text-right text-[13px] text-[#3f454d]">{formatVolume(s.volume)}</span>
     </li>
+    {expanded && (
+      <li className="border-b border-line bg-canvas px-8 py-3">
+        <HistoryChart s={s} initialWindow={trendWindow} />
+      </li>
+    )}
+    </>
   );
 }

@@ -27,6 +27,7 @@ export type SecurityRow = {
   favorite: boolean;
   target: boolean;
   trend: TrendWindows | null;
+  spark: number[] | null; // downsampled ~1Y daily closes for the inline sparkline
   pctFromHigh: number | null;
   downtrend: boolean; // sustained bearish (1Y down, or 3M & 6M both down)
   ccTarget: boolean; // strategy screen: weak liquid ETF for covered calls
@@ -92,11 +93,46 @@ export function isBestHarvest(
   );
 }
 
+// Evenly sample `xs` down to at most `target` points (always keeps first & last).
+function downsample(xs: number[], target: number): number[] {
+  if (xs.length <= target) return xs;
+  const out: number[] = [];
+  const step = (xs.length - 1) / (target - 1);
+  for (let i = 0; i < target; i++) out.push(xs[Math.round(i * step)]);
+  return out;
+}
+
+const SPARK_BARS = 252; // trading days ≈ 1Y; sparkline slices windows off this tail
+const SPARK_POINTS = 96; // downsampled resolution shipped to the client
+
+// Pull a compact 1Y close series per ticker for the inline sparkline. One grouped
+// query (array_agg) instead of 542×252 rows; downsampled before it reaches the client.
+async function getSparklines(): Promise<Map<string, number[]>> {
+  const raw = await prisma.$queryRaw<{ ticker: string; closes: unknown[] }[]>`
+    SELECT ticker, array_agg(close ORDER BY date) AS closes
+    FROM option_harvest_daily_prices
+    WHERE date >= CURRENT_DATE - INTERVAL '380 days'
+    GROUP BY ticker
+  `;
+  const map = new Map<string, number[]>();
+  for (const r of raw) {
+    const closes = (r.closes as (string | number | null)[])
+      .map((c) => (c == null ? NaN : Number(c)))
+      .filter((c) => Number.isFinite(c))
+      .slice(-SPARK_BARS);
+    if (closes.length >= 2) map.set(r.ticker, downsample(closes, SPARK_POINTS));
+  }
+  return map;
+}
+
 export async function getDashboardData(): Promise<DashboardData> {
-  const rows = await prisma.security.findMany({
-    where: { isActive: true },
-    include: { quote: true, mark: true, trend: true, ccScore: true },
-  });
+  const [rows, sparkMap] = await Promise.all([
+    prisma.security.findMany({
+      where: { isActive: true },
+      include: { quote: true, mark: true, trend: true, ccScore: true },
+    }),
+    getSparklines(),
+  ]);
 
   let asOf: Date | null = null;
   const securities: SecurityRow[] = rows.map((r) => {
@@ -125,6 +161,7 @@ export async function getDashboardData(): Promise<DashboardData> {
       favorite: r.mark?.favorite ?? false,
       target: r.mark?.target ?? false,
       trend: (r.trend?.windows as TrendWindows | null) ?? null,
+      spark: sparkMap.get(r.ticker) ?? null,
       pctFromHigh: r.trend?.pctFromHigh != null ? Number(r.trend.pctFromHigh) : null,
       downtrend: false, // set below
       ccTarget: false, // set below
