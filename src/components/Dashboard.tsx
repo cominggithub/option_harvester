@@ -18,7 +18,7 @@ import { DataTable } from "@/components/DataTable";
 
 type Props = { securities: SecurityRow[]; asOf: string | null };
 
-const SPECIAL_IDS = new Set<ViewId>(["cc", "csp", "best", "favorites", "targets", "all"]);
+const SPECIAL_IDS = new Set<ViewId>(["cc", "model", "csp", "best", "favorites", "targets", "all"]);
 
 const VIEW_META: Record<string, { title: string; blurb: string; empty: string }> = {
   cc: {
@@ -27,6 +27,12 @@ const VIEW_META: Record<string, { title: string; blurb: string; empty: string }>
       "Sell covered calls against these: ETF-level, weak / no upward momentum (downtrend or grinding-sideways 陰跌), with a weekly expiry ladder. ▾ = clean downtrend.",
     empty:
       "No ETF currently qualifies — needs a weak trend plus a weekly option ladder.",
+  },
+  model: {
+    title: "CC Model",
+    blurb:
+      "Δ0.30 / 35-DTE targets the model endorses (Edge > 0), ranked by expected capture (Edge = premium × (1 − 2.5·P(stop)), % of spot). Filtered: downtrend ∩ liquid ∩ $20–150 ∩ no earnings in the window ∩ positive Edge (needs IV/RV ≳ 1.5). ⚡ = earnings inside the window (excluded). See docs/cc-target-strategy.md.",
+    empty: "No instrument currently clears the model filter (positive Edge, event-free).",
   },
   csp: {
     title: "CSP / Panic",
@@ -100,6 +106,7 @@ export function Dashboard({ securities, asOf }: Props) {
   const specials = useMemo(
     () => [
       { id: "cc" as ViewId, label: "CC Targets", count: rows.filter((r) => r.ccTarget).length },
+      { id: "model" as ViewId, label: "CC Model", count: rows.filter((r) => r.ccTargetModel && (r.ccScore ?? 0) > 0).length },
       { id: "csp" as ViewId, label: "CSP / Panic", count: rows.filter((r) => r.cspEligible).length },
       { id: "best" as ViewId, label: "Best Harvest", count: rows.filter((r) => r.bestHarvest).length },
       { id: "favorites" as ViewId, label: "Favorites", count: rows.filter((r) => r.favorite).length },
@@ -114,6 +121,8 @@ export function Dashboard({ securities, asOf }: Props) {
       const inView =
         view === "cc"
           ? r.ccTarget
+          : view === "model"
+          ? r.ccTargetModel && (r.ccScore ?? 0) > 0
           : view === "csp"
             ? r.cspEligible
             : view === "best"
@@ -146,7 +155,7 @@ export function Dashboard({ securities, asOf }: Props) {
   const onSelectView = useCallback((id: ViewId) => {
     setView(id);
     // Each screen gets its natural default sort.
-    setSortKey(id === "csp" ? "ivPct" : "harvesterScore");
+    setSortKey(id === "csp" ? "ivPct" : id === "model" ? "ccScore" : "harvesterScore");
     setSortDir("desc");
   }, []);
 

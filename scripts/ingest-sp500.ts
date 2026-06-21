@@ -114,17 +114,27 @@ type Enriched = {
   ivPct: number | null;
   ivDte: number | null;
   weeklyBuckets: number | null;
+  nextEarnings: Date | null;
   currency: string;
 };
 
 async function enrich(yahooSymbol: string, nowMs: number): Promise<Enriched> {
   const q = await yf.quote(yahooSymbol);
   let description: string | null = null;
+  let nextEarnings: Date | null = null;
   try {
-    const qs = await yf.quoteSummary(yahooSymbol, { modules: ["assetProfile"] });
+    // assetProfile (description) + calendarEvents (earnings date) in one call.
+    const qs = await yf.quoteSummary(yahooSymbol, {
+      modules: ["assetProfile", "calendarEvents"],
+    });
     description = qs.assetProfile?.longBusinessSummary ?? null;
+    const ed = qs.calendarEvents?.earnings?.earningsDate;
+    if (Array.isArray(ed) && ed.length) {
+      const d = ed[0] instanceof Date ? ed[0] : new Date(ed[0] as unknown as string);
+      if (!Number.isNaN(d.getTime())) nextEarnings = d;
+    }
   } catch {
-    // assetProfile is unavailable for some ETFs/tickers — leave description null.
+    // Unavailable for some ETFs/tickers — leave description/earnings null.
   }
   const iv = await getAtmIv(yf, yahooSymbol, nowMs);
   return {
@@ -136,6 +146,7 @@ async function enrich(yahooSymbol: string, nowMs: number): Promise<Enriched> {
     ivPct: iv.ivPct,
     ivDte: iv.dte,
     weeklyBuckets: iv.weeklyBuckets,
+    nextEarnings,
     currency: q.currency ?? "USD",
   };
 }
@@ -203,6 +214,7 @@ async function main() {
             ivPct: e.ivPct,
             ivDte: e.ivDte,
             weeklyBuckets: e.weeklyBuckets,
+            nextEarnings: e.nextEarnings,
             currency: e.currency,
             asOf: new Date(),
           },
@@ -214,6 +226,7 @@ async function main() {
             ivPct: e.ivPct,
             ivDte: e.ivDte,
             weeklyBuckets: e.weeklyBuckets,
+            nextEarnings: e.nextEarnings,
             currency: e.currency,
             asOf: new Date(),
           },

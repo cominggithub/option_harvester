@@ -5,6 +5,7 @@ import type { SortKey, SortDir, TrendWindowKey } from "@/lib/view";
 import { TREND_WINDOW_LABEL } from "@/lib/view";
 import type { TrendWindows, WindowTrend, TrendLabel } from "@/lib/trend";
 import { harvesterColor } from "@/lib/harvester";
+import { ccEdgeColor, formatEdge } from "@/lib/ccscore";
 import { sectorColor } from "@/lib/sectors";
 import {
   formatChangePct,
@@ -16,7 +17,7 @@ import {
 import { StarIcon, TargetIcon, SortArrow, SproutIcon } from "@/components/icons";
 
 const GRID =
-  "grid-cols-[60px_96px_minmax(180px,1fr)_152px_92px_74px_96px_84px_116px_100px]";
+  "grid-cols-[60px_96px_minmax(180px,1fr)_152px_92px_72px_74px_96px_84px_116px_100px]";
 const PAD = "pl-5 pr-8";
 
 const TREND_STYLE: Record<TrendLabel, { cls: string; glyph: string }> = {
@@ -139,6 +140,7 @@ export function DataTable({
           <SortArrow dir={sortKey === "trend" ? sortDir : null} />
         </button>
         <HeadCell label="Harvester" col="harvesterScore" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+        <HeadCell label="Edge" col="ccScore" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
         <div className="flex justify-end">
           <HeadCell label="IV" col="ivPct" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
         </div>
@@ -179,6 +181,7 @@ function Row({
   onToggle: (ticker: string, field: "favorite" | "target") => void;
 }) {
   const hc = harvesterColor(s.harvesterScore);
+  const ec = ccEdgeColor(s.ccScore);
   const cap = formatMarketCapParts(s.marketCap);
   const chgTone =
     s.changePct == null
@@ -237,6 +240,14 @@ function Row({
             ▾
           </span>
         )}
+        {s.ccEvent && (
+          <span
+            className="text-[10px] leading-none text-[#b8860b]"
+            title="Earnings report inside the 35-DTE window — gap risk; excluded from CC Model targets"
+          >
+            ⚡
+          </span>
+        )}
       </div>
 
       <div className="flex min-w-0 items-baseline gap-2 pr-6">
@@ -264,6 +275,25 @@ function Row({
             style={{ background: hc.bg, color: hc.fg }}
           >
             {s.harvesterScore}
+          </span>
+        )}
+      </div>
+
+      <div>
+        {s.ccScore == null ? (
+          <span className="text-[13px] text-ink-faint">—</span>
+        ) : (
+          <span
+            className="tnum inline-block w-[50px] rounded text-center text-[12px] font-semibold leading-5"
+            style={{ background: ec.bg, color: ec.fg }}
+            title={
+              `Δ0.30 35-DTE expected capture: ${formatEdge(s.ccScore)}% of spot/trade` +
+              ` · P(assign) ${s.ccPAssign ?? "—"}% · P(stop) ${s.ccPStop ?? "—"}%` +
+              ` · strike ${s.ccStrike ?? "—"} (+${s.ccOtm ?? "—"}%) · prem ${s.ccPremYield ?? "—"}%` +
+              ` · IV/RV ${s.ccIvRv ?? "—"}${s.ccTargetModel ? " · ✓ doctrine target" : ""}`
+            }
+          >
+            {formatEdge(s.ccScore)}
           </span>
         )}
       </div>

@@ -20,9 +20,10 @@ model Security {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  quote Quote?
-  mark  Mark?
-  trend Trend?
+  quote   Quote?
+  mark    Mark?
+  trend   Trend?
+  ccScore CcScore?
 
   @@index([sector])
   @@map("option_harvest_securities")
@@ -81,6 +82,7 @@ model Quote {
   ivPct     Decimal? @map("iv_pct") // front-month ATM implied volatility, %
   ivDte     Int?     @map("iv_dte") // days-to-expiry used for the IV calc
   weeklyBuckets Int?  @map("weekly_buckets") // of {0,7,14,21,28,35} DTE expiries available (0-6)
+  nextEarnings DateTime? @map("next_earnings") // next earnings date (gap-risk gate); null for ETFs
   currency  String   @default("USD")
   asOf      DateTime @default(now()) @map("as_of")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -88,6 +90,30 @@ model Quote {
   security Security @relation(fields: [ticker], references: [ticker], onDelete: Cascade)
 
   @@map("option_harvest_quotes")
+}
+
+/// Δ0.30 covered-call model output, recomputed daily by scripts/predict-cc.py.
+/// Stored (not derived at read time) because it must match the frozen prediction
+/// archive exactly — see docs/cc-target-strategy.md §8. The web reads `eScore`.
+model CcScore {
+  ticker    String   @id
+  entryDate String   @map("entry_date") // bar date the score was computed on (YYYY-MM-DD)
+  iv        Decimal? // implied vol used, %
+  rv        Decimal? // trailing-20d realized vol, %
+  ivRv      Decimal? @map("iv_rv") // IV / RV ratio — the core edge dial
+  strike    Decimal? // Δ0.30 call strike
+  otm       Decimal? // strike vs spot, %
+  premYield Decimal? @map("prem_yield") // premium collected, % of spot
+  pAssign   Decimal? @map("p_assign") // P(finish > strike), %, calibrated
+  pStop     Decimal? @map("p_stop") // P(touch 2.5x-premium stop), %, calibrated
+  eScore    Decimal? @map("e_score") // expected capture E = yield*(1-2.5*pStop), % of spot
+  isTarget  Boolean  @default(false) @map("is_target") // passes the doctrine filter (downtrend ∩ liquid ∩ $20-150 ∩ no earnings in window)
+  eventFlag Boolean  @default(false) @map("event_flag") // earnings report falls inside the DTE window (gap risk)
+  computedAt DateTime @updatedAt @map("computed_at")
+
+  security Security @relation(fields: [ticker], references: [ticker], onDelete: Cascade)
+
+  @@map("option_harvest_cc_scores")
 }
 
 /// Audit log for each ingestion run.

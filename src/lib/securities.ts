@@ -31,6 +31,16 @@ export type SecurityRow = {
   downtrend: boolean; // sustained bearish (1Y down, or 3M & 6M both down)
   ccTarget: boolean; // strategy screen: weak liquid ETF for covered calls
   cspEligible: boolean; // strategy screen: quality/index name for panic cash-secured puts
+  // Δ0.30 CC model (option_harvest_cc_scores, computed by scripts/predict-cc.py):
+  ccScore: number | null; // E = expected capture, % of spot per 35-DTE trade
+  ccPAssign: number | null; // P(finish > strike), % (calibrated)
+  ccPStop: number | null; // P(touch 2.5x-premium stop), % (calibrated)
+  ccStrike: number | null; // Δ0.30 call strike
+  ccOtm: number | null; // strike vs spot, %
+  ccPremYield: number | null; // premium collected, % of spot
+  ccIvRv: number | null; // IV / RV ratio
+  ccTargetModel: boolean; // passes the doctrine filter (downtrend ∩ liquid ∩ $20-150 ∩ no earnings in window)
+  ccEvent: boolean; // earnings report inside the DTE window (gap risk)
 };
 
 // CC target (per docs/strategy.md): ETF-level only, weak/陰跌 (no upward
@@ -85,7 +95,7 @@ export function isBestHarvest(
 export async function getDashboardData(): Promise<DashboardData> {
   const rows = await prisma.security.findMany({
     where: { isActive: true },
-    include: { quote: true, mark: true, trend: true },
+    include: { quote: true, mark: true, trend: true, ccScore: true },
   });
 
   let asOf: Date | null = null;
@@ -96,6 +106,7 @@ export async function getDashboardData(): Promise<DashboardData> {
     const weeklyBuckets = r.quote?.weeklyBuckets ?? null;
     const { score } = computeHarvester(ivPct, price, volume);
     if (r.quote?.asOf && (!asOf || r.quote.asOf > asOf)) asOf = r.quote.asOf;
+    const cc = r.ccScore;
     return {
       ticker: r.ticker,
       name: r.name,
@@ -118,6 +129,15 @@ export async function getDashboardData(): Promise<DashboardData> {
       downtrend: false, // set below
       ccTarget: false, // set below
       cspEligible: false, // set below
+      ccScore: cc?.eScore != null ? Number(cc.eScore) : null,
+      ccPAssign: cc?.pAssign != null ? Number(cc.pAssign) : null,
+      ccPStop: cc?.pStop != null ? Number(cc.pStop) : null,
+      ccStrike: cc?.strike != null ? Number(cc.strike) : null,
+      ccOtm: cc?.otm != null ? Number(cc.otm) : null,
+      ccPremYield: cc?.premYield != null ? Number(cc.premYield) : null,
+      ccIvRv: cc?.ivRv != null ? Number(cc.ivRv) : null,
+      ccTargetModel: cc?.isTarget ?? false,
+      ccEvent: cc?.eventFlag ?? false,
     };
   });
 

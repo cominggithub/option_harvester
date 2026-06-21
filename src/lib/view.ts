@@ -2,6 +2,7 @@ import type { SecurityRow } from "@/lib/securities";
 
 export type SortKey =
   | "harvesterScore"
+  | "ccScore"
   | "ivPct"
   | "price"
   | "changePct"
@@ -27,6 +28,7 @@ export type ViewId = SpecialView | string;
 
 export const SORT_LABELS: Record<SortKey, string> = {
   harvesterScore: "Harvester",
+  ccScore: "CC Edge",
   ivPct: "IV",
   price: "Last",
   changePct: "Chg %",
