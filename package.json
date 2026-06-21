@@ -1,0 +1,41 @@
+{
+  "name": "option_harvester",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -H 0.0.0.0 --port 19210",
+    "build": "next build",
+    "start": "next start -H 0.0.0.0 --port 19210",
+    "start:test": "dotenv -e .env.test -- next start -H 0.0.0.0 --port 19211",
+    "dev:test": "dotenv -e .env.test -- next dev -H 0.0.0.0 --port 19211",
+    "lint": "next lint",
+    "ingest": "tsx scripts/ingest-sp500.ts",
+    "ingest:test": "dotenv -e .env.test -- tsx scripts/ingest-sp500.ts",
+    "ingest:history": "tsx scripts/ingest-history.ts",
+    "ingest:history:test": "dotenv -e .env.test -- tsx scripts/ingest-history.ts",
+    "db:push": "prisma db push",
+    "db:push:test": "dotenv -e .env.test -- prisma db push",
+    "db:generate": "prisma generate"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.2.1",
+    "cheerio": "^1.0.0",
+    "next": "^15.1.4",
+    "pg": "^8.13.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "yahoo-finance2": "^3.15.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/react": "^19.0.4",
+    "@types/react-dom": "^19.0.2",
+    "autoprefixer": "^10.4.20",
+    "dotenv-cli": "^8.0.0",
+    "postcss": "^8.5.1",
+    "prisma": "^6.2.1",
+    "tailwindcss": "^3.4.17",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

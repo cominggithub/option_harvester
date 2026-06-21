@@ -1,0 +1,104 @@
+// option_harvester — owns ONLY the option_harvest_* tables (see CLAUDE.md).
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Static metadata for each S&P 500 constituent / large ETF.
+model Security {
+  ticker      String   @id
+  name        String
+  description String?
+  sector      String   @default("Unclassified")
+  subIndustry String?  @map("sub_industry")
+  type        String   @default("stock") // "stock" | "etf"
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  quote Quote?
+  mark  Mark?
+  trend Trend?
+
+  @@index([sector])
+  @@map("option_harvest_securities")
+}
+
+/// Daily OHLCV bars (our own dataset; ~14 months kept for 1y trend analysis).
+model DailyPrice {
+  ticker String
+  date   DateTime @db.Date
+  open   Decimal?
+  high   Decimal?
+  low    Decimal?
+  close  Decimal?
+  volume BigInt?
+
+  @@id([ticker, date])
+  @@index([ticker, date])
+  @@map("option_harvest_daily_prices")
+}
+
+/// Per-ticker multi-window trend summary, recomputed daily from DailyPrice.
+model Trend {
+  ticker      String   @id
+  sma50       Decimal? // 50-trading-day simple moving average of close
+  sma200      Decimal? // 200-trading-day SMA (null if < 200 bars)
+  pctFromHigh Decimal? @map("pct_from_high") // % vs trailing 52-week high (<= 0)
+  // { m1,m3,m6,y1: { ret, slopePct, r2, label: up|down|sideways } }
+  windows     Json?
+  bars        Int      @default(0) // bars used in the computation
+  computedAt  DateTime @updatedAt @map("computed_at")
+
+  security Security @relation(fields: [ticker], references: [ticker], onDelete: Cascade)
+
+  @@map("option_harvest_trends")
+}
+
+/// User marks: starred favorite and/or option (covered-call) target.
+model Mark {
+  ticker    String   @id
+  favorite  Boolean  @default(false)
+  target    Boolean  @default(false)
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  security Security @relation(fields: [ticker], references: [ticker], onDelete: Cascade)
+
+  @@map("option_harvest_marks")
+}
+
+/// Latest market snapshot per security (price, market cap, volume).
+model Quote {
+  ticker    String   @id
+  price     Decimal?
+  marketCap BigInt?  @map("market_cap")
+  volume    BigInt?
+  changePct Decimal? @map("change_pct")
+  ivPct     Decimal? @map("iv_pct") // front-month ATM implied volatility, %
+  ivDte     Int?     @map("iv_dte") // days-to-expiry used for the IV calc
+  weeklyBuckets Int?  @map("weekly_buckets") // of {0,7,14,21,28,35} DTE expiries available (0-6)
+  currency  String   @default("USD")
+  asOf      DateTime @default(now()) @map("as_of")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  security Security @relation(fields: [ticker], references: [ticker], onDelete: Cascade)
+
+  @@map("option_harvest_quotes")
+}
+
+/// Audit log for each ingestion run.
+model IngestRun {
+  id          Int       @id @default(autoincrement())
+  startedAt   DateTime  @default(now()) @map("started_at")
+  finishedAt  DateTime? @map("finished_at")
+  status      String    @default("running") // running | success | failed
+  tickersOk   Int       @default(0) @map("tickers_ok")
+  tickersFail Int       @default(0) @map("tickers_fail")
+  notes       String?
+
+  @@map("option_harvest_ingest_runs")
+}

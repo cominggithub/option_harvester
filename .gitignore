@@ -1,0 +1,15 @@
+/node_modules
+/.next
+/out
+/build
+next-env.d.ts
+*.tsbuildinfo
+
+# env files (contain DB connection details)
+.env
+.env.test
+.env*.local
+
+# logs
+*.log
+/log

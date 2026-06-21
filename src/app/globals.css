@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Menlo", "Consolas",
+    monospace;
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia,
+    "Times New Roman", serif;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: #f7f8fa;
+  color: #1a1d21;
+  font-family: var(--font-sans);
+  font-feature-settings: "kern", "liga", "calt";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Numeric cells: lining tabular figures so columns align to the digit. */
+.tnum {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+.wordmark {
+  font-family: var(--font-serif);
+  letter-spacing: -0.01em;
+}
+
+.overline {
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* Sector accent dot palette — muted, categorical, not rainbow. */
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  display: inline-block;
+  flex: none;
+}
+
+/* Sticky sector headers sit just below the masthead. */
+.sticky-sector {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+::selection {
+  background: #1f4ed8;
+  color: #fff;
+}
+
+/* Hide scrollbar (left nav) while keeping scrollability. */
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* Slim scrollbar for the main table area. */
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: #cdd2d8 transparent;
+}
+.scrollbar-thin::-webkit-scrollbar {
+  width: 10px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #cdd2d8;
+  border-radius: 9999px;
+  border: 3px solid #fff;
+}
