@@ -18,26 +18,26 @@ import { DataTable } from "@/components/DataTable";
 
 type Props = { securities: SecurityRow[]; asOf: string | null };
 
-const SPECIAL_IDS = new Set<ViewId>(["cc", "model", "csp", "best", "favorites", "targets", "all"]);
+const SPECIAL_IDS = new Set<ViewId>(["cc", "model", "csp", "best", "holdings", "favorites", "targets", "all"]);
 
 const VIEW_META: Record<string, { title: string; blurb: string; empty: string }> = {
   cc: {
-    title: "CC Targets",
+    title: "Naked Call",
     blurb:
-      "Sell covered calls against these: ETF-level, weak / no upward momentum (downtrend or grinding-sideways 陰跌), with a weekly expiry ladder. ▾ = clean downtrend.",
+      "Sell naked calls against these: ETF-level, weak / no upward momentum (downtrend or grinding-sideways 陰跌), with a weekly expiry ladder. ▾ = clean downtrend.",
     empty:
       "No ETF currently qualifies — needs a weak trend plus a weekly option ladder.",
   },
   model: {
-    title: "CC Model",
+    title: "Call Model",
     blurb:
       "Δ0.30 / 35-DTE targets the model endorses (Edge > 0), ranked by expected capture (Edge = premium × (1 − 2.5·P(stop)), % of spot). Filtered: downtrend ∩ liquid ∩ $20–150 ∩ no earnings in the window ∩ positive Edge (needs IV/RV ≳ 1.5). ⚡ = earnings inside the window (excluded). See docs/cc-target-strategy.md.",
     empty: "No instrument currently clears the model filter (positive Edge, event-free).",
   },
   csp: {
-    title: "CSP / Panic",
+    title: "Naked Put / Panic",
     blurb:
-      "Panic pivot: sell Deep-OTM cash-secured puts (Δ0.10–0.15) on quality — broad indices + mega-caps — when IV spikes. Sorted by IV; act when it's high.",
+      "Panic pivot: sell Deep-OTM naked puts (Δ0.10–0.15) on quality — broad indices + mega-caps — when IV spikes. Act when it's high.",
     empty: "No eligible quality/index names.",
   },
   best: {
@@ -46,6 +46,12 @@ const VIEW_META: Record<string, { title: string; blurb: string; empty: string }>
       "High option premium: spot $20–150, IV > 50%, full weekly expiry ladder (0/7/14/21/28/35 DTE). ↓ marks names in a downtrend.",
     empty: "No securities currently meet the Best Harvest rule.",
   },
+  holdings: {
+    title: "Holdings",
+    blurb:
+      "Underlyings you currently hold in IB (from your uploaded positions). Upload or update the file on the Positions page.",
+    empty: "No holdings matched — upload your IB positions on the Positions page (top nav).",
+  },
   favorites: {
     title: "Favorites",
     blurb: "Names you've starred.",
@@ -53,7 +59,7 @@ const VIEW_META: Record<string, { title: string; blurb: string; empty: string }>
   },
   targets: {
     title: "Option Targets",
-    blurb: "Names you've flagged as covered-call targets.",
+    blurb: "Names you've flagged as naked-call targets.",
     empty: "No option targets yet — tap the bullseye on any row to add one.",
   },
   all: {
@@ -73,10 +79,20 @@ const TREND_DIRS: { id: TrendDir; label: string }[] = [
 
 export function Dashboard({ securities, asOf }: Props) {
   const [view, setView] = useState<ViewId>("cc");
-  const [sortKey, setSortKey] = useState<SortKey>("harvesterScore");
+  const [sortKey, setSortKey] = useState<SortKey>("final");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [trendWindow, setTrendWindow] = useState<TrendWindowKey>("y1");
   const [trendDir, setTrendDir] = useState<TrendDir>("all");
+  // Price filter (applies to every screen). null = unbounded on that side.
+  const [priceMin, setPriceMin] = useState<number | null>(null);
+  const [priceMax, setPriceMax] = useState<number | null>(null);
+  // Quick downtrend gates (combinable): require 6M and/or 1Y label == "down".
+  const [down6m, setDown6m] = useState(false);
+  const [down1y, setDown1y] = useState(false);
+  // Show the user's IB position column in the analyzer (default on).
+  const [showPositions, setShowPositions] = useState(true);
+  // Filter rows by whether the user holds a position: all / only-held / hide-held.
+  const [heldFilter, setHeldFilter] = useState<"all" | "held" | "unheld">("all");
 
   const [marks, setMarks] = useState<Record<string, { favorite: boolean; target: boolean }>>(
     () =>
@@ -105,10 +121,11 @@ export function Dashboard({ securities, asOf }: Props) {
 
   const specials = useMemo(
     () => [
-      { id: "cc" as ViewId, label: "CC Targets", count: rows.filter((r) => r.ccTarget).length },
-      { id: "model" as ViewId, label: "CC Model", count: rows.filter((r) => r.ccTargetModel && (r.ccScore ?? 0) > 0).length },
-      { id: "csp" as ViewId, label: "CSP / Panic", count: rows.filter((r) => r.cspEligible).length },
+      { id: "cc" as ViewId, label: "Naked Call", count: rows.filter((r) => r.ccTarget).length },
+      { id: "model" as ViewId, label: "Call Model", count: rows.filter((r) => r.ccTargetModel && (r.ccScore ?? 0) > 0).length },
+      { id: "csp" as ViewId, label: "Naked Put / Panic", count: rows.filter((r) => r.cspEligible).length },
       { id: "best" as ViewId, label: "Best Harvest", count: rows.filter((r) => r.bestHarvest).length },
+      { id: "holdings" as ViewId, label: "Holdings", count: rows.filter((r) => r.held).length },
       { id: "favorites" as ViewId, label: "Favorites", count: rows.filter((r) => r.favorite).length },
       { id: "targets" as ViewId, label: "Option Targets", count: rows.filter((r) => r.target).length },
       { id: "all" as ViewId, label: "All Securities", count: rows.length },
@@ -127,7 +144,9 @@ export function Dashboard({ securities, asOf }: Props) {
             ? r.cspEligible
             : view === "best"
               ? r.bestHarvest
-              : view === "favorites"
+              : view === "holdings"
+                ? r.held
+                : view === "favorites"
                 ? r.favorite
                 : view === "targets"
                   ? r.target
@@ -136,17 +155,27 @@ export function Dashboard({ securities, asOf }: Props) {
                     : r.sector === view;
       if (!inView) return false;
       if (trendDir !== "all" && r.trend?.[trendWindow]?.label !== trendDir) return false;
+      // Price bounds — a name with no price is excluded once any bound is set.
+      if (priceMin != null && !(r.price != null && r.price >= priceMin)) return false;
+      if (priceMax != null && !(r.price != null && r.price <= priceMax)) return false;
+      // Quick downtrend gates (combinable, AND).
+      if (down6m && r.trend?.m6?.label !== "down") return false;
+      if (down1y && r.trend?.y1?.label !== "down") return false;
+      // Held filter.
+      if (heldFilter === "held" && !r.held) return false;
+      if (heldFilter === "unheld" && r.held) return false;
       return true;
     });
     return sortRows(filtered, sortKey, sortDir, trendWindow);
-  }, [rows, view, sortKey, sortDir, trendWindow, trendDir]);
+  }, [rows, view, sortKey, sortDir, trendWindow, trendDir, priceMin, priceMax, down6m, down1y, heldFilter]);
 
   const onSort = useCallback(
     (key: SortKey) => {
       if (key === sortKey) setSortDir((d) => (d === "desc" ? "asc" : "desc"));
       else {
         setSortKey(key);
-        setSortDir("desc");
+        // Text columns read best A→Z; numeric columns lead with the high end.
+        setSortDir(key === "ticker" || key === "name" ? "asc" : "desc");
       }
     },
     [sortKey],
@@ -154,8 +183,9 @@ export function Dashboard({ securities, asOf }: Props) {
 
   const onSelectView = useCallback((id: ViewId) => {
     setView(id);
-    // Each screen gets its natural default sort.
-    setSortKey(id === "csp" ? "ivPct" : id === "model" ? "ccScore" : "harvesterScore");
+    // Each screen gets its natural default sort. The model screen keeps Edge;
+    // everything else leads with the fused Signal score.
+    setSortKey(id === "model" ? "ccScore" : "final");
     setSortDir("desc");
   }, []);
 
@@ -186,7 +216,7 @@ export function Dashboard({ securities, asOf }: Props) {
   const isSpecial = SPECIAL_IDS.has(view);
 
   return (
-    <div className="flex">
+    <div className="flex h-full">
       <LeftNav
         specials={specials}
         sectors={sectorCounts}
@@ -194,7 +224,7 @@ export function Dashboard({ securities, asOf }: Props) {
         asOf={asOf}
         onSelect={onSelectView}
       />
-      <main className="flex h-screen flex-1 flex-col overflow-hidden">
+      <main className="flex h-full flex-1 flex-col overflow-hidden">
         <header className="border-b border-line bg-surface px-8 py-4">
           <div className="flex items-baseline justify-between gap-4">
             <h2 className="text-[20px] font-semibold tracking-tight text-ink">{meta.title}</h2>
@@ -249,6 +279,145 @@ export function Dashboard({ securities, asOf }: Props) {
                   : `Sorting by ${TREND_WINDOW_LABEL[trendWindow]} slope`}
               </span>
             )}
+
+            {/* Price filter — applies to every screen. */}
+            <span className="ml-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-faint">
+              Price
+            </span>
+            <div className="flex overflow-hidden rounded-md border border-line">
+              <button
+                type="button"
+                onClick={() => {
+                  setPriceMin(null);
+                  setPriceMax(null);
+                }}
+                className={`px-2.5 py-1 ${
+                  priceMin == null && priceMax == null
+                    ? "bg-ink text-white"
+                    : "bg-surface text-ink-muted hover:bg-canvas"
+                }`}
+              >
+                All
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPriceMin(20);
+                  setPriceMax(150);
+                }}
+                className={`border-l border-line px-2.5 py-1 ${
+                  priceMin === 20 && priceMax === 150
+                    ? "bg-ink text-white"
+                    : "bg-surface text-ink-muted hover:bg-canvas"
+                }`}
+              >
+                $20–150
+              </button>
+            </div>
+            <div className="flex items-center gap-1 text-ink-muted">
+              <span className="text-ink-faint">$</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                min={0}
+                value={priceMin ?? ""}
+                onChange={(e) =>
+                  setPriceMin(e.target.value === "" ? null : Number(e.target.value))
+                }
+                placeholder="min"
+                aria-label="Minimum price"
+                className="tnum w-16 rounded-md border border-line px-2 py-1 text-right focus:border-ink focus:outline-none"
+              />
+              <span className="text-ink-faint">–</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                min={0}
+                value={priceMax ?? ""}
+                onChange={(e) =>
+                  setPriceMax(e.target.value === "" ? null : Number(e.target.value))
+                }
+                placeholder="max"
+                aria-label="Maximum price"
+                className="tnum w-16 rounded-md border border-line px-2 py-1 text-right focus:border-ink focus:outline-none"
+              />
+            </div>
+
+            {/* Quick downtrend gates — combinable (6M down AND/OR 1Y down). */}
+            <span className="ml-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-faint">
+              Downtrend
+            </span>
+            <div className="flex overflow-hidden rounded-md border border-line">
+              <button
+                type="button"
+                aria-pressed={down6m}
+                onClick={() => setDown6m((v) => !v)}
+                title="Only names whose 6-month trend is down"
+                className={`px-2.5 py-1 ${
+                  down6m ? "bg-negative text-white" : "bg-surface text-ink-muted hover:bg-canvas"
+                }`}
+              >
+                6M ▼
+              </button>
+              <button
+                type="button"
+                aria-pressed={down1y}
+                onClick={() => setDown1y((v) => !v)}
+                title="Only names whose 1-year trend is down"
+                className={`border-l border-line px-2.5 py-1 ${
+                  down1y ? "bg-negative text-white" : "bg-surface text-ink-muted hover:bg-canvas"
+                }`}
+              >
+                1Y ▼
+              </button>
+            </div>
+
+            {/* Filter rows by holding status. */}
+            <span className="ml-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-faint">
+              My Pos
+            </span>
+            <div className="flex overflow-hidden rounded-md border border-line">
+              {(
+                [
+                  ["all", "All"],
+                  ["held", "◆ Only"],
+                  ["unheld", "Hide"],
+                ] as const
+              ).map(([id, label], i) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setHeldFilter(id)}
+                  title={
+                    id === "held"
+                      ? "Only securities you hold a position in"
+                      : id === "unheld"
+                        ? "Hide securities you hold a position in"
+                        : "Show all securities"
+                  }
+                  className={`px-2.5 py-1 ${i > 0 ? "border-l border-line" : ""} ${
+                    heldFilter === id ? "bg-accent text-white" : "bg-surface text-ink-muted hover:bg-canvas"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* Show / hide the user's IB position column. */}
+            <button
+              type="button"
+              aria-pressed={showPositions}
+              onClick={() => setShowPositions((v) => !v)}
+              title="Show or hide your IB position column"
+              className={`rounded-md border px-2.5 py-1 ${
+                showPositions
+                  ? "border-accent bg-accent text-white"
+                  : "border-line bg-surface text-ink-muted hover:bg-canvas"
+              }`}
+            >
+              ◆ {showPositions ? "Position shown" : "Position hidden"}
+            </button>
           </div>
         </header>
 
@@ -259,6 +428,7 @@ export function Dashboard({ securities, asOf }: Props) {
             sortDir={sortDir}
             trendWindow={trendWindow}
             showSector={isSpecial}
+            showPositions={showPositions}
             onSort={onSort}
             onToggle={onToggle}
             emptyMessage={meta.empty}

@@ -1,4 +1,8 @@
-# CC Target-Selection Strategy & Backtest
+# Naked-Call Target-Selection Strategy & Backtest
+
+> **Terminology.** "CC" in this file's filenames/identifiers (`predict-cc.py`,
+> `cc_scores`, …) is legacy shorthand — the actual trade is a **naked call**
+> (all-cash, no spot), the same convention the UI now uses ("Naked Call").
 
 > **Scope.** How `option_harvester` should *find the names to sell calls against* for
 > the premium-harvest game in [`strategy.md`](./strategy.md). This page defines the
@@ -248,7 +252,7 @@ from any single gate:
    of a stop-blow-through is removed. Extending to single stocks **re-introduces**
    that tail; mitigate with the earnings-date gate and smaller per-name size.
 5. **Regime awareness.** The whole thing assumes 平盤/陰跌 70–90% of the time and a
-   pivot to CSP on panic (`strategy.md` §三). In a sustained melt-up the gates
+   pivot to naked puts on panic (`strategy.md` §三). In a sustained melt-up the gates
    correctly produce *few* candidates and the stops bleed slowly — by design, not by
    surprise.
 
@@ -315,7 +319,7 @@ traps** and are now gated out. WBD survives the *earnings* gate (its catalyst is
 merger/split, not scheduled earnings) — a real limitation: the gate catches earnings,
 not M&A/spin-off events, so WBD still warrants manual event judgment. After gating,
 the model-endorsed set (`is_target ∩ E>0`) is just **WBD, AIG, DXCM, DIS** — the
-honest lesson being that on this date there are very few clean, event-free Δ0.30 CC
+honest lesson being that on this date there are very few clean, event-free Δ0.30 naked-call
 targets, which is itself the most useful output.
 
 **Forward validation (validate the prediction once new data arrives).**
@@ -344,7 +348,7 @@ The model is now wired end-to-end into the product:
   shown equals the frozen prediction used for validation.
 - **Web** — `getDashboardData` joins `ccScore`; the table has an **Edge** column
   (diverging red→green chip, `src/lib/ccscore.ts`) showing `E` with a tooltip of
-  strike/OTM%/P(assign)/P(stop)/IV-RV, sortable like Harvester. A new **CC Model**
+  strike/OTM%/P(assign)/P(stop)/IV-RV, sortable like Harvester. A new **Call Model**
   screen lists the `is_target` set, default-sorted by Edge.
 - **Daily collection** — `scripts/daily.sh` now runs `npm run predict` after the
   history/trend step, so the existing `option_harvest-ingest.timer` (06:00 local)
@@ -355,7 +359,7 @@ The model is now wired end-to-end into the product:
   (`quoteSummary calendarEvents` → `option_harvest_quotes.next_earnings`;
   `scripts/backfill-earnings.ts` populates it on demand). `predict-cc.py` flags
   names with earnings inside the DTE window (`event_flag`) and excludes them from
-  `is_target`. The table shows a ⚡ badge; the **CC Model** screen filters to
+  `is_target`. The table shows a ⚡ badge; the **Call Model** screen filters to
   `is_target ∩ Edge > 0` (event-free, model-endorsed). On 2026-06-18 the gate
   removed 21 would-be traps (NFLX, MMM, GEV, …).
 

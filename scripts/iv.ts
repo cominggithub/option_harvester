@@ -70,18 +70,23 @@ type YF = InstanceType<typeof YahooFinance>;
 export type IvResult = {
   ivPct: number | null;
   dte: number | null;
-  // How many of the covered-call target expiries {0,7,14,21,28,35} DTE exist.
+  // Weekly-ladder coverage 0–6: distinct expiries within ~5.5 weeks (0–38 DTE).
   weeklyBuckets: number | null;
 };
 
-// Covered-call ladder: an expiry within ±2.5 days of each target DTE.
-const CC_TARGET_DTES = [0, 7, 14, 21, 28, 35];
-const CC_TOLERANCE = 2.5;
+// Covered-call ladder horizon: the strategy sells ~35-DTE and manages weekly, so
+// we measure how dense the near-term expiry ladder is over the next ~6 weeks.
+// Counting expiries in a window (rather than matching exact {0,7,…,35}-from-today
+// offsets) is phase-independent — real expiries are Friday-anchored, so an exact
+// today-relative grid spuriously misses on weekends/Mondays. The window is 42d so
+// a full weekly ladder yields its 6th expiry and scores 6 (matching the old
+// {0,7,14,21,28,35} ladder's max); capped at 6.
+const CC_HORIZON_DTE = 42;
+const CC_MAX_BUCKETS = 6;
 
 function countWeeklyBuckets(dtes: number[]): number {
-  return CC_TARGET_DTES.filter((t) =>
-    dtes.some((d) => Math.abs(d - t) <= CC_TOLERANCE),
-  ).length;
+  const inWindow = dtes.filter((d) => d >= -1 && d <= CC_HORIZON_DTE).length;
+  return Math.min(CC_MAX_BUCKETS, inWindow);
 }
 
 /** ATM IV (%) from the ~30-day expiry, plus covered-call expiry coverage. */

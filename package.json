@@ -13,6 +13,7 @@
     "ingest:test": "dotenv -e .env.test -- tsx scripts/ingest-sp500.ts",
     "ingest:history": "tsx scripts/ingest-history.ts",
     "ingest:history:test": "dotenv -e .env.test -- tsx scripts/ingest-history.ts",
+    "ingest:iv-backfill": "tsx scripts/backfill-iv-history.ts",
     "predict": "python3 scripts/predict-cc.py",
     "db:push": "prisma db push",
     "db:push:test": "dotenv -e .env.test -- prisma db push",

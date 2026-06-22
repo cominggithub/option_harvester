@@ -1,25 +1,32 @@
 # option_harvester
 
-An **option-premium harvesting dashboard** built to serve the user's all-cash
-CC/CSP strategy (see `docs/strategy.md` — the product rationale). It screens the
-S&P 500 + ~34 liquid ETFs for **covered-call targets** (bearish, liquid sector
-ETFs) and shows ticker, company, last price, change %, **IV %**, **Harvester
-score**, **multi-window trend (1M/3M/6M/1Y)**, market cap, and volume.
+An **option-premium harvesting dashboard** built to serve the user's all-cash,
+**naked option-selling** strategy (see `docs/strategy.md` — the product
+rationale): sell **naked calls** on weak sectors, **naked puts** on quality in a
+panic — never holding the underlying (terminology note: the calls are naked, and
+the puts are cash-backed but the user calls them naked too; internal code still
+uses the legacy `cc`/`csp`/`ccScore` identifiers). It screens the S&P 500 + ~34
+liquid ETFs for **naked-call targets** (bearish, liquid sector ETFs) and shows
+ticker, company, last price, change %, **IV %**, **Harvester score**,
+**multi-window trend (1M/3M/6M/1Y)**, market cap, and volume.
 
-UI is a left-nav app shell: pinned **CC Targets / CSP·Panic / Best Harvest /
+UI is a left-nav app shell: pinned **Naked Call / Naked Put·Panic / Best Harvest /
 Favorites / Option Targets / All** screens above the 12 GICS **sector** tabs;
-main area is a single sortable table. A **Trend filter** (window 1M/3M/6M/1Y +
+main area is a single sortable table. The headline column is the **Signal**
+score (`src/lib/score.ts`) — a fused 0–100 verdict tagged **NC** (sell naked
+calls, green) or **NP** (sell naked puts, indigo); it's the default sort
+everywhere except Call Model. A **Trend filter** (window 1M/3M/6M/1Y +
 direction All/Up/Down/Side) filters and drives the sortable Trend column. Rows
 carry a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
 
 Strategy screens (`src/lib/securities.ts`, computed at read time):
-- **CC Targets** (`ccTarget`) = `type=etf` **and** weak **and** ≥4 weekly buckets.
+- **Naked Call** (`ccTarget`) = `type=etf` **and** weak **and** ≥4 weekly buckets.
   **weak** (`isWeak`) = not in a 1Y uptrend, AND (1Y down/grinding-sideways, or
   both 3M & 6M down/grinding-sideways). "grinding-sideways" = label sideways with
   slope < −1% (陰跌 / no upward momentum). Primary screen.
-- **CSP / Panic** (`cspEligible`) = quality/index names — broad index ETFs
+- **Naked Put / Panic** (`cspEligible`) = quality/index names — broad index ETFs
   (SPY/QQQ/VOO/VTI/IWM/DIA) or ≥ $1T mega-cap stocks — with ≥4 weekly buckets.
-  Selecting it defaults the sort to **IV desc** (act when IV spikes; sell Δ0.10–0.15 puts).
+  Sell Deep-OTM puts (Δ0.10–0.15) when IV spikes.
 - **downtrend** (the strict ▾ flag) = 1Y "down", or 3M & 6M both "down".
 Price history: each row shows an inline **Sparkline** (the close line for the
 window picked in the Trend filter, colored green/red/grey by that window's trend
@@ -123,6 +130,36 @@ This project owns **two dedicated databases** on the local PostgreSQL instance:
   sector (GICS), sub_industry, type (`stock` | `etf`), is_active.
 - `option_harvest_quotes` — latest snapshot per ticker: price, market_cap,
   volume, change_pct, **iv_pct**, **iv_dte**, **weekly_buckets**, currency, as_of.
+- `option_harvest_iv_history` — daily IV time series, PK `(ticker, date)`:
+  iv_pct, iv_dte, weekly_buckets, price. **Appended every `npm run ingest`** (we
+  have no other source of past IV — `quotes` keeps only today). Backfill what
+  exists with `npm run ingest:iv-backfill` (`scripts/backfill-iv-history.ts`):
+  seeds from the frozen `predictions/cc-<date>.jsonl` archive + the current
+  `quotes` snapshot. Surfaced as the **IV Rk** column (`src/lib/ivstats.ts`
+  `computeIvStats()`, computed read-time in `getDashboardData`): IV rank 0–100 +
+  percentile, dimmed with a · until ≥20 days of history. **Feeds the Signal** via
+  `ivRankFactor()` once a name has ≥20 days (`IV_RANK_MIN_CONFIDENT`): high rank
+  tilts Signal up to +15%, low rank trims it; below the threshold the factor is 1
+  (no effect), so it switches on automatically. Also enables a premium-aware
+  backtest later.
+- `option_harvest_positions` — current IB positions (snapshot, replaced on each
+  upload): symbol (underlying), description (full option contract), sec_type,
+  quantity, avg_cost, market_value, currency, `right` (C/P), `strike`, `expiry`,
+  `raw`, `upload_id`. The parser extracts right/strike/expiry from the OCC option
+  symbol. Cross-linked into the analyzer: a ◆ badge, a Holdings screen, and a
+  sortable **Pos** column grouped **spot/call/put** (`getPositionSummaries()`),
+  toggled by the header's ◆ "Position shown/hidden" button (default shown);
+  expanding a held row shows a per-leg detail table (type/contract/qty/strike/
+  expiry/avg/value) above the price chart.
+- `option_harvest_position_uploads` — every uploaded IB CSV is kept (the raw
+  `content`), so the upload history survives and any file can be re-imported
+  (`POST /api/positions/reimport`). The live positions are the parse of the latest.
+- **IB parser** (`src/lib/ibparse.ts`): IB exports are **Activity Statements** — a
+  multi-section CSV where each row starts with a section name + Header/Data. The
+  parser is **section-aware**: it reads ONLY the `Open Positions` section keyed by
+  that section's own header, keeping `Summary` rows (drops per-`Lot` duplicates), so
+  decoy sections that also have a Symbol column (Financial Instrument Information,
+  Codes) can't leak. Generic header-scan is the fallback for Flex Query / Portfolio CSVs.
 - `option_harvest_marks` — user marks: `favorite` + `target` booleans per ticker
   (written by `POST /api/marks`; survives re-ingest, separate from quote data).
 - `option_harvest_daily_prices` — our own daily OHLCV history, PK `(ticker, date)`,
@@ -158,9 +195,11 @@ This project owns **two dedicated databases** on the local PostgreSQL instance:
   (0.55–1.0 from dollar volume, $10M→0.55, $10B→1.0). Rendered as a green-heat
   chip (`harvesterColor()` — higher = deeper green). Tweak the formula in
   `harvester.ts` — no re-ingest needed (only `iv_pct` is persisted).
-- **weekly_buckets** (0–6) — how many of the covered-call ladder DTEs
-  {0,7,14,21,28,35} have a Yahoo expiry within ±2.5 days (computed in
-  `scripts/iv.ts`). Drives the Best Harvest rule.
+- **weekly_buckets** (0–6) — weekly-ladder coverage: count of distinct Yahoo
+  expiries within the next ~6 weeks (0–42 DTE), capped at 6 (computed in
+  `scripts/iv.ts`). Measured as a DTE *window*, not exact {0,7,…,35}-from-today
+  offsets, because real expiries are Friday-anchored — an exact today-relative
+  grid spuriously collapses on weekends/Mondays. Drives the Best Harvest rule.
 - **Best Harvest** (`isBestHarvest()` in `src/lib/securities.ts`, read-time):
   spot price $20–150 **and** IV > 50% **and** weekly_buckets == 6. Qualifiers
   get a sprout icon + green left edge. ~21 names qualify on a typical day.
@@ -181,6 +220,11 @@ then `npm run db:generate`.
 3. Adds a curated set of **~34 liquid ETFs** (broad-market + SPDR sector funds +
    industry/thematic + rates/credit) — the hunting ground for the strategy. Edit
    `LARGE_ETFS` in `scripts/ingest-sp500.ts` to change the ETF universe.
+3b. Adds the user's **held instruments** that aren't already in the universe
+   (`getPositionConstituents()`, read from `option_harvest_positions`) so the
+   analyzer covers everything traded — bucketed under sector **"Off-Index"**, with
+   name/type/sector from Yahoo (`quoteType`, `assetProfile.sector`). Non-US tickers
+   map via `YF_ALIAS` (e.g. `UBSG → UBSG.SW`).
 4. Upserts into `option_harvest_securities` + `option_harvest_quotes`.
 
 Notes: Wikipedia class-share tickers use a dot (`BRK.B`); Yahoo uses a dash
@@ -192,6 +236,12 @@ Notes: Wikipedia class-share tickers use a dot (`BRK.B`); Yahoo uses a dash
 - `src/app/page.tsx` — server component (`force-dynamic`): fetch + render `<Dashboard>`.
 - `src/app/api/marks/route.ts` — `POST /api/marks` upserts favorite/target.
 - `src/app/api/history/[ticker]/route.ts` — `GET` full daily close history for one ticker (detail chart).
+- `src/app/wiki/page.tsx` — static "Strategy & Metrics" field-manual page (strategy, screens, Harvester/Edge formulas with live color chips, trend/charts).
+- `src/app/upload/page.tsx` — **IB Position Upload**: upload CSV + kept-file history (`PositionsControls` posts to `/api/positions`; `UploadHistory` re-imports).
+- `src/app/positions/page.tsx` — **Positions**: read-only table of current holdings parsed from the latest uploaded file.
+- `src/app/api/positions/route.ts` — `POST` (store file + parse + replace) / `DELETE` (clear; `?uploads=1` also wipes file history). `reimport/route.ts` — re-parse a kept upload.
+- `src/components/TopNav.tsx` — global top bar (home logo + Analyzer / Wiki / Positions), rendered in `layout.tsx`; all pages live under it in a flex-col shell.
+- `src/lib/ibparse.ts` — tolerant IB CSV parser; `src/lib/positions.ts` — `getPositions()` + `getHeldSymbols()`.
 - `src/app/layout.tsx`, `src/app/globals.css` (incl. `.scrollbar-none`/`.scrollbar-thin`), `src/app/icon.svg`.
 - `src/components/Dashboard.tsx` — **client** orchestrator: view/sort state, live
   marks (optimistic), counts, filtering. Owns the app shell (nav + main).
@@ -203,6 +253,8 @@ Notes: Wikipedia class-share tickers use a dot (`BRK.B`); Yahoo uses a dash
 - `src/lib/db.ts` — Prisma client singleton.
 - `src/lib/securities.ts` — `getDashboardData()` (flat rows + marks + bestHarvest), `isBestHarvest()`.
 - `src/lib/harvester.ts` — `computeHarvester()` score + `harvesterColor()` green scale.
+- `src/lib/score.ts` — `computeFinalScore()`: fuses trend + Harvester + Edge (+ IV-rank tilt once ≥20 days, via `ivRankFactor()`) into one **Signal** (0–100) tagged `call` (NC, naked call) / `put` (NP, naked put) / null; `finalColor()` (green=call, indigo=put). Default sort on all screens except Call Model.
+- `src/lib/ivstats.ts` — `computeIvStats()`: IV rank/percentile + sample size from the iv_history series; `IV_RANK_MIN_CONFIDENT` (20) confidence gate.
 - `src/lib/trend.ts` — `computeTrend()`: per-window (1M/3M/6M/1Y) OLS regression → up/down/sideways.
 - `scripts/ingest-history.ts` — daily OHLCV fetch + trend recompute; `scripts/daily.sh` — timer entrypoint.
 - `src/lib/view.ts` — sort keys/labels + `sortRows()` (nulls always last).

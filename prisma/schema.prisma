@@ -92,6 +92,60 @@ model Quote {
   @@map("option_harvest_quotes")
 }
 
+/// User's uploaded IB positions — a snapshot, replaced wholesale on each upload
+/// (POST /api/positions). Best-effort parse of an IB CSV export; `raw` keeps the
+/// original row so nothing is lost. Cross-linked to the dashboard by `symbol`.
+model Position {
+  id          Int      @id @default(autoincrement())
+  symbol      String // underlying ticker (first token of the IB symbol, upper-cased)
+  description String?
+  secType     String?  @map("sec_type")
+  quantity    Decimal?
+  avgCost     Decimal? @map("avg_cost")
+  marketValue Decimal? @map("market_value")
+  currency    String?
+  right       String? // option right: "C" | "P"; null for spot
+  strike      Decimal?
+  expiry      String? // option expiry, YYYY-MM-DD
+  raw         Json? // the original parsed CSV row, by header name
+  uploadId    Int?     @map("upload_id") // which PositionUpload produced this row
+  uploadedAt  DateTime @default(now()) @map("uploaded_at")
+
+  @@index([symbol])
+  @@map("option_harvest_positions")
+}
+
+/// Every uploaded IB CSV is kept here (the raw file), so the upload history
+/// survives and a file can be re-imported. The current positions are the parse
+/// of the most recent upload.
+model PositionUpload {
+  id         Int      @id @default(autoincrement())
+  filename   String?
+  content    String   @db.Text // the raw CSV
+  rowCount   Int      @map("row_count") // positions parsed from it
+  uploadedAt DateTime @default(now()) @map("uploaded_at")
+
+  @@map("option_harvest_position_uploads")
+}
+
+/// Daily IV snapshot history — appended every ingest so we can compute IV
+/// rank/percentile and (later) a premium-aware backtest. We have no other source
+/// of historical IV: only today's snapshot lives in Quote, so this table is the
+/// only way the IV time series accumulates. Keyed by ingest date, idempotent.
+model IvHistory {
+  ticker        String
+  date          DateTime @db.Date
+  ivPct         Decimal? @map("iv_pct")
+  ivDte         Int?     @map("iv_dte")
+  weeklyBuckets Int?     @map("weekly_buckets")
+  price         Decimal?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@id([ticker, date])
+  @@index([ticker, date])
+  @@map("option_harvest_iv_history")
+}
+
 /// Δ0.30 covered-call model output, recomputed daily by scripts/predict-cc.py.
 /// Stored (not derived at read time) because it must match the frozen prediction
 /// archive exactly — see docs/cc-target-strategy.md §8. The web reads `eScore`.

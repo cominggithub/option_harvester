@@ -74,11 +74,20 @@ type Constituent = {
   sector: string;
   subIndustry: string | null;
   type: "stock" | "etf";
+  source?: "sp" | "etf" | "position"; // "position" = pulled from the user's holdings
+};
+
+// Bucket for held instruments that aren't in the S&P 500 / curated ETF universe.
+const OFF_INDEX_SECTOR = "Off-Index";
+
+// Map held tickers whose IB symbol differs from Yahoo's (e.g. non-US listings).
+const YF_ALIAS: Record<string, string> = {
+  UBSG: "UBSG.SW", // UBS Group AG, SIX Swiss Exchange
 };
 
 // Wikipedia lists class shares with a dot (BRK.B); Yahoo uses a dash (BRK-B).
 function toYahooSymbol(ticker: string): string {
-  return ticker.replace(/\./g, "-");
+  return YF_ALIAS[ticker.toUpperCase()] ?? ticker.replace(/\./g, "-");
 }
 
 async function scrapeConstituents(): Promise<Constituent[]> {
@@ -106,6 +115,9 @@ async function scrapeConstituents(): Promise<Constituent[]> {
 }
 
 type Enriched = {
+  name: string | null; // Yahoo short/long name (used for position-sourced tickers)
+  type: "stock" | "etf"; // from Yahoo quoteType
+  yahooSector: string | null; // assetProfile sector (kept as sub-industry for off-index)
   description: string | null;
   price: number | null;
   marketCap: bigint | null;
@@ -122,12 +134,14 @@ async function enrich(yahooSymbol: string, nowMs: number): Promise<Enriched> {
   const q = await yf.quote(yahooSymbol);
   let description: string | null = null;
   let nextEarnings: Date | null = null;
+  let yahooSector: string | null = null;
   try {
     // assetProfile (description) + calendarEvents (earnings date) in one call.
     const qs = await yf.quoteSummary(yahooSymbol, {
       modules: ["assetProfile", "calendarEvents"],
     });
     description = qs.assetProfile?.longBusinessSummary ?? null;
+    yahooSector = qs.assetProfile?.sector ?? null;
     const ed = qs.calendarEvents?.earnings?.earningsDate;
     if (Array.isArray(ed) && ed.length) {
       const d = ed[0] instanceof Date ? ed[0] : new Date(ed[0] as unknown as string);
@@ -138,6 +152,9 @@ async function enrich(yahooSymbol: string, nowMs: number): Promise<Enriched> {
   }
   const iv = await getAtmIv(yf, yahooSymbol, nowMs);
   return {
+    name: q.shortName ?? q.longName ?? null,
+    type: q.quoteType === "ETF" ? "etf" : "stock",
+    yahooSector,
     description,
     price: q.regularMarketPrice ?? null,
     marketCap: q.marketCap != null ? BigInt(Math.round(q.marketCap)) : null,
@@ -149,6 +166,21 @@ async function enrich(yahooSymbol: string, nowMs: number): Promise<Enriched> {
     nextEarnings,
     currency: q.currency ?? "USD",
   };
+}
+
+// Held instruments (from uploaded IB positions) that aren't already in the
+// S&P 500 / ETF universe — so the analyzer covers everything the user trades.
+async function getPositionConstituents(existing: Set<string>): Promise<Constituent[]> {
+  const rows = await prisma.position.findMany({ select: { symbol: true } });
+  const seen = new Set<string>();
+  const out: Constituent[] = [];
+  for (const r of rows) {
+    const t = r.symbol.toUpperCase();
+    if (existing.has(t) || seen.has(t)) continue;
+    seen.add(t);
+    out.push({ ticker: t, name: t, sector: OFF_INDEX_SECTOR, subIndustry: null, type: "stock", source: "position" });
+  }
+  return out;
 }
 
 async function runPool<T>(items: T[], worker: (item: T) => Promise<void>) {
@@ -175,31 +207,49 @@ async function main() {
       subIndustry: null,
       type: "etf",
     }));
-    const universe = [...stocks, ...etfs];
+    const base = [...stocks, ...etfs];
+    const existing = new Set(base.map((c) => c.ticker.toUpperCase()));
+    const positions = await getPositionConstituents(existing);
+    const universe = [...base, ...positions];
     const nowMs = Date.now();
-    console.log(`Ingesting ${stocks.length} S&P 500 stocks + ${etfs.length} ETFs (incl. IV)...`);
+    // IV-history rows are keyed by the ingest's local calendar date (one
+    // row/ticker/day, idempotent across same-day re-runs). Build UTC-midnight of
+    // the LOCAL date so Prisma's @db.Date stores the intended day (not the prior
+    // UTC day, which a local-midnight Date would map to in GMT+8).
+    const n = new Date(nowMs);
+    const ivDate = new Date(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate()));
+    console.log(
+      `Ingesting ${stocks.length} S&P 500 stocks + ${etfs.length} ETFs + ${positions.length} held off-index (incl. IV)...`,
+    );
 
     await runPool(universe, async (c) => {
       const yahooSymbol = toYahooSymbol(c.ticker);
       try {
         const e = await enrich(yahooSymbol, nowMs);
+        // For position-sourced tickers we don't have GICS metadata — take name &
+        // type from Yahoo and bucket them under "Off-Index".
+        const isPos = c.source === "position";
+        const name = isPos ? e.name ?? c.ticker : c.name;
+        const sector = isPos ? OFF_INDEX_SECTOR : c.sector;
+        const subIndustry = isPos ? e.yahooSector : c.subIndustry;
+        const type = isPos ? e.type : c.type;
         await prisma.security.upsert({
           where: { ticker: c.ticker },
           create: {
             ticker: c.ticker,
-            name: c.name,
+            name,
             description: e.description,
-            sector: c.sector,
-            subIndustry: c.subIndustry,
-            type: c.type,
+            sector,
+            subIndustry,
+            type,
             isActive: true,
           },
           update: {
-            name: c.name,
+            name,
             description: e.description ?? undefined,
-            sector: c.sector,
-            subIndustry: c.subIndustry,
-            type: c.type,
+            sector,
+            subIndustry,
+            type,
             isActive: true,
           },
         });
@@ -229,6 +279,24 @@ async function main() {
             nextEarnings: e.nextEarnings,
             currency: e.currency,
             asOf: new Date(),
+          },
+        });
+        // Append today's IV snapshot to the rolling history (idempotent per day).
+        await prisma.ivHistory.upsert({
+          where: { ticker_date: { ticker: c.ticker, date: ivDate } },
+          create: {
+            ticker: c.ticker,
+            date: ivDate,
+            ivPct: e.ivPct,
+            ivDte: e.ivDte,
+            weeklyBuckets: e.weeklyBuckets,
+            price: e.price,
+          },
+          update: {
+            ivPct: e.ivPct,
+            ivDte: e.ivDte,
+            weeklyBuckets: e.weeklyBuckets,
+            price: e.price,
           },
         });
         ok++;

@@ -7,6 +7,8 @@ import { TREND_WINDOW_LABEL } from "@/lib/view";
 import type { TrendWindows, WindowTrend, TrendLabel } from "@/lib/trend";
 import { harvesterColor } from "@/lib/harvester";
 import { ccEdgeColor, formatEdge } from "@/lib/ccscore";
+import { finalColor, sideLabel } from "@/lib/score";
+import { IV_RANK_MIN_CONFIDENT, type IvStats } from "@/lib/ivstats";
 import { sectorColor } from "@/lib/sectors";
 import {
   formatChangePct,
@@ -19,9 +21,122 @@ import { StarIcon, TargetIcon, SortArrow, SproutIcon } from "@/components/icons"
 import { Sparkline } from "@/components/Sparkline";
 import { HistoryChart } from "@/components/HistoryChart";
 
-const GRID =
-  "grid-cols-[60px_96px_minmax(160px,1fr)_152px_120px_92px_72px_74px_96px_84px_116px_100px]";
+// Two full literal templates (Tailwind JIT only sees complete class strings).
+// They differ by the 88px Position column inserted after Company.
+const GRID_WITH_POS =
+  "grid-cols-[60px_96px_minmax(140px,1fr)_116px_152px_120px_84px_92px_72px_74px_66px_96px_84px_116px_100px]";
+const GRID_NO_POS =
+  "grid-cols-[60px_96px_minmax(140px,1fr)_152px_120px_84px_92px_72px_74px_66px_96px_84px_116px_100px]";
+const gridClass = (showPositions: boolean) => (showPositions ? GRID_WITH_POS : GRID_NO_POS);
 const PAD = "pl-5 pr-8";
+
+const fmtSigned = (n: number) => (n > 0 ? `+${n}` : `${n}`);
+const signTone = (n: number) =>
+  n < 0 ? "text-negative" : n > 0 ? "text-positive" : "text-ink-muted";
+
+// Abbreviate share counts so a lane stays one tight token: 1500 → 1.5k.
+const compactQty = (n: number): string => {
+  const a = Math.abs(n);
+  if (a >= 1000) return `${(n / 1000).toFixed(a >= 10000 ? 0 : 1).replace(/\.0$/, "")}k`;
+  return `${n}`;
+};
+
+const POS_LANES = ["spot", "call", "put"] as const;
+
+// Three fixed, right-aligned lanes (Spot / Call / Put) — mirrors TrendStrip so the
+// numbers stack into clean vertical columns. Blank ("·") when a lane is empty.
+function PositionCell({ p }: { p: SecurityRow["position"] }) {
+  const tip = p
+    ? `Spot ${p.spot} · Call ${p.call} · Put ${p.put} · ${p.count} leg${p.count === 1 ? "" : "s"} — expand for detail`
+    : undefined;
+  return (
+    <div className="tnum flex items-center justify-end gap-1 text-[11.5px] leading-none" title={tip}>
+      {POS_LANES.map((k) => {
+        const v = p ? p[k] : 0;
+        return (
+          <span key={k} className={`w-[32px] text-right ${v ? "text-ink" : "text-ink-faint/40"}`}>
+            {v ? compactQty(v) : "·"}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+const KIND_LABEL: Record<"spot" | "call" | "put" | "opt", string> = {
+  spot: "Spot",
+  call: "Call",
+  put: "Put",
+  opt: "Option",
+};
+
+// Per-leg detail shown when a held row is expanded.
+function PositionDetail({ p }: { p: NonNullable<SecurityRow["position"]> }) {
+  return (
+    <div className="mb-4">
+      <div className="mb-1.5 flex items-center gap-3 text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
+        <span>Your position · {p.count} leg{p.count === 1 ? "" : "s"}</span>
+        {!!p.spot && <span className={signTone(p.spot)}>{fmtSigned(p.spot)} spot</span>}
+        {!!p.call && <span className={signTone(p.call)}>{fmtSigned(p.call)} call</span>}
+        {!!p.put && <span className={signTone(p.put)}>{fmtSigned(p.put)} put</span>}
+      </div>
+      <div className="overflow-hidden rounded-md border border-line">
+        <table className="w-full max-w-2xl text-[12.5px]">
+          <thead className="bg-surface text-left text-[10px] uppercase tracking-wider text-ink-faint">
+            <tr className="border-b border-line">
+              <th className="px-3 py-1.5 font-medium">Type</th>
+              <th className="px-3 py-1.5 font-medium">Contract</th>
+              <th className="px-3 py-1.5 text-right font-medium">Qty</th>
+              <th className="px-3 py-1.5 text-right font-medium">Strike</th>
+              <th className="px-3 py-1.5 font-medium">Expiry</th>
+              <th className="px-3 py-1.5 text-right font-medium">Avg</th>
+              <th className="px-3 py-1.5 text-right font-medium">Mkt Val</th>
+            </tr>
+          </thead>
+          <tbody className="text-ink-muted">
+            {p.legs.map((l, i) => (
+              <tr key={i} className="border-b border-line last:border-0">
+                <td className="px-3 py-1.5 text-ink">{KIND_LABEL[l.kind]}</td>
+                <td className="tnum px-3 py-1.5 text-[11.5px]">{l.contract}</td>
+                <td className={`tnum px-3 py-1.5 text-right ${l.quantity != null ? signTone(l.quantity) : ""}`}>
+                  {l.quantity != null ? fmtSigned(l.quantity) : "—"}
+                </td>
+                <td className="tnum px-3 py-1.5 text-right">{l.strike ?? "—"}</td>
+                <td className="tnum px-3 py-1.5">{l.expiry ?? "—"}</td>
+                <td className="tnum px-3 py-1.5 text-right">{l.avgCost ?? "—"}</td>
+                <td className="tnum px-3 py-1.5 text-right">
+                  {l.marketValue != null ? Math.round(l.marketValue).toLocaleString("en-US") : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// IV rank cell: the value is dimmed (with a · marker) while the IV history is too
+// short to trust; the tooltip always shows percentile, range, and sample size.
+function IvRankCell({ iv }: { iv: IvStats }) {
+  const tip =
+    iv.rank == null
+      ? `IV rank: building history — ${iv.n} day${iv.n === 1 ? "" : "s"} so far`
+      : `IV rank ${iv.rank}% · percentile ${iv.percentile}% · range ${iv.min}–${iv.max}% · ${iv.n} days`;
+  if (iv.rank == null)
+    return (
+      <span className="tnum text-right text-[13px] text-ink-faint" title={tip}>
+        —
+      </span>
+    );
+  const thin = iv.n < IV_RANK_MIN_CONFIDENT;
+  return (
+    <span className={`tnum text-right text-[13px] ${thin ? "text-ink-faint" : "text-ink"}`} title={tip}>
+      {iv.rank}
+      {thin && <sup className="ml-px text-[8px]">·</sup>}
+    </span>
+  );
+}
 
 const TREND_STYLE: Record<TrendLabel, { cls: string; glyph: string }> = {
   up: { cls: "bg-[#e3f1e9] text-positive", glyph: "↑" },
@@ -65,6 +180,7 @@ type Props = {
   sortDir: SortDir;
   trendWindow: TrendWindowKey;
   showSector: boolean;
+  showPositions: boolean;
   onSort: (key: SortKey) => void;
   onToggle: (ticker: string, field: "favorite" | "target") => void;
   emptyMessage: string;
@@ -106,25 +222,42 @@ export function DataTable({
   sortDir,
   trendWindow,
   showSector,
+  showPositions,
   onSort,
   onToggle,
   emptyMessage,
 }: Props) {
   const [openTicker, setOpenTicker] = useState<string | null>(null);
+  const grid = gridClass(showPositions);
   return (
     <div className="w-full">
       <div
-        className={`sticky top-0 z-10 grid ${GRID} ${PAD} items-center border-b border-line bg-surface py-2.5`}
+        className={`sticky top-0 z-10 grid ${grid} ${PAD} items-center border-b border-line bg-surface py-2.5`}
       >
         <span className="text-[11px] font-medium uppercase tracking-wider text-ink-faint">
           Mark
         </span>
-        <span className="text-[11px] font-medium uppercase tracking-wider text-ink-faint">
-          Symbol
-        </span>
-        <span className="text-[11px] font-medium uppercase tracking-wider text-ink-faint">
-          Company
-        </span>
+        <HeadCell label="Symbol" col="ticker" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+        <HeadCell label="Company" col="name" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+        {showPositions && (
+          <button
+            type="button"
+            onClick={() => onSort("position")}
+            title="Your position — net Spot / Call / Put contracts. Click to sort; expand a row for detail."
+            className="flex items-center justify-end gap-1"
+          >
+            {(["S", "C", "P"] as const).map((l) => (
+              <span
+                key={l}
+                className={`w-[32px] text-center text-[9px] font-medium uppercase tracking-wider ${
+                  sortKey === "position" ? "text-ink underline" : "text-ink-faint"
+                }`}
+              >
+                {l}
+              </span>
+            ))}
+          </button>
+        )}
         <button
           type="button"
           onClick={() => onSort("trend")}
@@ -143,13 +276,29 @@ export function DataTable({
           ))}
           <SortArrow dir={sortKey === "trend" ? sortDir : null} />
         </button>
-        <span className="text-[11px] font-medium uppercase tracking-wider text-ink-faint">
-          {TREND_WINDOW_LABEL[trendWindow]} chart
-        </span>
+        <div className="flex items-center gap-2" title="6-month & 1-year price line — click to sort by that window's slope">
+          {([["slope6m", "6M"], ["slope1y", "1Y"]] as const).map(([k, lbl]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => onSort(k)}
+              className={`flex w-[52px] items-center justify-center gap-0.5 text-[9px] font-medium uppercase tracking-wider transition-colors hover:text-ink ${
+                sortKey === k ? "text-ink" : "text-ink-faint"
+              }`}
+            >
+              <span>{lbl}</span>
+              <SortArrow dir={sortKey === k ? sortDir : null} />
+            </button>
+          ))}
+        </div>
+        <HeadCell label="Signal" col="final" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
         <HeadCell label="Harvester" col="harvesterScore" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
         <HeadCell label="Edge" col="ccScore" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
         <div className="flex justify-end">
           <HeadCell label="IV" col="ivPct" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
+        </div>
+        <div className="flex justify-end" title="IV Rank: where current IV sits in its own trailing range (0–100). Builds as IV history accumulates.">
+          <HeadCell label="IV Rk" col="ivRank" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
         </div>
         <div className="flex justify-end">
           <HeadCell label="Last" col="price" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
@@ -174,6 +323,8 @@ export function DataTable({
               key={s.ticker}
               s={s}
               showSector={showSector}
+              showPositions={showPositions}
+              grid={grid}
               onToggle={onToggle}
               trendWindow={trendWindow}
               expanded={openTicker === s.ticker}
@@ -191,6 +342,8 @@ export function DataTable({
 function Row({
   s,
   showSector,
+  showPositions,
+  grid,
   onToggle,
   trendWindow,
   expanded,
@@ -198,6 +351,8 @@ function Row({
 }: {
   s: SecurityRow;
   showSector: boolean;
+  showPositions: boolean;
+  grid: string;
   onToggle: (ticker: string, field: "favorite" | "target") => void;
   trendWindow: TrendWindowKey;
   expanded: boolean;
@@ -205,6 +360,7 @@ function Row({
 }) {
   const hc = harvesterColor(s.harvesterScore);
   const ec = ccEdgeColor(s.ccScore);
+  const fc = finalColor(s.final.side, s.final.score);
   const cap = formatMarketCapParts(s.marketCap);
   const chgTone =
     s.changePct == null
@@ -221,7 +377,7 @@ function Row({
       onClick={onToggleExpand}
       aria-expanded={expanded}
       title={`${expanded ? "Hide" : "Show"} price history for ${s.ticker}`}
-      className={`grid ${GRID} ${PAD} cursor-pointer items-center border-b border-line py-1.5 transition-colors hover:bg-canvas ${
+      className={`grid ${grid} ${PAD} cursor-pointer items-center border-b border-line py-1.5 transition-colors hover:bg-canvas ${
         expanded ? "bg-canvas" : ""
       }`}
       style={s.bestHarvest ? { boxShadow: "inset 3px 0 0 #1f7a44" } : undefined}
@@ -274,10 +430,15 @@ function Row({
             ETF
           </span>
         )}
+        {showPositions && s.held && (
+          <span className="text-[10px] leading-none text-accent" title="Held in your IB positions">
+            ◆
+          </span>
+        )}
         {s.downtrend && (
           <span
             className="text-[11px] leading-none text-negative"
-            title="Sustained downtrend (1Y down, or 3M & 6M both down) — covered-call tailwind / long-side risk"
+            title="Sustained downtrend (1Y down, or 3M & 6M both down) — naked-call tailwind / long-side risk"
           >
             ▾
           </span>
@@ -285,7 +446,7 @@ function Row({
         {s.ccEvent && (
           <span
             className="text-[10px] leading-none text-[#b8860b]"
-            title="Earnings report inside the 35-DTE window — gap risk; excluded from CC Model targets"
+            title="Earnings report inside the 35-DTE window — gap risk; excluded from Call Model targets"
           >
             ⚡
           </span>
@@ -295,7 +456,7 @@ function Row({
       <div className="flex min-w-0 items-baseline gap-2 pr-6">
         <span className="shrink-0 text-[13px] text-ink">{s.name}</span>
         {s.bestHarvest && (
-          <span className="shrink-0" title="Best Harvest: $20–150, IV > 50%, full weekly CC ladder">
+          <span className="shrink-0" title="Best Harvest: $20–150, IV > 50%, full weekly call ladder">
             <SproutIcon />
           </span>
         )}
@@ -306,14 +467,30 @@ function Row({
         )}
       </div>
 
+      {showPositions && <PositionCell p={s.position} />}
+
       <TrendStrip w={s.trend} />
 
-      <div className="flex items-center">
-        <Sparkline
-          series={s.spark}
-          window={trendWindow}
-          label={s.trend?.[trendWindow]?.label ?? null}
-        />
+      <div className="flex items-center gap-2">
+        <Sparkline series={s.spark} window="m6" label={s.trend?.m6?.label ?? null} w={52} h={22} />
+        <Sparkline series={s.spark} window="y1" label={s.trend?.y1?.label ?? null} w={52} h={22} />
+      </div>
+
+      <div>
+        {s.final.side == null || s.final.score == null ? (
+          <span className="text-[13px] text-ink-faint">—</span>
+        ) : (
+          <span
+            className="tnum inline-flex items-center gap-1 rounded px-1.5 text-[12.5px] font-semibold leading-5"
+            style={{ background: fc.bg, color: fc.fg }}
+            title={s.final.reason}
+          >
+            <span className="text-[9px] font-bold uppercase tracking-wide opacity-80">
+              {sideLabel(s.final.side)}
+            </span>
+            {s.final.score}
+          </span>
+        )}
       </div>
 
       <div>
@@ -349,6 +526,7 @@ function Row({
       </div>
 
       <span className="tnum text-right text-[13px] text-ink">{formatIv(s.ivPct)}</span>
+      <IvRankCell iv={s.ivStats} />
       <span className="tnum text-right text-[13px] text-ink">{formatPrice(s.price)}</span>
       <span className={`tnum text-right text-[13px] ${chgTone}`}>{formatChangePct(s.changePct)}</span>
       <span className="tnum text-right text-[13px] text-ink">
@@ -359,6 +537,7 @@ function Row({
     </li>
     {expanded && (
       <li className="border-b border-line bg-canvas px-8 py-3">
+        {showPositions && s.position && <PositionDetail p={s.position} />}
         <HistoryChart s={s} initialWindow={trendWindow} />
       </li>
     )}

@@ -1,4 +1,4 @@
-// CC Edge — the Δ0.30 covered-call model's expected-capture score (E), in % of
+// Call Edge — the Δ0.30 naked-call model's expected-capture score (E), in % of
 // spot per 35-DTE trade. Computed daily by scripts/predict-cc.py and stored in
 // option_harvest_cc_scores (see docs/cc-target-strategy.md §8); the web only
 // reads + renders it. Positive = net rent after the cost of getting stopped.

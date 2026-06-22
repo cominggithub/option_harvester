@@ -1,7 +1,7 @@
 # 跨週期總經防禦：全現金流動性期權收租策略系統
 
 > **這是 option_harvester 這個 web 存在的理由 (the product rationale).**
-> The dashboard exists to **screen for CC targets** under this strategy.
+> The dashboard exists to **screen for naked-call targets** under this strategy.
 
 > **核心戰略思想：**
 > 「對弱勢產業用 CC 打游擊，對優質資產用 Put 築防線。」
@@ -71,18 +71,19 @@
 
 ## How this maps to the dashboard (build implications)
 
-The screen must surface **CC targets** = the right side of this strategy:
+The screen must surface **naked-call targets** = the right side of this strategy
+(the calls are sold naked, all-cash — no spot):
 
-1. **ETF-level only** for the CC game — "拒絕個股跳空風險" (reject single-stock gap risk).
+1. **ETF-level only** for the naked-call game — "拒絕個股跳空風險" (reject single-stock gap risk).
    → The current universe (S&P 500 single stocks + 6 broad ETFs) is the **wrong** universe.
    We need a curated set of ~20–30 **liquid sector / thematic ETFs** (the weak-sector
-   candidates), and the CC-target screen should default to `type = ETF`.
+   candidates), and the naked-call screen should default to `type = ETF`.
 2. **Bearish / downtrend** — "基本面弱勢、技術面空頭排列（陰跌、毫無向上動能）".
    → Use the multi-window trend (esp. 3M/6M/1Y = "down") to find 陰跌 names.
 3. **Liquid weekly options** — needs the weekly expiry ladder for entry/stop management.
 4. **Diversification** — 20–30 uncorrelated weak sector ETFs (favorites/targets help track the basket).
-5. **Panic pivot (CSP)** — a separate screen for QQQ/SPY-class quality at high IV (Deep-OTM puts,
-   Delta 0.10–0.15). Distinct from the CC-target screen.
+5. **Panic pivot (naked puts)** — a separate screen for QQQ/SPY-class quality at high IV (Deep-OTM puts,
+   Delta 0.10–0.15). Distinct from the naked-call screen.
 
 So "Best Harvest" (generic high-IV + weekly ladder, all stocks) is **not** the strategy screen.
-The intended primary screen is **CC Targets = downtrending liquid sector ETFs**.
+The intended primary screen is **Naked Call = downtrending liquid sector ETFs**.

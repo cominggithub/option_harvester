@@ -1,8 +1,11 @@
 import { prisma } from "@/lib/db";
 import { computeHarvester } from "@/lib/harvester";
+import { computeFinalScore, type FinalScore } from "@/lib/score";
+import { computeIvStats, type IvStats } from "@/lib/ivstats";
+import { getPositionSummaries, type PositionSummary } from "@/lib/positions";
 import type { TrendWindows } from "@/lib/trend";
 
-// Covered-call "Best Harvest" qualification (rule from the brief):
+// Naked-call "Best Harvest" qualification (rule from the brief):
 //   spot price $20–150, IV > 50%, and all six {0,7,14,21,28,35} DTE expiries.
 const BEST_PRICE_MIN = 20;
 const BEST_PRICE_MAX = 150;
@@ -30,9 +33,9 @@ export type SecurityRow = {
   spark: number[] | null; // downsampled ~1Y daily closes for the inline sparkline
   pctFromHigh: number | null;
   downtrend: boolean; // sustained bearish (1Y down, or 3M & 6M both down)
-  ccTarget: boolean; // strategy screen: weak liquid ETF for covered calls
-  cspEligible: boolean; // strategy screen: quality/index name for panic cash-secured puts
-  // Δ0.30 CC model (option_harvest_cc_scores, computed by scripts/predict-cc.py):
+  ccTarget: boolean; // strategy screen: weak liquid ETF for naked calls
+  cspEligible: boolean; // strategy screen: quality/index name for panic naked puts
+  // Δ0.30 naked-call model (option_harvest_cc_scores, computed by scripts/predict-cc.py):
   ccScore: number | null; // E = expected capture, % of spot per 35-DTE trade
   ccPAssign: number | null; // P(finish > strike), % (calibrated)
   ccPStop: number | null; // P(touch 2.5x-premium stop), % (calibrated)
@@ -42,14 +45,18 @@ export type SecurityRow = {
   ccIvRv: number | null; // IV / RV ratio
   ccTargetModel: boolean; // passes the doctrine filter (downtrend ∩ liquid ∩ $20-150 ∩ no earnings in window)
   ccEvent: boolean; // earnings report inside the DTE window (gap risk)
+  final: FinalScore; // fused read-time verdict: side (call/put/—) + 0–100 score
+  ivStats: IvStats; // IV rank/percentile from the accumulating iv_history series
+  held: boolean; // user holds this underlying (from uploaded IB positions)
+  position: PositionSummary | null; // aggregate of the user's holdings on this underlying
 };
 
-// CC target (per docs/strategy.md): ETF-level only, weak/陰跌 (no upward
+// Naked-call target (per docs/strategy.md): ETF-level only, weak/陰跌 (no upward
 // momentum), with a liquid weekly-option ladder to manage entries and stops.
 const CC_MIN_WEEKLY_BUCKETS = 4;
 const WEAK_SLOPE = -1; // sideways with slope below this = grinding-weak (陰跌)
 
-// CSP target (panic pivot): quality / index names — broad index ETFs or
+// Naked-put target (panic pivot): quality / index names — broad index ETFs or
 // mega-cap blue chips — liquid enough for Deep-OTM puts.
 const CSP_INDEX_ETFS = new Set(["SPY", "QQQ", "VOO", "VTI", "IWM", "DIA"]);
 const CSP_MIN_MARKETCAP = 1_000_000_000_000; // $1T
@@ -65,7 +72,7 @@ function isDowntrend(t: TrendWindows | null): boolean {
   return t.y1?.label === "down" || (t.m3?.label === "down" && t.m6?.label === "down");
 }
 
-// Weak / no upward momentum — the (looser) CC-target trend gate. A name still in
+// Weak / no upward momentum — the (looser) naked-call-target trend gate. A name still in
 // a 1-year uptrend is never "weak", even if it's consolidating short-term.
 function isWeak(t: TrendWindows | null): boolean {
   if (!t) return false;
@@ -125,13 +132,33 @@ async function getSparklines(): Promise<Map<string, number[]>> {
   return map;
 }
 
+// Per-ticker IV series (last ~1Y) for IV rank/percentile. One grouped query.
+async function getIvHistory(): Promise<Map<string, number[]>> {
+  const raw = await prisma.$queryRaw<{ ticker: string; ivs: unknown[] }[]>`
+    SELECT ticker, array_agg(iv_pct ORDER BY date) AS ivs
+    FROM option_harvest_iv_history
+    WHERE date >= CURRENT_DATE - INTERVAL '370 days' AND iv_pct IS NOT NULL
+    GROUP BY ticker
+  `;
+  const map = new Map<string, number[]>();
+  for (const r of raw) {
+    const ivs = (r.ivs as (string | number | null)[])
+      .map((v) => (v == null ? NaN : Number(v)))
+      .filter((v) => Number.isFinite(v));
+    if (ivs.length) map.set(r.ticker, ivs);
+  }
+  return map;
+}
+
 export async function getDashboardData(): Promise<DashboardData> {
-  const [rows, sparkMap] = await Promise.all([
+  const [rows, sparkMap, ivHistMap, posMap] = await Promise.all([
     prisma.security.findMany({
       where: { isActive: true },
       include: { quote: true, mark: true, trend: true, ccScore: true },
     }),
     getSparklines(),
+    getIvHistory(),
+    getPositionSummaries(),
   ]);
 
   let asOf: Date | null = null;
@@ -175,6 +202,10 @@ export async function getDashboardData(): Promise<DashboardData> {
       ccIvRv: cc?.ivRv != null ? Number(cc.ivRv) : null,
       ccTargetModel: cc?.isTarget ?? false,
       ccEvent: cc?.eventFlag ?? false,
+      final: { side: null, score: null, reason: "" }, // computed below
+      ivStats: computeIvStats(ivHistMap.get(r.ticker) ?? [], ivPct),
+      held: posMap.has(r.ticker.toUpperCase()),
+      position: posMap.get(r.ticker.toUpperCase()) ?? null,
     };
   });
 
@@ -186,6 +217,15 @@ export async function getDashboardData(): Promise<DashboardData> {
       liquid &&
       (CSP_INDEX_ETFS.has(s.ticker) ||
         (s.type === "stock" && (s.marketCap ?? 0) >= CSP_MIN_MARKETCAP));
+    s.final = computeFinalScore({
+      harvesterScore: s.harvesterScore,
+      edge: s.ccScore,
+      downtrend: s.downtrend,
+      ccTarget: s.ccTarget,
+      cspEligible: s.cspEligible,
+      trend: s.trend,
+      ivStats: s.ivStats,
+    });
   }
 
   return {

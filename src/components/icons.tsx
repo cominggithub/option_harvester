@@ -14,7 +14,7 @@ export function StarIcon({ filled }: { filled: boolean }) {
   );
 }
 
-// Covered-call target: a bullseye.
+// Naked-call target: a bullseye.
 export function TargetIcon({ filled }: { filled: boolean }) {
   const c = filled ? "#1f7a44" : "currentColor";
   return (
