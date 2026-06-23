@@ -8,6 +8,7 @@ const LINKS = [
   { href: "/wiki", label: "Wiki" },
   { href: "/upload", label: "IB Upload" },
   { href: "/positions", label: "Positions" },
+  { href: "/transactions", label: "Realized P/L" },
 ];
 
 export function TopNav() {

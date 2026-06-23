@@ -59,7 +59,7 @@ const VIEW_META: Record<string, { title: string; blurb: string; empty: string }>
   },
   targets: {
     title: "Option Targets",
-    blurb: "Names you've flagged as naked-call targets.",
+    blurb: "Names you've flagged as targets. Rate conviction 1–3 ★ per side; switch the NC (call) / NP (put) view to group by that rating. ◆ Held on top floats names you already hold.",
     empty: "No option targets yet — tap the bullseye on any row to add one.",
   },
   all: {
@@ -68,6 +68,11 @@ const VIEW_META: Record<string, { title: string; blurb: string; empty: string }>
     empty: "No securities.",
   },
 };
+
+// A row qualifies as an Option Target if you've flagged it (bullseye) OR you
+// already hold an option position (call/put leg) in it.
+const isOptionTarget = (r: SecurityRow): boolean =>
+  r.target || (!!r.position && (r.position.call !== 0 || r.position.put !== 0));
 
 const TREND_WINDOWS: TrendWindowKey[] = ["m1", "m3", "m6", "y1"];
 const TREND_DIRS: { id: TrendDir; label: string }[] = [
@@ -93,11 +98,16 @@ export function Dashboard({ securities, asOf }: Props) {
   const [showPositions, setShowPositions] = useState(true);
   // Filter rows by whether the user holds a position: all / only-held / hide-held.
   const [heldFilter, setHeldFilter] = useState<"all" | "held" | "unheld">("all");
+  // Option Targets screen: Call (NC) vs Put (NP) sub-view, and a toggle to float
+  // targets you already hold a position in to the top.
+  const [targetSide, setTargetSide] = useState<"call" | "put">("call");
+  const [heldTop, setHeldTop] = useState(false);
+  const ratingCol: SortKey = targetSide === "call" ? "ratingCall" : "ratingPut";
 
-  const [marks, setMarks] = useState<Record<string, { favorite: boolean; target: boolean }>>(
+  const [marks, setMarks] = useState<Record<string, { favorite: boolean; target: boolean; rating: number }>>(
     () =>
       Object.fromEntries(
-        securities.map((s) => [s.ticker, { favorite: s.favorite, target: s.target }]),
+        securities.map((s) => [s.ticker, { favorite: s.favorite, target: s.target, rating: s.rating }]),
       ),
   );
 
@@ -107,6 +117,7 @@ export function Dashboard({ securities, asOf }: Props) {
         ...s,
         favorite: marks[s.ticker]?.favorite ?? false,
         target: marks[s.ticker]?.target ?? false,
+        rating: marks[s.ticker]?.rating ?? 0,
       })),
     [securities, marks],
   );
@@ -127,7 +138,7 @@ export function Dashboard({ securities, asOf }: Props) {
       { id: "best" as ViewId, label: "Best Harvest", count: rows.filter((r) => r.bestHarvest).length },
       { id: "holdings" as ViewId, label: "Holdings", count: rows.filter((r) => r.held).length },
       { id: "favorites" as ViewId, label: "Favorites", count: rows.filter((r) => r.favorite).length },
-      { id: "targets" as ViewId, label: "Option Targets", count: rows.filter((r) => r.target).length },
+      { id: "targets" as ViewId, label: "Option Targets", count: rows.filter(isOptionTarget).length },
       { id: "all" as ViewId, label: "All Securities", count: rows.length },
     ],
     [rows],
@@ -149,11 +160,17 @@ export function Dashboard({ securities, asOf }: Props) {
                 : view === "favorites"
                 ? r.favorite
                 : view === "targets"
-                  ? r.target
+                  ? isOptionTarget(r)
                   : view === "all"
                     ? true
                     : r.sector === view;
       if (!inView) return false;
+      // Targets screen splits into a Call (NC) and a Put (NP) view. Unrated
+      // targets (0) show in both so a side can still be assigned.
+      if (view === "targets") {
+        if (targetSide === "call" && r.rating < 0) return false;
+        if (targetSide === "put" && r.rating > 0) return false;
+      }
       if (trendDir !== "all" && r.trend?.[trendWindow]?.label !== trendDir) return false;
       // Price bounds — a name with no price is excluded once any bound is set.
       if (priceMin != null && !(r.price != null && r.price >= priceMin)) return false;
@@ -166,8 +183,14 @@ export function Dashboard({ securities, asOf }: Props) {
       if (heldFilter === "unheld" && r.held) return false;
       return true;
     });
-    return sortRows(filtered, sortKey, sortDir, trendWindow);
-  }, [rows, view, sortKey, sortDir, trendWindow, trendDir, priceMin, priceMax, down6m, down1y, heldFilter]);
+    const sorted = sortRows(filtered, sortKey, sortDir, trendWindow);
+    // "Held on top" (targets screen): stable-partition held rows above the rest,
+    // preserving the sorted order within each group.
+    if (view === "targets" && heldTop) {
+      return [...sorted.filter((r) => r.held), ...sorted.filter((r) => !r.held)];
+    }
+    return sorted;
+  }, [rows, view, sortKey, sortDir, trendWindow, trendDir, priceMin, priceMax, down6m, down1y, heldFilter, targetSide, heldTop]);
 
   const onSort = useCallback(
     (key: SortKey) => {
@@ -183,21 +206,40 @@ export function Dashboard({ securities, asOf }: Props) {
 
   const onSelectView = useCallback((id: ViewId) => {
     setView(id);
-    // Each screen gets its natural default sort. The model screen keeps Edge;
-    // everything else leads with the fused Signal score.
-    setSortKey(id === "model" ? "ccScore" : "final");
+    // Each screen gets its natural default sort: Call Model leads with Edge,
+    // Option Targets with your rating (Call sub-view first), else the fused Signal.
+    if (id === "targets") setTargetSide("call");
+    setSortKey(id === "model" ? "ccScore" : id === "targets" ? "ratingCall" : "final");
     setSortDir("desc");
   }, []);
 
   const onToggle = useCallback(
     (ticker: string, field: "favorite" | "target") => {
-      const prev = marks[ticker] ?? { favorite: false, target: false };
+      const prev = marks[ticker] ?? { favorite: false, target: false, rating: 0 };
       const next = { ...prev, [field]: !prev[field] };
       setMarks((m) => ({ ...m, [ticker]: next }));
       fetch("/api/marks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticker, [field]: next[field] }),
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error(String(res.status));
+        })
+        .catch(() => setMarks((m) => ({ ...m, [ticker]: prev })));
+    },
+    [marks],
+  );
+
+  const onRate = useCallback(
+    (ticker: string, rating: number) => {
+      const prev = marks[ticker] ?? { favorite: false, target: false, rating: 0 };
+      const next = { ...prev, rating };
+      setMarks((m) => ({ ...m, [ticker]: next }));
+      fetch("/api/marks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticker, rating }),
       })
         .then((res) => {
           if (!res.ok) throw new Error(String(res.status));
@@ -238,6 +280,55 @@ export function Dashboard({ securities, asOf }: Props) {
             </span>
           </div>
           <p className="mt-1 max-w-3xl text-[12.5px] leading-snug text-ink-muted">{meta.blurb}</p>
+
+          {/* Option Targets sub-views: Call (NC) / Put (NP) grouping + held-on-top. */}
+          {view === "targets" && (
+            <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-[12px]">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-faint">
+                Rating view
+              </span>
+              <div className="flex overflow-hidden rounded-md border border-line">
+                {(
+                  [
+                    ["call", "NC · Call"],
+                    ["put", "NP · Put"],
+                  ] as const
+                ).map(([id, label], i) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => {
+                      setTargetSide(id);
+                      setSortKey(id === "call" ? "ratingCall" : "ratingPut");
+                      setSortDir("desc");
+                    }}
+                    className={`px-2.5 py-1 ${i > 0 ? "border-l border-line" : ""} ${
+                      targetSide === id
+                        ? id === "call"
+                          ? "bg-emerald-600 text-white"
+                          : "bg-indigo-500 text-white"
+                        : "bg-surface text-ink-muted hover:bg-canvas"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                aria-pressed={heldTop}
+                onClick={() => setHeldTop((v) => !v)}
+                title="Float targets you already hold a position in to the top"
+                className={`rounded-md border px-2.5 py-1 ${
+                  heldTop
+                    ? "border-accent bg-accent text-white"
+                    : "border-line bg-surface text-ink-muted hover:bg-canvas"
+                }`}
+              >
+                ◆ Held on top
+              </button>
+            </div>
+          )}
 
           {/* Trend filter: pick the window, then a direction to filter, sort by its slope. */}
           <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-[12px]">
@@ -429,8 +520,11 @@ export function Dashboard({ securities, asOf }: Props) {
             trendWindow={trendWindow}
             showSector={isSpecial}
             showPositions={showPositions}
+            showRating={view === "targets"}
+            ratingCol={ratingCol}
             onSort={onSort}
             onToggle={onToggle}
+            onRate={onRate}
             emptyMessage={meta.empty}
           />
         </div>

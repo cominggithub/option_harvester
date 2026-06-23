@@ -65,6 +65,7 @@ model Mark {
   ticker    String   @id
   favorite  Boolean  @default(false)
   target    Boolean  @default(false)
+  rating    Int      @default(0) // option-target conviction: +1..+3 call, -1..-3 put, 0 = unrated
   updatedAt DateTime @updatedAt @map("updated_at")
 
   security Security @relation(fields: [ticker], references: [ticker], onDelete: Cascade)
@@ -126,6 +127,44 @@ model PositionUpload {
   uploadedAt DateTime @default(now()) @map("uploaded_at")
 
   @@map("option_harvest_position_uploads")
+}
+
+/// User's uploaded IB transaction history (trades Flex Query, e.g.
+/// U<acct>.TRANSACTIONS.YTD) — replaced wholesale on each upload. The realized-P/L
+/// source. `raw` keeps the original row so nothing is lost across format variants.
+model Transaction {
+  id          Int      @id @default(autoincrement())
+  symbol      String // underlying ticker
+  description String? // full instrument when it's an option
+  assetClass  String?  @map("asset_class")
+  tradeDate   String?  @map("trade_date") // YYYY-MM-DD
+  right       String? // option right: "C" | "P"; null for spot
+  strike      Decimal?
+  expiry      String?
+  quantity    Decimal?
+  price       Decimal?
+  proceeds    Decimal?
+  commission  Decimal?
+  realizedPnl Decimal? @map("realized_pnl")
+  currency    String?
+  raw         Json?
+  uploadId    Int?     @map("upload_id")
+  uploadedAt  DateTime @default(now()) @map("uploaded_at")
+
+  @@index([symbol])
+  @@index([tradeDate])
+  @@map("option_harvest_transactions")
+}
+
+/// Every uploaded transactions file is kept (raw) for history + re-import.
+model TransactionUpload {
+  id         Int      @id @default(autoincrement())
+  filename   String?
+  content    String   @db.Text
+  rowCount   Int      @map("row_count")
+  uploadedAt DateTime @default(now()) @map("uploaded_at")
+
+  @@map("option_harvest_transaction_uploads")
 }
 
 /// Daily IV snapshot history — appended every ingest so we can compute IV

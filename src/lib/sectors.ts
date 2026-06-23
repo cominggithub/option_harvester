@@ -12,10 +12,15 @@ const SECTOR_COLORS: Record<string, string> = {
   Materials: "#8a6d52",
   Utilities: "#4a7c9e",
   "Real Estate": "#9a5f7a",
+  // Non-GICS ETF buckets (broad/foreign/bond/commodity funds).
+  "Broad Market": "#46505c",
+  International: "#6a7b8c",
+  Commodities: "#9c7b3a",
+  "Fixed Income": "#5f6b7a",
   "ETF / Funds": "#3a3f47",
 };
 
-// Canonical GICS order; "ETF / Funds" pinned last.
+// Canonical GICS order, then the ETF-only buckets; "ETF / Funds" pinned last.
 export const SECTOR_ORDER = [
   "Information Technology",
   "Communication Services",
@@ -28,6 +33,10 @@ export const SECTOR_ORDER = [
   "Materials",
   "Utilities",
   "Real Estate",
+  "Broad Market",
+  "International",
+  "Commodities",
+  "Fixed Income",
   "ETF / Funds",
 ];
 

@@ -57,13 +57,13 @@ function optionMeta(sym: string): Pick<ParsedPosition, "right" | "strike" | "exp
   return { right: null, strike: null, expiry: null };
 }
 
-function classify(fullSymbol: string, secType: string | null): Pick<ParsedPosition, "right" | "strike" | "expiry"> {
+export function classify(fullSymbol: string, secType: string | null): Pick<ParsedPosition, "right" | "strike" | "expiry"> {
   const isOption = /option/i.test(secType ?? "") || /\d{6}[CP]\d{8}/.test(fullSymbol) || /^[CP]\s/.test(fullSymbol);
   return isOption ? optionMeta(fullSymbol) : { right: null, strike: null, expiry: null };
 }
 
 // Split one CSV line, honoring double-quoted fields (with "" escapes).
-function splitCsvLine(line: string): string[] {
+export function splitCsvLine(line: string): string[] {
   const out: string[] = [];
   let cur = "";
   let q = false;
@@ -86,13 +86,13 @@ function splitCsvLine(line: string): string[] {
   return out.map((s) => s.trim());
 }
 
-const toNum = (v: string | undefined): number | null => {
+export const toNum = (v: string | undefined): number | null => {
   if (v == null || v === "") return null;
   const n = Number(v.replace(/[,$%\s]/g, ""));
   return Number.isFinite(n) ? n : null;
 };
 
-const normSymbol = (s: string): string => s.trim().split(/\s+/)[0].toUpperCase();
+export const normSymbol = (s: string): string => s.trim().split(/\s+/)[0].toUpperCase();
 
 // ── IB Activity Statement (section-aware) ────────────────────────────────────
 const SECTION = "open positions";

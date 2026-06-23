@@ -21,13 +21,20 @@ import { StarIcon, TargetIcon, SortArrow, SproutIcon } from "@/components/icons"
 import { Sparkline } from "@/components/Sparkline";
 import { HistoryChart } from "@/components/HistoryChart";
 
-// Two full literal templates (Tailwind JIT only sees complete class strings).
-// They differ by the 88px Position column inserted after Company.
-const GRID_WITH_POS =
-  "grid-cols-[60px_96px_minmax(140px,1fr)_116px_152px_120px_84px_92px_72px_74px_66px_96px_84px_116px_100px]";
-const GRID_NO_POS =
-  "grid-cols-[60px_96px_minmax(140px,1fr)_152px_120px_84px_92px_72px_74px_66px_96px_84px_116px_100px]";
-const gridClass = (showPositions: boolean) => (showPositions ? GRID_WITH_POS : GRID_NO_POS);
+// Column widths as an inline gridTemplateColumns string (header + every row share
+// it). Built from parts so optional columns drop in cleanly: a 96px Rating column
+// after Mark (Option Targets screen) and a 116px Position column after Company.
+const gridCols = (showPositions: boolean, showRating: boolean): string =>
+  [
+    "60px",
+    showRating ? "96px" : null,
+    "96px",
+    "minmax(140px,1fr)",
+    showPositions ? "116px" : null,
+    "152px 120px 84px 92px 72px 74px 66px 96px 84px 116px 100px",
+  ]
+    .filter(Boolean)
+    .join(" ");
 const PAD = "pl-5 pr-8";
 
 const fmtSigned = (n: number) => (n > 0 ? `+${n}` : `${n}`);
@@ -174,6 +181,53 @@ function TrendStrip({ w }: { w: TrendWindows | null }) {
   );
 }
 
+// Call/Put conviction rating (1-3 each) for an option target. Two star rows —
+// NC (call, green) and NP (put, indigo). Picking one side clears the other; click
+// the current level to clear (0). Stored signed: +1..+3 call, -1..-3 put.
+function RateRow({
+  label,
+  value,
+  color,
+  onSet,
+}: {
+  label: string;
+  value: number; // 0-3 magnitude for this side
+  color: string;
+  onSet: (n: number) => void;
+}) {
+  return (
+    <div className="flex items-center gap-0.5">
+      <span className="w-[16px] text-[10px] font-bold uppercase leading-none text-ink-faint">{label}</span>
+      {[1, 2, 3].map((n) => (
+        <button
+          key={n}
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onSet(value === n ? 0 : n);
+          }}
+          aria-label={`${label} rating ${n} of 3`}
+          aria-pressed={n <= value}
+          className={`text-[16px] leading-none transition-colors ${
+            n <= value ? color : "text-ink-faint/30 hover:text-ink-faint"
+          }`}
+        >
+          ★
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function RatingCell({ rating, onRate }: { rating: number; onRate: (n: number) => void }) {
+  return (
+    <div className="flex flex-col gap-0.5" onClick={(e) => e.stopPropagation()}>
+      <RateRow label="NC" value={rating > 0 ? rating : 0} color="text-emerald-600" onSet={(n) => onRate(n)} />
+      <RateRow label="NP" value={rating < 0 ? -rating : 0} color="text-indigo-500" onSet={(n) => onRate(-n)} />
+    </div>
+  );
+}
+
 type Props = {
   rows: SecurityRow[];
   sortKey: SortKey;
@@ -181,8 +235,11 @@ type Props = {
   trendWindow: TrendWindowKey;
   showSector: boolean;
   showPositions: boolean;
+  showRating: boolean;
+  ratingCol?: SortKey; // which sort key the Rating header drives (call vs put view)
   onSort: (key: SortKey) => void;
   onToggle: (ticker: string, field: "favorite" | "target") => void;
+  onRate: (ticker: string, rating: number) => void;
   emptyMessage: string;
 };
 
@@ -223,20 +280,27 @@ export function DataTable({
   trendWindow,
   showSector,
   showPositions,
+  showRating,
+  ratingCol = "rating",
   onSort,
   onToggle,
+  onRate,
   emptyMessage,
 }: Props) {
   const [openTicker, setOpenTicker] = useState<string | null>(null);
-  const grid = gridClass(showPositions);
+  const grid = gridCols(showPositions, showRating);
   return (
     <div className="w-full">
       <div
-        className={`sticky top-0 z-10 grid ${grid} ${PAD} items-center border-b border-line bg-surface py-2.5`}
+        className={`sticky top-0 z-10 grid ${PAD} items-center border-b border-line bg-surface py-2.5`}
+        style={{ gridTemplateColumns: grid }}
       >
         <span className="text-[11px] font-medium uppercase tracking-wider text-ink-faint">
           Mark
         </span>
+        {showRating && (
+          <HeadCell label="Rating" col={ratingCol} sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+        )}
         <HeadCell label="Symbol" col="ticker" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
         <HeadCell label="Company" col="name" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
         {showPositions && (
@@ -324,8 +388,10 @@ export function DataTable({
               s={s}
               showSector={showSector}
               showPositions={showPositions}
+              showRating={showRating}
               grid={grid}
               onToggle={onToggle}
+              onRate={onRate}
               trendWindow={trendWindow}
               expanded={openTicker === s.ticker}
               onToggleExpand={() =>
@@ -343,8 +409,10 @@ function Row({
   s,
   showSector,
   showPositions,
+  showRating,
   grid,
   onToggle,
+  onRate,
   trendWindow,
   expanded,
   onToggleExpand,
@@ -352,8 +420,10 @@ function Row({
   s: SecurityRow;
   showSector: boolean;
   showPositions: boolean;
+  showRating: boolean;
   grid: string;
   onToggle: (ticker: string, field: "favorite" | "target") => void;
+  onRate: (ticker: string, rating: number) => void;
   trendWindow: TrendWindowKey;
   expanded: boolean;
   onToggleExpand: () => void;
@@ -377,10 +447,13 @@ function Row({
       onClick={onToggleExpand}
       aria-expanded={expanded}
       title={`${expanded ? "Hide" : "Show"} price history for ${s.ticker}`}
-      className={`grid ${grid} ${PAD} cursor-pointer items-center border-b border-line py-1.5 transition-colors hover:bg-canvas ${
+      className={`grid ${PAD} cursor-pointer items-center border-b border-line py-3 transition-colors hover:bg-canvas ${
         expanded ? "bg-canvas" : ""
       }`}
-      style={s.bestHarvest ? { boxShadow: "inset 3px 0 0 #1f7a44" } : undefined}
+      style={{
+        gridTemplateColumns: grid,
+        ...(s.bestHarvest ? { boxShadow: "inset 3px 0 0 #1f7a44" } : {}),
+      }}
     >
       <div className="flex items-center gap-1.5 text-ink-faint">
         <button
@@ -408,6 +481,8 @@ function Row({
           <TargetIcon filled={s.target} />
         </button>
       </div>
+
+      {showRating && <RatingCell rating={s.rating} onRate={(n) => onRate(s.ticker, n)} />}
 
       <div className="flex items-center gap-1.5">
         <span

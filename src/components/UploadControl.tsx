@@ -3,7 +3,25 @@
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
-export function PositionsControls({ hasPositions }: { hasPositions: boolean }) {
+type Props = {
+  endpoint: string; // API route: POST file / DELETE clear
+  hasData: boolean;
+  uploadLabel: string; // button text when empty
+  reuploadLabel: string; // button text when data exists
+  noun: string; // for the result message: "position" / "transaction"
+  accept?: string; // input accept attr; omit to allow any file (IB flex files lack .csv)
+  clearConfirm: string;
+};
+
+export function UploadControl({
+  endpoint,
+  hasData,
+  uploadLabel,
+  reuploadLabel,
+  noun,
+  accept,
+  clearConfirm,
+}: Props) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<"idle" | "uploading" | "error">("idle");
@@ -14,7 +32,7 @@ export function PositionsControls({ hasPositions }: { hasPositions: boolean }) {
     setMsg(null);
     try {
       const content = await file.text();
-      const res = await fetch("/api/positions", {
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filename: file.name, content }),
@@ -22,7 +40,10 @@ export function PositionsControls({ hasPositions }: { hasPositions: boolean }) {
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error ?? `Upload failed (${res.status})`);
       setStatus("idle");
-      setMsg(`Imported ${data.count} position${data.count === 1 ? "" : "s"} from ${file.name}.`);
+      setMsg(
+        data?.message ??
+          `Imported ${data.count} ${noun}${data.count === 1 ? "" : "s"} from ${file.name}.`,
+      );
       router.refresh();
     } catch (e) {
       setStatus("error");
@@ -33,8 +54,8 @@ export function PositionsControls({ hasPositions }: { hasPositions: boolean }) {
   }
 
   async function onClear() {
-    if (!confirm("Clear all stored positions?")) return;
-    await fetch("/api/positions", { method: "DELETE" });
+    if (!confirm(clearConfirm)) return;
+    await fetch(endpoint, { method: "DELETE" });
     setMsg(null);
     router.refresh();
   }
@@ -44,7 +65,7 @@ export function PositionsControls({ hasPositions }: { hasPositions: boolean }) {
       <input
         ref={inputRef}
         type="file"
-        accept=".csv,text/csv"
+        {...(accept ? { accept } : {})}
         className="hidden"
         onChange={(e) => {
           const f = e.target.files?.[0];
@@ -57,9 +78,9 @@ export function PositionsControls({ hasPositions }: { hasPositions: boolean }) {
         disabled={status === "uploading"}
         className="rounded-md bg-ink px-4 py-2 text-[13px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
       >
-        {status === "uploading" ? "Uploading…" : hasPositions ? "Upload new CSV" : "Upload IB CSV"}
+        {status === "uploading" ? "Uploading…" : hasData ? reuploadLabel : uploadLabel}
       </button>
-      {hasPositions && (
+      {hasData && (
         <button
           type="button"
           onClick={onClear}

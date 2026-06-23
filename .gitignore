@@ -17,3 +17,6 @@ next-env.d.ts
 # python
 __pycache__/
 *.pyc
+
+# Claude Code local runtime
+.claude/

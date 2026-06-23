@@ -29,6 +29,7 @@ export type SecurityRow = {
   bestHarvest: boolean;
   favorite: boolean;
   target: boolean;
+  rating: number; // option-target conviction: +1..+3 call, -1..-3 put, 0 = unrated
   trend: TrendWindows | null;
   spark: number[] | null; // downsampled ~1Y daily closes for the inline sparkline
   pctFromHigh: number | null;
@@ -187,6 +188,7 @@ export async function getDashboardData(): Promise<DashboardData> {
       bestHarvest: isBestHarvest(price, ivPct, weeklyBuckets),
       favorite: r.mark?.favorite ?? false,
       target: r.mark?.target ?? false,
+      rating: r.mark?.rating ?? 0,
       trend: (r.trend?.windows as TrendWindows | null) ?? null,
       spark: sparkMap.get(r.ticker) ?? null,
       pctFromHigh: r.trend?.pctFromHigh != null ? Number(r.trend.pctFromHigh) : null,

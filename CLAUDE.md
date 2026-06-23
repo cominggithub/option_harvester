@@ -5,7 +5,7 @@ An **option-premium harvesting dashboard** built to serve the user's all-cash,
 rationale): sell **naked calls** on weak sectors, **naked puts** on quality in a
 panic — never holding the underlying (terminology note: the calls are naked, and
 the puts are cash-backed but the user calls them naked too; internal code still
-uses the legacy `cc`/`csp`/`ccScore` identifiers). It screens the S&P 500 + ~34
+uses the legacy `cc`/`csp`/`ccScore` identifiers). It screens the S&P 500 + ~70
 liquid ETFs for **naked-call targets** (bearish, liquid sector ETFs) and shows
 ticker, company, last price, change %, **IV %**, **Harvester score**,
 **multi-window trend (1M/3M/6M/1Y)**, market cap, and volume.
@@ -217,9 +217,12 @@ then `npm run db:generate`.
    volume / change %, `quoteSummary(assetProfile)` for the description, and
    `scripts/iv.ts` `getAtmIv()` for IV % + weekly_buckets (2 `options()` calls
    per ticker — so a full run is now ~4 Yahoo calls/ticker, a few minutes).
-3. Adds a curated set of **~34 liquid ETFs** (broad-market + SPDR sector funds +
-   industry/thematic + rates/credit) — the hunting ground for the strategy. Edit
-   `LARGE_ETFS` in `scripts/ingest-sp500.ts` to change the ETF universe.
+3. Adds a curated set of **~70 liquid ETFs**, each tagged with a sector: sector/
+   industry funds merge into their GICS sector tab, while broad-market, foreign,
+   commodity, and bond funds get their own buckets (**Broad Market / International /
+   Commodities / Fixed Income** — see `SECTOR_ORDER` in `src/lib/sectors.ts`). The
+   hunting ground for the strategy. Edit `LARGE_ETFS` in `scripts/ingest-sp500.ts`
+   to change the ETF universe.
 3b. Adds the user's **held instruments** that aren't already in the universe
    (`getPositionConstituents()`, read from `option_harvest_positions`) so the
    analyzer covers everything traded — bucketed under sector **"Off-Index"**, with

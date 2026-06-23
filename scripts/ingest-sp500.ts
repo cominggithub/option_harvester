@@ -24,48 +24,97 @@ const CONCURRENCY = 6;
 // Liquid, optionable ETFs — the hunting ground for the covered-call strategy
 // (see docs/strategy.md): broad-market (CSP pivot targets) + sector/thematic
 // funds (the weak-sector CC candidates). Screened in-app for bearish ones.
-const LARGE_ETFS: { ticker: string; name: string }[] = [
-  // Broad market / CSP pivot targets
-  { ticker: "SPY", name: "SPDR S&P 500 ETF Trust" },
-  { ticker: "VOO", name: "Vanguard S&P 500 ETF" },
-  { ticker: "QQQ", name: "Invesco QQQ Trust" },
-  { ticker: "VTI", name: "Vanguard Total Stock Market ETF" },
-  { ticker: "IWM", name: "iShares Russell 2000 ETF" },
-  { ticker: "DIA", name: "SPDR Dow Jones Industrial Average ETF" },
-  // SPDR sector funds
-  { ticker: "XLE", name: "Energy Select Sector SPDR" },
-  { ticker: "XLF", name: "Financial Select Sector SPDR" },
-  { ticker: "XLK", name: "Technology Select Sector SPDR" },
-  { ticker: "XLV", name: "Health Care Select Sector SPDR" },
-  { ticker: "XLI", name: "Industrial Select Sector SPDR" },
-  { ticker: "XLP", name: "Consumer Staples Select Sector SPDR" },
-  { ticker: "XLY", name: "Consumer Discretionary Select Sector SPDR" },
-  { ticker: "XLU", name: "Utilities Select Sector SPDR" },
-  { ticker: "XLB", name: "Materials Select Sector SPDR" },
-  { ticker: "XLRE", name: "Real Estate Select Sector SPDR" },
-  { ticker: "XLC", name: "Communication Services Select Sector SPDR" },
-  // Industry / thematic
-  { ticker: "SMH", name: "VanEck Semiconductor ETF" },
-  { ticker: "SOXX", name: "iShares Semiconductor ETF" },
-  { ticker: "KRE", name: "SPDR S&P Regional Banking ETF" },
-  { ticker: "XOP", name: "SPDR S&P Oil & Gas Exploration & Production" },
-  { ticker: "OIH", name: "VanEck Oil Services ETF" },
-  { ticker: "XME", name: "SPDR S&P Metals & Mining ETF" },
-  { ticker: "XRT", name: "SPDR S&P Retail ETF" },
-  { ticker: "ITB", name: "iShares U.S. Home Construction ETF" },
-  { ticker: "XHB", name: "SPDR S&P Homebuilders ETF" },
-  { ticker: "IBB", name: "iShares Biotechnology ETF" },
-  { ticker: "XBI", name: "SPDR S&P Biotech ETF" },
-  { ticker: "ARKK", name: "ARK Innovation ETF" },
-  { ticker: "JETS", name: "U.S. Global Jets ETF" },
-  { ticker: "TAN", name: "Invesco Solar ETF" },
-  { ticker: "GDX", name: "VanEck Gold Miners ETF" },
-  { ticker: "KWEB", name: "KraneShares CSI China Internet ETF" },
-  { ticker: "FXI", name: "iShares China Large-Cap ETF" },
-  { ticker: "EWZ", name: "iShares MSCI Brazil ETF" },
+// Curated set of liquid, optionable ETFs — the hunting ground for the strategy.
+// Each carries a sector so the analyzer groups it: sector/industry funds merge
+// into their GICS sector tab (alongside the stocks), broad/foreign/bond/commodity
+// funds get their own buckets (see SECTOR_ORDER in src/lib/sectors.ts).
+const LARGE_ETFS: { ticker: string; name: string; sector: string }[] = [
+  // Broad market (naked-put / panic pivot targets)
+  { ticker: "SPY", name: "SPDR S&P 500 ETF Trust", sector: "Broad Market" },
+  { ticker: "VOO", name: "Vanguard S&P 500 ETF", sector: "Broad Market" },
+  { ticker: "QQQ", name: "Invesco QQQ Trust", sector: "Broad Market" },
+  { ticker: "VTI", name: "Vanguard Total Stock Market ETF", sector: "Broad Market" },
+  { ticker: "IWM", name: "iShares Russell 2000 ETF", sector: "Broad Market" },
+  { ticker: "DIA", name: "SPDR Dow Jones Industrial Average ETF", sector: "Broad Market" },
+  { ticker: "MDY", name: "SPDR S&P MidCap 400 ETF", sector: "Broad Market" },
+  { ticker: "RSP", name: "Invesco S&P 500 Equal Weight ETF", sector: "Broad Market" },
+  // Information Technology
+  { ticker: "XLK", name: "Technology Select Sector SPDR", sector: "Information Technology" },
+  { ticker: "SMH", name: "VanEck Semiconductor ETF", sector: "Information Technology" },
+  { ticker: "SOXX", name: "iShares Semiconductor ETF", sector: "Information Technology" },
+  { ticker: "IGV", name: "iShares Expanded Tech-Software Sector ETF", sector: "Information Technology" },
+  { ticker: "VGT", name: "Vanguard Information Technology ETF", sector: "Information Technology" },
+  { ticker: "ARKK", name: "ARK Innovation ETF", sector: "Information Technology" },
+  // Communication Services
+  { ticker: "XLC", name: "Communication Services Select Sector SPDR", sector: "Communication Services" },
+  // Health Care
+  { ticker: "XLV", name: "Health Care Select Sector SPDR", sector: "Health Care" },
+  { ticker: "IBB", name: "iShares Biotechnology ETF", sector: "Health Care" },
+  { ticker: "XBI", name: "SPDR S&P Biotech ETF", sector: "Health Care" },
+  // Financials
+  { ticker: "XLF", name: "Financial Select Sector SPDR", sector: "Financials" },
+  { ticker: "KRE", name: "SPDR S&P Regional Banking ETF", sector: "Financials" },
+  { ticker: "KBE", name: "SPDR S&P Bank ETF", sector: "Financials" },
+  // Energy
+  { ticker: "XLE", name: "Energy Select Sector SPDR", sector: "Energy" },
+  { ticker: "XOP", name: "SPDR S&P Oil & Gas Exploration & Production ETF", sector: "Energy" },
+  { ticker: "OIH", name: "VanEck Oil Services ETF", sector: "Energy" },
+  { ticker: "AMLP", name: "Alerian MLP ETF", sector: "Energy" },
+  // Materials (incl. precious-metal & industrial miners)
+  { ticker: "XLB", name: "Materials Select Sector SPDR", sector: "Materials" },
+  { ticker: "XME", name: "SPDR S&P Metals & Mining ETF", sector: "Materials" },
+  { ticker: "GDX", name: "VanEck Gold Miners ETF", sector: "Materials" },
+  { ticker: "GDXJ", name: "VanEck Junior Gold Miners ETF", sector: "Materials" },
+  { ticker: "SIL", name: "Global X Silver Miners ETF", sector: "Materials" },
+  { ticker: "SILJ", name: "Amplify Junior Silver Miners ETF", sector: "Materials" },
+  { ticker: "COPX", name: "Global X Copper Miners ETF", sector: "Materials" },
+  { ticker: "LIT", name: "Global X Lithium & Battery Tech ETF", sector: "Materials" },
+  // Industrials
+  { ticker: "XLI", name: "Industrial Select Sector SPDR", sector: "Industrials" },
+  { ticker: "JETS", name: "U.S. Global Jets ETF", sector: "Industrials" },
+  { ticker: "ITA", name: "iShares U.S. Aerospace & Defense ETF", sector: "Industrials" },
+  { ticker: "IYT", name: "iShares U.S. Transportation ETF", sector: "Industrials" },
+  // Consumer Discretionary
+  { ticker: "XLY", name: "Consumer Discretionary Select Sector SPDR", sector: "Consumer Discretionary" },
+  { ticker: "XRT", name: "SPDR S&P Retail ETF", sector: "Consumer Discretionary" },
+  { ticker: "ITB", name: "iShares U.S. Home Construction ETF", sector: "Consumer Discretionary" },
+  { ticker: "XHB", name: "SPDR S&P Homebuilders ETF", sector: "Consumer Discretionary" },
+  // Consumer Staples
+  { ticker: "XLP", name: "Consumer Staples Select Sector SPDR", sector: "Consumer Staples" },
+  // Utilities
+  { ticker: "XLU", name: "Utilities Select Sector SPDR", sector: "Utilities" },
+  { ticker: "TAN", name: "Invesco Solar ETF", sector: "Utilities" },
+  // Real Estate
+  { ticker: "XLRE", name: "Real Estate Select Sector SPDR", sector: "Real Estate" },
+  { ticker: "VNQ", name: "Vanguard Real Estate ETF", sector: "Real Estate" },
+  { ticker: "IYR", name: "iShares U.S. Real Estate ETF", sector: "Real Estate" },
+  // Commodities
+  { ticker: "GLD", name: "SPDR Gold Shares", sector: "Commodities" },
+  { ticker: "SLV", name: "iShares Silver Trust", sector: "Commodities" },
+  { ticker: "USO", name: "United States Oil Fund", sector: "Commodities" },
+  { ticker: "UNG", name: "United States Natural Gas Fund", sector: "Commodities" },
+  // International / foreign
+  { ticker: "EEM", name: "iShares MSCI Emerging Markets ETF", sector: "International" },
+  { ticker: "EFA", name: "iShares MSCI EAFE ETF", sector: "International" },
+  { ticker: "EWJ", name: "iShares MSCI Japan ETF", sector: "International" },
+  { ticker: "FXI", name: "iShares China Large-Cap ETF", sector: "International" },
+  { ticker: "KWEB", name: "KraneShares CSI China Internet ETF", sector: "International" },
+  { ticker: "MCHI", name: "iShares MSCI China ETF", sector: "International" },
+  { ticker: "ASHR", name: "Xtrackers Harvest CSI 300 China A-Shares ETF", sector: "International" },
+  { ticker: "EWZ", name: "iShares MSCI Brazil ETF", sector: "International" },
+  { ticker: "INDA", name: "iShares MSCI India ETF", sector: "International" },
+  { ticker: "EWT", name: "iShares MSCI Taiwan ETF", sector: "International" },
+  { ticker: "EWY", name: "iShares MSCI South Korea ETF", sector: "International" },
+  { ticker: "EWG", name: "iShares MSCI Germany ETF", sector: "International" },
+  { ticker: "EWU", name: "iShares MSCI United Kingdom ETF", sector: "International" },
+  { ticker: "EWW", name: "iShares MSCI Mexico ETF", sector: "International" },
   // Rates / credit (macro landmines in the strategy)
-  { ticker: "TLT", name: "iShares 20+ Year Treasury Bond ETF" },
-  { ticker: "HYG", name: "iShares iBoxx High Yield Corporate Bond ETF" },
+  { ticker: "TLT", name: "iShares 20+ Year Treasury Bond ETF", sector: "Fixed Income" },
+  { ticker: "HYG", name: "iShares iBoxx High Yield Corporate Bond ETF", sector: "Fixed Income" },
+  { ticker: "IEF", name: "iShares 7-10 Year Treasury Bond ETF", sector: "Fixed Income" },
+  { ticker: "LQD", name: "iShares iBoxx Investment Grade Corporate Bond ETF", sector: "Fixed Income" },
+  { ticker: "AGG", name: "iShares Core U.S. Aggregate Bond ETF", sector: "Fixed Income" },
+  { ticker: "EMB", name: "iShares J.P. Morgan USD Emerging Markets Bond ETF", sector: "Fixed Income" },
 ];
 
 type Constituent = {
@@ -203,7 +252,7 @@ async function main() {
     const etfs: Constituent[] = LARGE_ETFS.map((e) => ({
       ticker: e.ticker,
       name: e.name,
-      sector: "ETF / Funds",
+      sector: e.sector,
       subIndustry: null,
       type: "etf",
     }));
