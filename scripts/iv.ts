@@ -112,16 +112,27 @@ export async function getAtmIv(yf: YF, symbol: string, nowMs: number): Promise<I
     if (!exp) return { ivPct: null, dte: null, weeklyBuckets };
     const T = pick.dte / YEAR_DAYS;
 
-    const nearest = (arr: { strike: number; lastPrice: number }[] = []) =>
+    // Price each contract at the bid/ask midpoint when both sides are live (IB's
+    // measure), falling back to the last trade only when the quote is missing —
+    // a stale last print on a wide spread is the main reason our IV drifted from IB's.
+    const px = (c: { bid?: number; ask?: number; lastPrice?: number }): number | null => {
+      const bid = c.bid ?? 0;
+      const ask = c.ask ?? 0;
+      if (bid > 0 && ask >= bid) return (bid + ask) / 2;
+      return c.lastPrice && c.lastPrice > 0 ? c.lastPrice : null;
+    };
+
+    type Opt = { strike: number; bid?: number; ask?: number; lastPrice?: number };
+    const nearest = (arr: Opt[] = []) =>
       [...arr]
-        .filter((c) => c.lastPrice > 0)
+        .filter((c) => px(c) != null)
         .sort((a, b) => Math.abs(a.strike - S) - Math.abs(b.strike - S))[0];
 
     const call = nearest(exp.calls as never);
     const put = nearest(exp.puts as never);
     const ivs = [
-      call && impliedVol("c", S, call.strike, T, call.lastPrice),
-      put && impliedVol("p", S, put.strike, T, put.lastPrice),
+      call && impliedVol("c", S, call.strike, T, px(call)!),
+      put && impliedVol("p", S, put.strike, T, px(put)!),
     ].filter((v): v is number => v != null);
 
     if (!ivs.length) return { ivPct: null, dte: Math.round(pick.dte), weeklyBuckets };

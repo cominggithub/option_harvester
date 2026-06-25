@@ -30,6 +30,8 @@ export type SecurityRow = {
   favorite: boolean;
   target: boolean;
   rating: number; // option-target conviction: +1..+3 call, -1..-3 put, 0 = unrated
+  labels: string[]; // user-assigned tags (nc/np/value invest/…)
+  autoLabels: string[]; // data-derived tags (low vol / bad option date / no option / price band)
   trend: TrendWindows | null;
   spark: number[] | null; // downsampled ~1Y daily closes for the inline sparkline
   pctFromHigh: number | null;
@@ -61,6 +63,31 @@ const WEAK_SLOPE = -1; // sideways with slope below this = grinding-weak (陰跌
 // mega-cap blue chips — liquid enough for Deep-OTM puts.
 const CSP_INDEX_ETFS = new Set(["SPY", "QQQ", "VOO", "VTI", "IWM", "DIA"]);
 const CSP_MIN_MARKETCAP = 1_000_000_000_000; // $1T
+
+// Data-derived labels (the rule-based seeds). Recomputed every read so they
+// track the latest snapshot — never stored, never user-editable.
+const LOW_VOL = 5_000_000; // shares/day below this → "low vol"
+// A tradable weekly ladder needs the 7/14/21/28/35-DTE expiries (≈5 buckets);
+// fewer means the chain is monthly-only / sparse — "bad option date".
+const MIN_LADDER_BUCKETS = 5;
+
+function computeAutoLabels(s: {
+  volume: number | null;
+  weeklyBuckets: number | null;
+  ivPct: number | null;
+  price: number | null;
+}): string[] {
+  const out: string[] = [];
+  if (s.volume != null && s.volume < LOW_VOL) out.push("low vol");
+  const wb = s.weeklyBuckets;
+  const hasOptions = s.ivPct != null || (wb != null && wb > 0);
+  if (!hasOptions) out.push("no option");
+  else if (wb != null && wb < MIN_LADDER_BUCKETS) out.push("bad option date");
+  // Price band = the strategy's $20–150 sweet spot (BEST_PRICE_*); tunable.
+  if (s.price != null && s.price > BEST_PRICE_MAX) out.push("high price");
+  if (s.price != null && s.price < BEST_PRICE_MIN) out.push("low price");
+  return out;
+}
 
 function isWeakWindow(w?: { label?: string | null; slopePct?: number | null }): boolean {
   if (!w?.label) return false;
@@ -189,6 +216,8 @@ export async function getDashboardData(): Promise<DashboardData> {
       favorite: r.mark?.favorite ?? false,
       target: r.mark?.target ?? false,
       rating: r.mark?.rating ?? 0,
+      labels: r.mark?.labels ?? [],
+      autoLabels: [], // set below
       trend: (r.trend?.windows as TrendWindows | null) ?? null,
       spark: sparkMap.get(r.ticker) ?? null,
       pctFromHigh: r.trend?.pctFromHigh != null ? Number(r.trend.pctFromHigh) : null,
@@ -212,6 +241,7 @@ export async function getDashboardData(): Promise<DashboardData> {
   });
 
   for (const s of securities) {
+    s.autoLabels = computeAutoLabels(s);
     s.downtrend = isDowntrend(s.trend);
     const liquid = (s.weeklyBuckets ?? 0) >= CC_MIN_WEEKLY_BUCKETS;
     s.ccTarget = s.type === "etf" && isWeak(s.trend) && liquid;

@@ -13,6 +13,7 @@ import {
   type ViewId,
 } from "@/lib/view";
 import { SECTOR_ORDER, sectorRank } from "@/lib/sectors";
+import { labelCatalog, labelColor } from "@/lib/labels";
 import { LeftNav } from "@/components/LeftNav";
 import { DataTable } from "@/components/DataTable";
 
@@ -103,12 +104,18 @@ export function Dashboard({ securities, asOf }: Props) {
   const [targetSide, setTargetSide] = useState<"call" | "put">("call");
   const [heldTop, setHeldTop] = useState(false);
   const ratingCol: SortKey = targetSide === "call" ? "ratingCall" : "ratingPut";
+  // Filter rows by a label (null = no label filter).
+  const [labelFilter, setLabelFilter] = useState<string | null>(null);
 
-  const [marks, setMarks] = useState<Record<string, { favorite: boolean; target: boolean; rating: number }>>(
-    () =>
-      Object.fromEntries(
-        securities.map((s) => [s.ticker, { favorite: s.favorite, target: s.target, rating: s.rating }]),
-      ),
+  const [marks, setMarks] = useState<
+    Record<string, { favorite: boolean; target: boolean; rating: number; labels: string[] }>
+  >(() =>
+    Object.fromEntries(
+      securities.map((s) => [
+        s.ticker,
+        { favorite: s.favorite, target: s.target, rating: s.rating, labels: s.labels },
+      ]),
+    ),
   );
 
   const rows = useMemo(
@@ -118,8 +125,15 @@ export function Dashboard({ securities, asOf }: Props) {
         favorite: marks[s.ticker]?.favorite ?? false,
         target: marks[s.ticker]?.target ?? false,
         rating: marks[s.ticker]?.rating ?? 0,
+        labels: marks[s.ticker]?.labels ?? [],
       })),
     [securities, marks],
+  );
+
+  // Catalog = seed labels ∪ every label in use (manual + auto-derived).
+  const catalog = useMemo(
+    () => labelCatalog(rows.flatMap((r) => [...r.labels, ...r.autoLabels])),
+    [rows],
   );
 
   const sectorCounts = useMemo(() => {
@@ -181,6 +195,9 @@ export function Dashboard({ securities, asOf }: Props) {
       // Held filter.
       if (heldFilter === "held" && !r.held) return false;
       if (heldFilter === "unheld" && r.held) return false;
+      // Label filter (matches manual or auto-derived labels).
+      if (labelFilter && !r.labels.includes(labelFilter) && !r.autoLabels.includes(labelFilter))
+        return false;
       return true;
     });
     const sorted = sortRows(filtered, sortKey, sortDir, trendWindow);
@@ -190,7 +207,7 @@ export function Dashboard({ securities, asOf }: Props) {
       return [...sorted.filter((r) => r.held), ...sorted.filter((r) => !r.held)];
     }
     return sorted;
-  }, [rows, view, sortKey, sortDir, trendWindow, trendDir, priceMin, priceMax, down6m, down1y, heldFilter, targetSide, heldTop]);
+  }, [rows, view, sortKey, sortDir, trendWindow, trendDir, priceMin, priceMax, down6m, down1y, heldFilter, labelFilter, targetSide, heldTop]);
 
   const onSort = useCallback(
     (key: SortKey) => {
@@ -215,7 +232,7 @@ export function Dashboard({ securities, asOf }: Props) {
 
   const onToggle = useCallback(
     (ticker: string, field: "favorite" | "target") => {
-      const prev = marks[ticker] ?? { favorite: false, target: false, rating: 0 };
+      const prev = marks[ticker] ?? { favorite: false, target: false, rating: 0, labels: [] };
       const next = { ...prev, [field]: !prev[field] };
       setMarks((m) => ({ ...m, [ticker]: next }));
       fetch("/api/marks", {
@@ -233,13 +250,31 @@ export function Dashboard({ securities, asOf }: Props) {
 
   const onRate = useCallback(
     (ticker: string, rating: number) => {
-      const prev = marks[ticker] ?? { favorite: false, target: false, rating: 0 };
+      const prev = marks[ticker] ?? { favorite: false, target: false, rating: 0, labels: [] };
       const next = { ...prev, rating };
       setMarks((m) => ({ ...m, [ticker]: next }));
       fetch("/api/marks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticker, rating }),
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error(String(res.status));
+        })
+        .catch(() => setMarks((m) => ({ ...m, [ticker]: prev })));
+    },
+    [marks],
+  );
+
+  const onSetLabels = useCallback(
+    (ticker: string, labels: string[]) => {
+      const prev = marks[ticker] ?? { favorite: false, target: false, rating: 0, labels: [] };
+      const next = { ...prev, labels };
+      setMarks((m) => ({ ...m, [ticker]: next }));
+      fetch("/api/marks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticker, labels }),
       })
         .then((res) => {
           if (!res.ok) throw new Error(String(res.status));
@@ -495,6 +530,45 @@ export function Dashboard({ securities, asOf }: Props) {
               ))}
             </div>
 
+            {/* Label filter — click a label to show only stocks tagged with it. */}
+            <span className="ml-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-faint">
+              Label
+            </span>
+            <div className="flex flex-wrap items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setLabelFilter(null)}
+                className={`rounded-md border px-2 py-1 ${
+                  labelFilter == null
+                    ? "border-ink bg-ink text-white"
+                    : "border-line bg-surface text-ink-muted hover:bg-canvas"
+                }`}
+              >
+                All
+              </button>
+              {catalog.map((l) => {
+                const c = labelColor(l);
+                const active = labelFilter === l;
+                return (
+                  <button
+                    key={l}
+                    type="button"
+                    onClick={() => setLabelFilter((cur) => (cur === l ? null : l))}
+                    className={`rounded-md border px-2 py-1 ${
+                      active ? "" : "bg-surface hover:bg-canvas"
+                    }`}
+                    style={
+                      active
+                        ? { background: c.bg, color: c.fg, borderColor: c.fg }
+                        : { borderColor: c.bg, color: c.fg }
+                    }
+                  >
+                    {l}
+                  </button>
+                );
+              })}
+            </div>
+
             {/* Show / hide the user's IB position column. */}
             <button
               type="button"
@@ -522,9 +596,11 @@ export function Dashboard({ securities, asOf }: Props) {
             showPositions={showPositions}
             showRating={view === "targets"}
             ratingCol={ratingCol}
+            catalog={catalog}
             onSort={onSort}
             onToggle={onToggle}
             onRate={onRate}
+            onSetLabels={onSetLabels}
             emptyMessage={meta.empty}
           />
         </div>

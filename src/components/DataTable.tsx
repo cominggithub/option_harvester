@@ -3,13 +3,12 @@
 import { useState, type MouseEvent } from "react";
 import type { SecurityRow } from "@/lib/securities";
 import type { SortKey, SortDir, TrendWindowKey } from "@/lib/view";
-import { TREND_WINDOW_LABEL } from "@/lib/view";
-import type { TrendWindows, WindowTrend, TrendLabel } from "@/lib/trend";
 import { harvesterColor } from "@/lib/harvester";
 import { ccEdgeColor, formatEdge } from "@/lib/ccscore";
 import { finalColor, sideLabel } from "@/lib/score";
 import { IV_RANK_MIN_CONFIDENT, type IvStats } from "@/lib/ivstats";
 import { sectorColor } from "@/lib/sectors";
+import { AUTO_LABELS, labelColor } from "@/lib/labels";
 import {
   formatChangePct,
   formatIv,
@@ -31,11 +30,13 @@ const gridCols = (showPositions: boolean, showRating: boolean): string =>
     "96px",
     "minmax(140px,1fr)",
     showPositions ? "116px" : null,
-    "152px 120px 84px 92px 72px 74px 66px 96px 84px 116px 100px",
+    // chart, Signal, Harvester, Edge, IV, IV Rk, Last, Chg %, Mkt Cap, Volume —
+    // each sized to its header/value, not padded; the 1fr Company soaks up the slack.
+    "236px 76px 86px 56px 56px 58px 84px 66px 80px 72px",
   ]
     .filter(Boolean)
     .join(" ");
-const PAD = "pl-5 pr-8";
+const PAD = "pl-5 pr-4";
 
 const fmtSigned = (n: number) => (n > 0 ? `+${n}` : `${n}`);
 const signTone = (n: number) =>
@@ -145,42 +146,6 @@ function IvRankCell({ iv }: { iv: IvStats }) {
   );
 }
 
-const TREND_STYLE: Record<TrendLabel, { cls: string; glyph: string }> = {
-  up: { cls: "bg-[#e3f1e9] text-positive", glyph: "↑" },
-  down: { cls: "bg-[#f7e6e3] text-negative", glyph: "↓" },
-  sideways: { cls: "bg-[#eef1f4] text-ink-muted", glyph: "→" },
-};
-
-function TrendStrip({ w }: { w: TrendWindows | null }) {
-  const cells: [string, WindowTrend | undefined][] = [
-    ["1M", w?.m1],
-    ["3M", w?.m3],
-    ["6M", w?.m6],
-    ["1Y", w?.y1],
-  ];
-  return (
-    <div className="flex gap-1">
-      {cells.map(([lbl, t]) => {
-        const st = t?.label ? TREND_STYLE[t.label] : null;
-        const tip = t?.label
-          ? `${lbl}: ${t.label} · return ${t.ret ?? "—"}% · slope ${t.slopePct ?? "—"}% · R² ${t.r2 ?? "—"}`
-          : `${lbl}: insufficient history`;
-        return (
-          <span
-            key={lbl}
-            title={tip}
-            className={`flex h-[18px] w-[32px] items-center justify-center rounded text-[11px] font-semibold ${
-              st ? st.cls : "text-ink-faint"
-            }`}
-          >
-            {st ? st.glyph : "·"}
-          </span>
-        );
-      })}
-    </div>
-  );
-}
-
 // Call/Put conviction rating (1-3 each) for an option target. Two star rows —
 // NC (call, green) and NP (put, indigo). Picking one side clears the other; click
 // the current level to clear (0). Stored signed: +1..+3 call, -1..-3 put.
@@ -228,6 +193,90 @@ function RatingCell({ rating, onRate }: { rating: number; onRate: (n: number) =>
   );
 }
 
+// Per-stock label editor (shown in the expanded row): toggle any catalog label
+// on/off, or type a new one to create it. Removing the last use of a custom
+// label drops it from the catalog. Auto-derived labels (AUTO_LABELS) are shown
+// read-only — they come from the data, not the user.
+function LabelEditor({
+  labels,
+  autoLabels,
+  catalog,
+  onSetLabels,
+}: {
+  labels: string[];
+  autoLabels: string[];
+  catalog: string[];
+  onSetLabels: (next: string[]) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const has = (l: string) => labels.includes(l);
+  const toggle = (l: string) =>
+    onSetLabels(has(l) ? labels.filter((x) => x !== l) : [...labels, l]);
+  const add = () => {
+    const l = draft.trim().toLowerCase();
+    if (l && !has(l) && !AUTO_LABELS.includes(l as (typeof AUTO_LABELS)[number]))
+      onSetLabels([...labels, l]);
+    setDraft("");
+  };
+  // Editable = catalog ∪ this stock's labels, minus the auto-derived names.
+  const options = [...new Set([...catalog, ...labels])].filter(
+    (l) => !AUTO_LABELS.includes(l as (typeof AUTO_LABELS)[number]),
+  );
+  return (
+    <div className="mb-4" onClick={(e) => e.stopPropagation()}>
+      <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
+        Labels
+      </div>
+      {autoLabels.length > 0 && (
+        <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] uppercase tracking-wider text-ink-faint">Auto</span>
+          {autoLabels.map((l) => {
+            const c = labelColor(l);
+            return (
+              <span
+                key={l}
+                title="Auto-derived from the data — not editable"
+                className="rounded-md px-2 py-0.5 text-[12px]"
+                style={{ background: c.bg, color: c.fg }}
+              >
+                {l}
+              </span>
+            );
+          })}
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {options.map((l) => {
+          const c = labelColor(l);
+          return (
+            <button
+              key={l}
+              type="button"
+              onClick={() => toggle(l)}
+              className={`rounded-md border px-2 py-0.5 text-[12px] ${
+                has(l) ? "" : "border-line bg-surface text-ink-muted hover:bg-canvas"
+              }`}
+              style={has(l) ? { background: c.bg, color: c.fg, borderColor: c.fg } : undefined}
+            >
+              {l}
+            </button>
+          );
+        })}
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") add();
+          }}
+          placeholder="+ new label"
+          aria-label="New label"
+          className="w-28 rounded-md border border-line px-2 py-0.5 text-[12px] focus:border-ink focus:outline-none"
+        />
+      </div>
+    </div>
+  );
+}
+
 type Props = {
   rows: SecurityRow[];
   sortKey: SortKey;
@@ -237,9 +286,11 @@ type Props = {
   showPositions: boolean;
   showRating: boolean;
   ratingCol?: SortKey; // which sort key the Rating header drives (call vs put view)
+  catalog: string[]; // known labels (seeds ∪ in-use) for the per-row editor
   onSort: (key: SortKey) => void;
   onToggle: (ticker: string, field: "favorite" | "target") => void;
   onRate: (ticker: string, rating: number) => void;
+  onSetLabels: (ticker: string, labels: string[]) => void;
   emptyMessage: string;
 };
 
@@ -282,9 +333,11 @@ export function DataTable({
   showPositions,
   showRating,
   ratingCol = "rating",
+  catalog,
   onSort,
   onToggle,
   onRate,
+  onSetLabels,
   emptyMessage,
 }: Props) {
   const [openTicker, setOpenTicker] = useState<string | null>(null);
@@ -322,38 +375,22 @@ export function DataTable({
             ))}
           </button>
         )}
-        <button
-          type="button"
-          onClick={() => onSort("trend")}
-          title={`Sort by ${TREND_WINDOW_LABEL[trendWindow]} trend slope (pick the window in the Trend filter above)`}
-          className="flex items-center gap-1"
-        >
-          {(["m1", "m3", "m6", "y1"] as const).map((w) => (
-            <span
-              key={w}
-              className={`w-[32px] text-center text-[9px] font-medium uppercase tracking-wider ${
-                trendWindow === w ? "text-ink underline" : "text-ink-faint"
-              }`}
-            >
-              {TREND_WINDOW_LABEL[w]}
-            </span>
-          ))}
-          <SortArrow dir={sortKey === "trend" ? sortDir : null} />
-        </button>
-        <div className="flex items-center gap-2" title="6-month & 1-year price line — click to sort by that window's slope">
-          {([["slope6m", "6M"], ["slope1y", "1Y"]] as const).map(([k, lbl]) => (
-            <button
-              key={k}
-              type="button"
-              onClick={() => onSort(k)}
-              className={`flex w-[52px] items-center justify-center gap-0.5 text-[9px] font-medium uppercase tracking-wider transition-colors hover:text-ink ${
-                sortKey === k ? "text-ink" : "text-ink-faint"
-              }`}
-            >
-              <span>{lbl}</span>
-              <SortArrow dir={sortKey === k ? sortDir : null} />
-            </button>
-          ))}
+        <div className="flex items-center gap-2" title="1M / 3M / 6M / 1Y price line — click to sort by that window's slope">
+          {([["slope1m", "1M"], ["slope3m", "3M"], ["slope6m", "6M"], ["slope1y", "1Y"]] as const).map(
+            ([k, lbl]) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => onSort(k)}
+                className={`flex w-[52px] items-center justify-center gap-0.5 text-[9px] font-medium uppercase tracking-wider transition-colors hover:text-ink ${
+                  sortKey === k ? "text-ink" : "text-ink-faint"
+                }`}
+              >
+                <span>{lbl}</span>
+                <SortArrow dir={sortKey === k ? sortDir : null} />
+              </button>
+            ),
+          )}
         </div>
         <HeadCell label="Signal" col="final" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
         <HeadCell label="Harvester" col="harvesterScore" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
@@ -390,8 +427,10 @@ export function DataTable({
               showPositions={showPositions}
               showRating={showRating}
               grid={grid}
+              catalog={catalog}
               onToggle={onToggle}
               onRate={onRate}
+              onSetLabels={onSetLabels}
               trendWindow={trendWindow}
               expanded={openTicker === s.ticker}
               onToggleExpand={() =>
@@ -411,8 +450,10 @@ function Row({
   showPositions,
   showRating,
   grid,
+  catalog,
   onToggle,
   onRate,
+  onSetLabels,
   trendWindow,
   expanded,
   onToggleExpand,
@@ -422,8 +463,10 @@ function Row({
   showPositions: boolean;
   showRating: boolean;
   grid: string;
+  catalog: string[];
   onToggle: (ticker: string, field: "favorite" | "target") => void;
   onRate: (ticker: string, rating: number) => void;
+  onSetLabels: (ticker: string, labels: string[]) => void;
   trendWindow: TrendWindowKey;
   expanded: boolean;
   onToggleExpand: () => void;
@@ -528,7 +571,7 @@ function Row({
         )}
       </div>
 
-      <div className="flex min-w-0 items-baseline gap-2 pr-6">
+      <div className="flex min-w-0 items-baseline gap-2 pr-3">
         <span className="shrink-0 text-[13px] text-ink">{s.name}</span>
         {s.bestHarvest && (
           <span className="shrink-0" title="Best Harvest: $20–150, IV > 50%, full weekly call ladder">
@@ -540,15 +583,27 @@ function Row({
             {s.description}
           </span>
         )}
+        {[...s.autoLabels, ...s.labels].map((l) => {
+          const c = labelColor(l);
+          return (
+            <span
+              key={l}
+              title={s.autoLabels.includes(l) ? "Auto-derived from the data" : undefined}
+              className="shrink-0 rounded-sm px-1 text-[10px] font-medium leading-4"
+              style={{ background: c.bg, color: c.fg }}
+            >
+              {l}
+            </span>
+          );
+        })}
       </div>
 
       {showPositions && <PositionCell p={s.position} />}
 
-      <TrendStrip w={s.trend} />
-
       <div className="flex items-center gap-2">
-        <Sparkline series={s.spark} window="m6" label={s.trend?.m6?.label ?? null} w={52} h={22} />
-        <Sparkline series={s.spark} window="y1" label={s.trend?.y1?.label ?? null} w={52} h={22} />
+        {(["m1", "m3", "m6", "y1"] as const).map((w) => (
+          <Sparkline key={w} series={s.spark} window={w} label={s.trend?.[w]?.label ?? null} w={52} h={22} />
+        ))}
       </div>
 
       <div>
@@ -612,6 +667,12 @@ function Row({
     </li>
     {expanded && (
       <li className="border-b border-line bg-canvas px-8 py-3">
+        <LabelEditor
+          labels={s.labels}
+          autoLabels={s.autoLabels}
+          catalog={catalog}
+          onSetLabels={(next) => onSetLabels(s.ticker, next)}
+        />
         {showPositions && s.position && <PositionDetail p={s.position} />}
         <HistoryChart s={s} initialWindow={trendWindow} />
       </li>

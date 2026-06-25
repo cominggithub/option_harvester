@@ -66,6 +66,7 @@ model Mark {
   favorite  Boolean  @default(false)
   target    Boolean  @default(false)
   rating    Int      @default(0) // option-target conviction: +1..+3 call, -1..-3 put, 0 = unrated
+  labels    String[] @default([]) // user tags (nc/np/low vol/…); catalog = seeds ∪ in-use, no separate table
   updatedAt DateTime @updatedAt @map("updated_at")
 
   security Security @relation(fields: [ticker], references: [ticker], onDelete: Cascade)

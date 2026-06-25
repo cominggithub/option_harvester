@@ -16,6 +16,10 @@ html {
 }
 
 body {
+  /* ponytail: zoom scales the whole UI 25% (fonts + fixed px grid together) so
+     the dense table doesn't overflow. Swap for a per-class bump only if you want
+     text bigger while spacing stays. */
+  zoom: 1.25;
   background: #f7f8fa;
   color: #1a1d21;
   font-family: var(--font-sans);

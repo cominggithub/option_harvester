@@ -13,6 +13,8 @@ export type SortKey =
   | "marketCap"
   | "volume"
   | "trend"
+  | "slope1m"
+  | "slope3m"
   | "slope6m"
   | "slope1y"
   | "position"
@@ -49,6 +51,8 @@ export const SORT_LABELS: Record<SortKey, string> = {
   marketCap: "Mkt Cap",
   volume: "Volume",
   trend: "Trend",
+  slope1m: "1M trend",
+  slope3m: "3M trend",
   slope6m: "6M trend",
   slope1y: "1Y trend",
   position: "Position",
@@ -65,6 +69,8 @@ function sortValue(
   if (key === "ticker") return r.ticker;
   if (key === "name") return r.name;
   if (key === "trend") return r.trend?.[trendWindow]?.slopePct ?? null;
+  if (key === "slope1m") return r.trend?.m1?.slopePct ?? null;
+  if (key === "slope3m") return r.trend?.m3?.slopePct ?? null;
   if (key === "slope6m") return r.trend?.m6?.slopePct ?? null;
   if (key === "slope1y") return r.trend?.y1?.slopePct ?? null;
   if (key === "position") return r.position?.net ?? null;
