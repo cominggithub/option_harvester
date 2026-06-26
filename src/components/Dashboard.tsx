@@ -85,8 +85,10 @@ const TREND_DIRS: { id: TrendDir; label: string }[] = [
 
 export function Dashboard({ securities, asOf }: Props) {
   const [view, setView] = useState<ViewId>("cc");
-  const [sortKey, setSortKey] = useState<SortKey>("final");
+  const [sortKey, setSortKey] = useState<SortKey>("ivPct");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  // Filter toolbar is collapsed by default — keeps the header compact.
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [trendWindow, setTrendWindow] = useState<TrendWindowKey>("y1");
   const [trendDir, setTrendDir] = useState<TrendDir>("all");
   // Price filter (applies to every screen). null = unbounded on that side.
@@ -226,7 +228,7 @@ export function Dashboard({ securities, asOf }: Props) {
     // Each screen gets its natural default sort: Call Model leads with Edge,
     // Option Targets with your rating (Call sub-view first), else the fused Signal.
     if (id === "targets") setTargetSide("call");
-    setSortKey(id === "model" ? "ccScore" : id === "targets" ? "ratingCall" : "final");
+    setSortKey(id === "model" ? "ccScore" : id === "targets" ? "ratingCall" : "ivPct");
     setSortDir("desc");
   }, []);
 
@@ -302,20 +304,36 @@ export function Dashboard({ securities, asOf }: Props) {
         onSelect={onSelectView}
       />
       <main className="flex h-full flex-1 flex-col overflow-hidden">
-        <header className="border-b border-line bg-surface px-8 py-4">
+        <header className="border-b border-line bg-surface px-8 py-3">
           <div className="flex items-baseline justify-between gap-4">
             <h2 className="text-[20px] font-semibold tracking-tight text-ink">{meta.title}</h2>
-            <span className="tnum text-[13px] text-ink-muted">
-              {visible.length} {visible.length === 1 ? "security" : "securities"}
-              <span className="text-ink-faint">
-                {" · "}sorted by {SORT_LABELS[sortKey]}
-                {sortKey === "trend" ? ` (${TREND_WINDOW_LABEL[trendWindow]})` : ""}{" "}
-                {sortDir === "desc" ? "↓" : "↑"}
+            <div className="flex items-center gap-3">
+              <span className="tnum text-[13px] text-ink-muted">
+                {visible.length} {visible.length === 1 ? "security" : "securities"}
+                <span className="text-ink-faint">
+                  {" · "}sorted by {SORT_LABELS[sortKey]}
+                  {sortKey === "trend" ? ` (${TREND_WINDOW_LABEL[trendWindow]})` : ""}{" "}
+                  {sortDir === "desc" ? "↓" : "↑"}
+                </span>
               </span>
-            </span>
+              <button
+                type="button"
+                aria-pressed={filtersOpen}
+                onClick={() => setFiltersOpen((v) => !v)}
+                className={`rounded-md border px-2.5 py-1 text-[12px] ${
+                  filtersOpen
+                    ? "border-accent bg-accent text-white"
+                    : "border-line bg-surface text-ink-muted hover:bg-canvas"
+                }`}
+              >
+                {filtersOpen ? "▾" : "▸"} Filters
+              </button>
+            </div>
           </div>
           <p className="mt-1 max-w-3xl text-[12.5px] leading-snug text-ink-muted">{meta.blurb}</p>
 
+          {filtersOpen && (
+          <>
           {/* Option Targets sub-views: Call (NC) / Put (NP) grouping + held-on-top. */}
           {view === "targets" && (
             <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-[12px]">
@@ -584,6 +602,8 @@ export function Dashboard({ securities, asOf }: Props) {
               ◆ {showPositions ? "Position shown" : "Position hidden"}
             </button>
           </div>
+          </>
+          )}
         </header>
 
         <div className="scrollbar-thin flex-1 overflow-y-auto">

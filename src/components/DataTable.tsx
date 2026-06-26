@@ -6,7 +6,6 @@ import type { SortKey, SortDir, TrendWindowKey } from "@/lib/view";
 import { harvesterColor } from "@/lib/harvester";
 import { ccEdgeColor, formatEdge } from "@/lib/ccscore";
 import { finalColor, sideLabel } from "@/lib/score";
-import { IV_RANK_MIN_CONFIDENT, type IvStats } from "@/lib/ivstats";
 import { sectorColor } from "@/lib/sectors";
 import { AUTO_LABELS, labelColor } from "@/lib/labels";
 import {
@@ -20,23 +19,32 @@ import { StarIcon, TargetIcon, SortArrow, SproutIcon } from "@/components/icons"
 import { Sparkline } from "@/components/Sparkline";
 import { HistoryChart } from "@/components/HistoryChart";
 
-// Column widths as an inline gridTemplateColumns string (header + every row share
-// it). Built from parts so optional columns drop in cleanly: a 96px Rating column
-// after Mark (Option Targets screen) and a 116px Position column after Company.
+// Row-1 column widths as an inline gridTemplateColumns string (header + every row
+// share it). A uniform `gap-x-3` (see GRID classes) sits between every column, so
+// each width below is pure content — no internal padding hacks, no collisions.
+// Optional columns drop in cleanly: a Rating column (Option Targets) after Mark,
+// and the S/C/P Position block at the far right. The description, labels, and price
+// charts live on a full-width SECOND grid row (see Row), not in these columns.
 const gridCols = (showPositions: boolean, showRating: boolean): string =>
   [
-    "60px",
-    showRating ? "96px" : null,
-    "96px",
-    "minmax(140px,1fr)",
-    showPositions ? "116px" : null,
-    // chart, Signal, Harvester, Edge, IV, IV Rk, Last, Chg %, Mkt Cap, Volume —
-    // each sized to its header/value, not padded; the 1fr Company soaks up the slack.
-    "236px 76px 86px 56px 56px 58px 84px 66px 80px 72px",
+    "40px", // Mark (star + bullseye)
+    showRating ? "92px" : null, // Rating (NC/NP stars)
+    "150px", // Symbol + badges
+    "minmax(110px,1fr)", // Company name
+    "66px", // Signal
+    "58px", // Harvester
+    "56px", // Edge
+    "54px", // IV
+    "78px", // Last
+    "62px", // Chg %
+    "72px", // Mkt Cap
+    "74px", // Volume
+    showPositions ? "118px" : null, // Position S/C/P (far right)
   ]
     .filter(Boolean)
     .join(" ");
-const PAD = "pl-5 pr-4";
+const PAD = "pl-5 pr-5";
+const GRID = "grid gap-x-3"; // shared by header + rows so columns line up exactly
 
 const fmtSigned = (n: number) => (n > 0 ? `+${n}` : `${n}`);
 const signTone = (n: number) =>
@@ -51,19 +59,24 @@ const compactQty = (n: number): string => {
 
 const POS_LANES = ["spot", "call", "put"] as const;
 
-// Three fixed, right-aligned lanes (Spot / Call / Put) — mirrors TrendStrip so the
-// numbers stack into clean vertical columns. Blank ("·") when a lane is empty.
+// Signed, sign-colored value per S/C/P lane, right-aligned to line up under the
+// S C P header. Empty cell (not "· · ·") when there's no position, so the column
+// stays quiet for the many names you don't hold.
 function PositionCell({ p }: { p: SecurityRow["position"] }) {
-  const tip = p
-    ? `Spot ${p.spot} · Call ${p.call} · Put ${p.put} · ${p.count} leg${p.count === 1 ? "" : "s"} — expand for detail`
-    : undefined;
+  if (!p) return <span aria-hidden />;
+  const tip = `Spot ${p.spot} · Call ${p.call} · Put ${p.put} · ${p.count} leg${p.count === 1 ? "" : "s"} — expand for detail`;
   return (
-    <div className="tnum flex items-center justify-end gap-1 text-[11.5px] leading-none" title={tip}>
+    <div className="tnum flex items-center justify-end gap-2 text-[13px] leading-none" title={tip}>
       {POS_LANES.map((k) => {
-        const v = p ? p[k] : 0;
+        const v = p[k];
         return (
-          <span key={k} className={`w-[32px] text-right ${v ? "text-ink" : "text-ink-faint/40"}`}>
-            {v ? compactQty(v) : "·"}
+          <span
+            key={k}
+            className={`w-[30px] text-right ${
+              v > 0 ? "text-positive" : v < 0 ? "text-negative" : "text-ink-faint/50"
+            }`}
+          >
+            {v ? (v > 0 ? "+" : "") + compactQty(v) : "·"}
           </span>
         );
       })}
@@ -121,28 +134,6 @@ function PositionDetail({ p }: { p: NonNullable<SecurityRow["position"]> }) {
         </table>
       </div>
     </div>
-  );
-}
-
-// IV rank cell: the value is dimmed (with a · marker) while the IV history is too
-// short to trust; the tooltip always shows percentile, range, and sample size.
-function IvRankCell({ iv }: { iv: IvStats }) {
-  const tip =
-    iv.rank == null
-      ? `IV rank: building history — ${iv.n} day${iv.n === 1 ? "" : "s"} so far`
-      : `IV rank ${iv.rank}% · percentile ${iv.percentile}% · range ${iv.min}–${iv.max}% · ${iv.n} days`;
-  if (iv.rank == null)
-    return (
-      <span className="tnum text-right text-[13px] text-ink-faint" title={tip}>
-        —
-      </span>
-    );
-  const thin = iv.n < IV_RANK_MIN_CONFIDENT;
-  return (
-    <span className={`tnum text-right text-[13px] ${thin ? "text-ink-faint" : "text-ink"}`} title={tip}>
-      {iv.rank}
-      {thin && <sup className="ml-px text-[8px]">·</sup>}
-    </span>
   );
 }
 
@@ -345,28 +336,34 @@ export function DataTable({
   return (
     <div className="w-full">
       <div
-        className={`sticky top-0 z-10 grid ${PAD} items-center border-b border-line bg-surface py-2.5`}
+        className={`sticky top-0 z-10 ${GRID} ${PAD} items-center border-b border-line bg-surface py-2.5`}
         style={{ gridTemplateColumns: grid }}
       >
-        <span className="text-[11px] font-medium uppercase tracking-wider text-ink-faint">
-          Mark
-        </span>
+        <span className="text-[10px] font-medium uppercase tracking-wide text-ink-faint">Mk</span>
         {showRating && (
           <HeadCell label="Rating" col={ratingCol} sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
         )}
         <HeadCell label="Symbol" col="ticker" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
         <HeadCell label="Company" col="name" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+        <HeadCell label="Signal" col="final" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
+        <HeadCell label="Harv" col="harvesterScore" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
+        <HeadCell label="Edge" col="ccScore" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
+        <HeadCell label="IV" col="ivPct" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
+        <HeadCell label="Last" col="price" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
+        <HeadCell label="Chg %" col="changePct" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
+        <HeadCell label="Mkt Cap" col="marketCap" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
+        <HeadCell label="Volume" col="volume" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
         {showPositions && (
           <button
             type="button"
             onClick={() => onSort("position")}
             title="Your position — net Spot / Call / Put contracts. Click to sort; expand a row for detail."
-            className="flex items-center justify-end gap-1"
+            className="flex items-center justify-end gap-2"
           >
             {(["S", "C", "P"] as const).map((l) => (
               <span
                 key={l}
-                className={`w-[32px] text-center text-[9px] font-medium uppercase tracking-wider ${
+                className={`w-[30px] text-right text-[11px] font-semibold uppercase ${
                   sortKey === "position" ? "text-ink underline" : "text-ink-faint"
                 }`}
               >
@@ -375,14 +372,16 @@ export function DataTable({
             ))}
           </button>
         )}
-        <div className="flex items-center gap-2" title="1M / 3M / 6M / 1Y price line — click to sort by that window's slope">
+        {/* Trend-chart sort controls — right-aligned above the per-row charts (row 2). */}
+        <div style={{ gridColumn: "1 / -1" }} className="mt-1.5 flex items-center justify-end gap-3">
           {([["slope1m", "1M"], ["slope3m", "3M"], ["slope6m", "6M"], ["slope1y", "1Y"]] as const).map(
             ([k, lbl]) => (
               <button
                 key={k}
                 type="button"
                 onClick={() => onSort(k)}
-                className={`flex w-[52px] items-center justify-center gap-0.5 text-[9px] font-medium uppercase tracking-wider transition-colors hover:text-ink ${
+                title={`Sort by ${lbl} trend slope`}
+                className={`flex w-[104px] items-center justify-center gap-0.5 text-[10px] font-medium uppercase tracking-wide transition-colors hover:text-ink ${
                   sortKey === k ? "text-ink" : "text-ink-faint"
                 }`}
               >
@@ -391,27 +390,6 @@ export function DataTable({
               </button>
             ),
           )}
-        </div>
-        <HeadCell label="Signal" col="final" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
-        <HeadCell label="Harvester" col="harvesterScore" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
-        <HeadCell label="Edge" col="ccScore" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
-        <div className="flex justify-end">
-          <HeadCell label="IV" col="ivPct" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
-        </div>
-        <div className="flex justify-end" title="IV Rank: where current IV sits in its own trailing range (0–100). Builds as IV history accumulates.">
-          <HeadCell label="IV Rk" col="ivRank" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
-        </div>
-        <div className="flex justify-end">
-          <HeadCell label="Last" col="price" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
-        </div>
-        <div className="flex justify-end">
-          <HeadCell label="Chg %" col="changePct" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
-        </div>
-        <div className="flex justify-end">
-          <HeadCell label="Mkt Cap" col="marketCap" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
-        </div>
-        <div className="flex justify-end">
-          <HeadCell label="Volume" col="volume" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
         </div>
       </div>
 
@@ -475,6 +453,7 @@ function Row({
   const ec = ccEdgeColor(s.ccScore);
   const fc = finalColor(s.final.side, s.final.score);
   const cap = formatMarketCapParts(s.marketCap);
+  const lowVol = s.volume != null && s.volume < 2_000_000; // thin options liquidity warning
   const chgTone =
     s.changePct == null
       ? "text-ink-faint"
@@ -490,15 +469,18 @@ function Row({
       onClick={onToggleExpand}
       aria-expanded={expanded}
       title={`${expanded ? "Hide" : "Show"} price history for ${s.ticker}`}
-      className={`grid ${PAD} cursor-pointer items-center border-b border-line py-3 transition-colors hover:bg-canvas ${
+      className={`${GRID} ${PAD} cursor-pointer items-center gap-y-1 border-b border-line py-3 transition-colors hover:bg-canvas ${
         expanded ? "bg-canvas" : ""
       }`}
       style={{
         gridTemplateColumns: grid,
+        // Held positions get a soft blue wash so they stand out at a glance.
+        ...(s.held ? { backgroundColor: "#eaf1fb" } : {}),
         ...(s.bestHarvest ? { boxShadow: "inset 3px 0 0 #1f7a44" } : {}),
       }}
     >
-      <div className="flex items-center gap-1.5 text-ink-faint">
+      {/* Mark — star + bullseye */}
+      <div className="flex items-center gap-0.5 text-ink-faint">
         <button
           type="button"
           aria-pressed={s.favorite}
@@ -527,35 +509,31 @@ function Row({
 
       {showRating && <RatingCell rating={s.rating} onRate={(n) => onRate(s.ticker, n)} />}
 
-      <div className="flex items-center gap-1.5">
+      {/* Symbol + badges */}
+      <div className="flex min-w-0 items-center gap-1">
         <span
-          className={`text-[9px] leading-none text-ink-faint transition-transform ${expanded ? "rotate-90" : ""}`}
+          className={`shrink-0 text-[9px] leading-none text-ink-faint transition-transform ${expanded ? "rotate-90" : ""}`}
           aria-hidden
         >
           ▶
         </span>
         {showSector && (
-          <span
-            className="dot"
-            style={{ background: sectorColor(s.sector) }}
-            title={s.sector}
-            aria-hidden
-          />
+          <span className="dot shrink-0" style={{ background: sectorColor(s.sector) }} title={s.sector} aria-hidden />
         )}
-        <span className="tnum text-[13px] font-semibold text-ink">{s.ticker}</span>
+        <span className="tnum truncate text-[13px] font-semibold text-ink">{s.ticker}</span>
         {s.type === "etf" && (
-          <span className="rounded-sm border border-line px-1 text-[9px] font-medium uppercase tracking-wide text-ink-faint">
+          <span className="shrink-0 rounded-sm border border-line px-1 text-[9px] font-medium uppercase tracking-wide text-ink-faint">
             ETF
           </span>
         )}
-        {showPositions && s.held && (
-          <span className="text-[10px] leading-none text-accent" title="Held in your IB positions">
+        {s.held && (
+          <span className="shrink-0 text-[10px] leading-none text-accent" title="Held in your IB positions">
             ◆
           </span>
         )}
         {s.downtrend && (
           <span
-            className="text-[11px] leading-none text-negative"
+            className="shrink-0 text-[11px] leading-none text-negative"
             title="Sustained downtrend (1Y down, or 3M & 6M both down) — naked-call tailwind / long-side risk"
           >
             ▾
@@ -563,7 +541,7 @@ function Row({
         )}
         {s.ccEvent && (
           <span
-            className="text-[10px] leading-none text-[#b8860b]"
+            className="shrink-0 text-[10px] leading-none text-[#b8860b]"
             title="Earnings report inside the 35-DTE window — gap risk; excluded from Call Model targets"
           >
             ⚡
@@ -571,42 +549,18 @@ function Row({
         )}
       </div>
 
-      <div className="flex min-w-0 items-baseline gap-2 pr-3">
-        <span className="shrink-0 text-[13px] text-ink">{s.name}</span>
+      {/* Company name (single line) */}
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="truncate text-[13px] text-ink">{s.name}</span>
         {s.bestHarvest && (
           <span className="shrink-0" title="Best Harvest: $20–150, IV > 50%, full weekly call ladder">
             <SproutIcon />
           </span>
         )}
-        {s.description && (
-          <span className="truncate text-[11.5px] leading-tight text-ink-faint">
-            {s.description}
-          </span>
-        )}
-        {[...s.autoLabels, ...s.labels].map((l) => {
-          const c = labelColor(l);
-          return (
-            <span
-              key={l}
-              title={s.autoLabels.includes(l) ? "Auto-derived from the data" : undefined}
-              className="shrink-0 rounded-sm px-1 text-[10px] font-medium leading-4"
-              style={{ background: c.bg, color: c.fg }}
-            >
-              {l}
-            </span>
-          );
-        })}
       </div>
 
-      {showPositions && <PositionCell p={s.position} />}
-
-      <div className="flex items-center gap-2">
-        {(["m1", "m3", "m6", "y1"] as const).map((w) => (
-          <Sparkline key={w} series={s.spark} window={w} label={s.trend?.[w]?.label ?? null} w={52} h={22} />
-        ))}
-      </div>
-
-      <div>
+      {/* Scores — right-aligned colored chips */}
+      <div className="flex justify-end">
         {s.final.side == null || s.final.score == null ? (
           <span className="text-[13px] text-ink-faint">—</span>
         ) : (
@@ -623,7 +577,7 @@ function Row({
         )}
       </div>
 
-      <div>
+      <div className="flex justify-end">
         {s.harvesterScore == null ? (
           <span className="text-[13px] text-ink-faint">—</span>
         ) : (
@@ -636,7 +590,7 @@ function Row({
         )}
       </div>
 
-      <div>
+      <div className="flex justify-end">
         {s.ccScore == null ? (
           <span className="text-[13px] text-ink-faint">—</span>
         ) : (
@@ -656,14 +610,52 @@ function Row({
       </div>
 
       <span className="tnum text-right text-[13px] text-ink">{formatIv(s.ivPct)}</span>
-      <IvRankCell iv={s.ivStats} />
       <span className="tnum text-right text-[13px] text-ink">{formatPrice(s.price)}</span>
       <span className={`tnum text-right text-[13px] ${chgTone}`}>{formatChangePct(s.changePct)}</span>
       <span className="tnum text-right text-[13px] text-ink">
         {cap.num}
         <span className="text-ink-faint">{cap.unit}</span>
       </span>
-      <span className="tnum text-right text-[13px] text-[#3f454d]">{formatVolume(s.volume)}</span>
+      <span
+        className={`tnum text-right text-[13px] ${lowVol ? "font-semibold text-[#c2410c]" : "text-[#3f454d]"}`}
+        title={lowVol ? "Low volume (<2M) — thin options liquidity, wide spreads" : undefined}
+      >
+        {formatVolume(s.volume)}
+      </span>
+
+      {showPositions && <PositionCell p={s.position} />}
+
+      {/* Row 2: description + labels (left) · price charts (right) */}
+      <div
+        style={{ gridColumn: "1 / -1" }}
+        className="flex items-center justify-between gap-6 pl-[52px]"
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          {[...s.autoLabels, ...s.labels].map((l) => {
+            const c = labelColor(l);
+            return (
+              <span
+                key={l}
+                title={s.autoLabels.includes(l) ? "Auto-derived from the data" : undefined}
+                className="shrink-0 rounded-sm px-1 text-[10px] font-medium leading-4"
+                style={{ background: c.bg, color: c.fg }}
+              >
+                {l}
+              </span>
+            );
+          })}
+          {s.description && (
+            <span className="min-w-0 flex-1 truncate text-[11.5px] leading-tight text-ink-faint">
+              {s.description}
+            </span>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-3">
+          {(["m1", "m3", "m6", "y1"] as const).map((w) => (
+            <Sparkline key={w} series={s.spark} window={w} label={s.trend?.[w]?.label ?? null} w={104} h={26} />
+          ))}
+        </div>
+      </div>
     </li>
     {expanded && (
       <li className="border-b border-line bg-canvas px-8 py-3">
