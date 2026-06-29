@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { computePnl, enrichMoneyness, type PnlReport } from "@/lib/pnl";
 
 export type TransactionRow = {
   id: number;
@@ -15,6 +16,7 @@ export type TransactionRow = {
   commission: number | null;
   realizedPnl: number | null;
   currency: string | null;
+  txType: string | null; // IB "Transaction Type": Buy/Sell/Assignment/Withdrawal/Interest/…
 };
 
 const n = (v: unknown) => (v != null ? Number(v) : null);
@@ -36,52 +38,40 @@ export async function getTransactions(): Promise<TransactionRow[]> {
     commission: n(r.commission),
     realizedPnl: n(r.realizedPnl),
     currency: r.currency,
+    txType: (r.raw as Record<string, unknown> | null)?.["Transaction Type"]?.toString() ?? null,
   }));
 }
 
-export type PnlBucket = { key: string; trades: number; realizedPnl: number; commission: number };
-
-// Realized P/L rolled up by trade date and by symbol, plus the grand total.
-// Net = realized P/L − |commission| (commissions are negative in IB exports, so add).
-export type RealizedPnl = {
-  total: { trades: number; realizedPnl: number; commission: number };
-  byDate: PnlBucket[]; // ascending date
-  bySymbol: PnlBucket[]; // descending net realized
-};
-
-export async function getRealizedPnl(): Promise<RealizedPnl> {
-  const rows = await getTransactions();
-  const date = new Map<string, PnlBucket>();
-  const sym = new Map<string, PnlBucket>();
-  const total = { trades: 0, realizedPnl: 0, commission: 0 };
-
-  for (const r of rows) {
-    const pnl = r.realizedPnl ?? 0;
-    const comm = r.commission ?? 0;
-    total.trades += 1;
-    total.realizedPnl += pnl;
-    total.commission += comm;
-
-    const dk = r.tradeDate ?? "—";
-    const d = date.get(dk) ?? { key: dk, trades: 0, realizedPnl: 0, commission: 0 };
-    d.trades += 1;
-    d.realizedPnl += pnl;
-    d.commission += comm;
-    date.set(dk, d);
-
-    const sk = r.symbol;
-    const s = sym.get(sk) ?? { key: sk, trades: 0, realizedPnl: 0, commission: 0 };
-    s.trades += 1;
-    s.realizedPnl += pnl;
-    s.commission += comm;
-    sym.set(sk, s);
+// Full reconstructed P/L report (cash-flow engine + moneyness from our price
+// history). Underlying spot at entry comes from option_harvest_daily_prices —
+// the close on or just before the entry date; null for trades before our
+// ~14-month window (those contracts get no moneyness, only DTE).
+export async function getPnlReport(): Promise<PnlReport> {
+  const [txRows, prices] = await Promise.all([
+    getTransactions(),
+    prisma.dailyPrice.findMany({ select: { ticker: true, date: true, close: true } }),
+  ]);
+  // ticker → [date, close] ascending, for an as-of lookup.
+  const byTicker = new Map<string, { date: string; close: number }[]>();
+  for (const p of prices) {
+    if (p.close == null) continue;
+    const d = p.date.toISOString().slice(0, 10);
+    (byTicker.get(p.ticker) ?? byTicker.set(p.ticker, []).get(p.ticker)!).push({ date: d, close: Number(p.close) });
   }
-
-  return {
-    total,
-    byDate: [...date.values()].sort((a, b) => a.key.localeCompare(b.key)),
-    bySymbol: [...sym.values()].sort((a, b) => b.realizedPnl - a.realizedPnl),
+  for (const arr of byTicker.values()) arr.sort((a, b) => a.date.localeCompare(b.date));
+  const spot = (symbol: string, date: string): number | null => {
+    const arr = byTicker.get(symbol);
+    if (!arr) return null;
+    let hit: number | null = null;
+    for (const p of arr) {
+      if (p.date <= date) hit = p.close;
+      else break;
+    }
+    return hit;
   };
+  const report = computePnl(txRows);
+  enrichMoneyness(report.contracts, spot);
+  return report;
 }
 
 export type TxUploadRow = {

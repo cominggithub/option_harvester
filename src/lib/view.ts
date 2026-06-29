@@ -18,6 +18,7 @@ export type SortKey =
   | "slope6m"
   | "slope1y"
   | "position"
+  | "record"
   | "rating"
   | "ratingCall"
   | "ratingPut";
@@ -56,6 +57,7 @@ export const SORT_LABELS: Record<SortKey, string> = {
   slope6m: "6M trend",
   slope1y: "1Y trend",
   position: "Position",
+  record: "Record",
   rating: "Rating",
   ratingCall: "Call ★",
   ratingPut: "Put ★",
@@ -74,6 +76,7 @@ function sortValue(
   if (key === "slope6m") return r.trend?.m6?.slopePct ?? null;
   if (key === "slope1y") return r.trend?.y1?.slopePct ?? null;
   if (key === "position") return r.position?.net ?? null;
+  if (key === "record") return r.record?.realized ?? null;
   if (key === "rating") return r.rating || null; // 0 = unrated → sorts last
   if (key === "ratingCall") return r.rating > 0 ? r.rating : null; // call view: only NC ratings rank
   if (key === "ratingPut") return r.rating < 0 ? -r.rating : null; // put view: only NP ratings rank

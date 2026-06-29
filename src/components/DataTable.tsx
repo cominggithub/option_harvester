@@ -39,6 +39,7 @@ const gridCols = (showPositions: boolean, showRating: boolean): string =>
     "62px", // Chg %
     "72px", // Mkt Cap
     "74px", // Volume
+    "84px", // Record (lifetime realized P/L on this underlying)
     showPositions ? "118px" : null, // Position S/C/P (far right)
   ]
     .filter(Boolean)
@@ -56,6 +57,25 @@ const compactQty = (n: number): string => {
   if (a >= 1000) return `${(n / 1000).toFixed(a >= 10000 ? 0 : 1).replace(/\.0$/, "")}k`;
   return `${n}`;
 };
+
+// Lifetime realized track record on the underlying (from uploaded transactions):
+// realized P/L (k) + win-rate, sign-colored. Quiet (—) for names never traded.
+function RecordCell({ r }: { r: SecurityRow["record"] }) {
+  if (!r || r.trades === 0) return <span className="text-right text-[12px] text-ink-faint/50">·</span>;
+  const k = Math.abs(r.realized) >= 1000 ? `${Math.round(r.realized / 100) / 10}k` : Math.round(r.realized).toString();
+  const tone = r.realized > 0 ? "text-positive" : r.realized < 0 ? "text-negative" : "text-ink-muted";
+  return (
+    <div
+      className="flex flex-col items-end leading-none"
+      title={`Lifetime realized ${r.realized >= 0 ? "+" : "−"}$${Math.abs(Math.round(r.realized))} over ${r.trades} closed trade${r.trades === 1 ? "" : "s"}${r.winRate != null ? ` · ${Math.round(r.winRate * 100)}% win` : ""}`}
+    >
+      <span className={`tnum text-[12.5px] font-semibold ${tone}`}>{(r.realized >= 0 ? "+" : "−") + k}</span>
+      {r.winRate != null && (
+        <span className="tnum mt-0.5 text-[10px] text-ink-faint">{Math.round(r.winRate * 100)}%·{r.trades}</span>
+      )}
+    </div>
+  );
+}
 
 const POS_LANES = ["spot", "call", "put"] as const;
 
@@ -353,6 +373,7 @@ export function DataTable({
         <HeadCell label="Chg %" col="changePct" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
         <HeadCell label="Mkt Cap" col="marketCap" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
         <HeadCell label="Volume" col="volume" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
+        <HeadCell label="Record" col="record" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
         {showPositions && (
           <button
             type="button"
@@ -622,6 +643,8 @@ function Row({
       >
         {formatVolume(s.volume)}
       </span>
+
+      <RecordCell r={s.record} />
 
       {showPositions && <PositionCell p={s.position} />}
 

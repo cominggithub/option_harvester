@@ -47,7 +47,7 @@ export default async function UploadPage() {
           </Link>{" "}
           and Holdings, transactions drive your{" "}
           <Link href="/transactions" className="text-accent hover:underline">
-            Realized P/L
+            P/L
           </Link>
           .
         </p>
@@ -74,7 +74,7 @@ export default async function UploadPage() {
               </Link>{" "}
               ·{" "}
               <Link href="/transactions" className="text-accent hover:underline">
-                Realized P/L
+                P/L
               </Link>
             </>
           )}

@@ -3,6 +3,7 @@ import { computeHarvester } from "@/lib/harvester";
 import { computeFinalScore, type FinalScore } from "@/lib/score";
 import { computeIvStats, type IvStats } from "@/lib/ivstats";
 import { getPositionSummaries, type PositionSummary } from "@/lib/positions";
+import { getPnlReport } from "@/lib/transactions";
 import type { TrendWindows } from "@/lib/trend";
 
 // Naked-call "Best Harvest" qualification (rule from the brief):
@@ -52,6 +53,9 @@ export type SecurityRow = {
   ivStats: IvStats; // IV rank/percentile from the accumulating iv_history series
   held: boolean; // user holds this underlying (from uploaded IB positions)
   position: PositionSummary | null; // aggregate of the user's holdings on this underlying
+  // Lifetime realized track record on this underlying (from uploaded transactions),
+  // so option targets show which names have actually paid. null = never traded.
+  record: { realized: number; winRate: number | null; trades: number } | null;
 };
 
 // Naked-call target (per docs/strategy.md): ETF-level only, weak/陰跌 (no upward
@@ -179,7 +183,7 @@ async function getIvHistory(): Promise<Map<string, number[]>> {
 }
 
 export async function getDashboardData(): Promise<DashboardData> {
-  const [rows, sparkMap, ivHistMap, posMap] = await Promise.all([
+  const [rows, sparkMap, ivHistMap, posMap, pnl] = await Promise.all([
     prisma.security.findMany({
       where: { isActive: true },
       include: { quote: true, mark: true, trend: true, ccScore: true },
@@ -187,7 +191,9 @@ export async function getDashboardData(): Promise<DashboardData> {
     getSparklines(),
     getIvHistory(),
     getPositionSummaries(),
+    getPnlReport(),
   ]);
+  const recMap = new Map(pnl.bySymbol.map((s) => [s.symbol.toUpperCase(), s]));
 
   let asOf: Date | null = null;
   const securities: SecurityRow[] = rows.map((r) => {
@@ -237,6 +243,10 @@ export async function getDashboardData(): Promise<DashboardData> {
       ivStats: computeIvStats(ivHistMap.get(r.ticker) ?? [], ivPct),
       held: posMap.has(r.ticker.toUpperCase()),
       position: posMap.get(r.ticker.toUpperCase()) ?? null,
+      record: (() => {
+        const rec = recMap.get(r.ticker.toUpperCase());
+        return rec ? { realized: rec.realized, winRate: rec.winRate, trades: rec.trades } : null;
+      })(),
     };
   });
 

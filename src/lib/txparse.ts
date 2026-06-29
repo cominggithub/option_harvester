@@ -93,7 +93,9 @@ const COL: Record<Field, RegExp> = {
   date: /^(tradedate|date\/?time|date|datetime|settledate|reportdate)$/i,
   quantity: /^(quantity|qty|shares)$/i,
   price: /^(tradeprice|t\.?\s*price|price)$/i,
-  proceeds: /^(proceeds|net cash|netcash)$/i,
+  // "net amount" = IB Transaction-History net cash flow (already net of commission);
+  // it's our P/L source when there's no realized-P/L column.
+  proceeds: /^(proceeds|net cash|netcash|net amount)$/i,
   commission: /^(ibcommission|commission|comm\/?fee|comm in [a-z]+|fees?)$/i,
   realized: /^(fifopnlrealized|realizedpnl|realized p\/?l|realized)$/i,
   assetClass: /^(assetclass|asset category|asset class|sec(urity)?type)$/i,
