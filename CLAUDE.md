@@ -151,6 +151,11 @@ This project owns **two dedicated databases** on the local PostgreSQL instance:
   spreads timer (see above). Surfaced in the expanded-row **Options** block
   (`OptionDetail` in `DataTable.tsx`): DTE, weekly ladder, ATM strike/mid, and the
   live spread with a too-wide verdict (>15% of mid → "wide spread" auto-label).
+  Plus **long-term fundamentals** (`trailing_pe`, `forward_pe`, `peg_ratio`,
+  `dividend_yield`, `beta`, `week52_low/high`, `profit_margins`, `analyst_rec`,
+  `target_mean_price`) — pulled from the **same** `quoteSummary` call enrich.ts
+  already makes (modules `summaryDetail`/`defaultKeyStatistics`/`financialData`), so
+  no extra Yahoo request; ETFs leave most null. Shown on the stock detail page.
 - `option_harvest_iv_history` — daily IV time series, PK `(ticker, date)`:
   iv_pct, iv_dte, weekly_buckets, price. **Appended every `npm run ingest`** (we
   have no other source of past IV — `quotes` keeps only today). Backfill what
@@ -250,9 +255,11 @@ then `npm run db:generate`.
 1. Scrapes current S&P 500 constituents + GICS sector / sub-industry from
    Wikipedia (`List_of_S%26P_500_companies`).
 2. Enriches each ticker via `yahoo-finance2`: `quote()` for price / market cap /
-   volume / change %, `quoteSummary(assetProfile)` for the description, and
-   `scripts/iv.ts` `getAtmIv()` for IV % + weekly_buckets (2 `options()` calls
-   per ticker — so a full run is now ~4 Yahoo calls/ticker, a few minutes).
+   volume / change %, `quoteSummary(assetProfile + calendarEvents + summaryDetail +
+   defaultKeyStatistics + financialData)` for description / earnings / **long-term
+   fundamentals** (one call), and `scripts/iv.ts` `getAtmIv()` for IV % + weekly_buckets
+   + ATM strike/mid/spread + expiry ladder (2 `options()` calls per ticker — so a full
+   run is ~4 Yahoo calls/ticker, a few minutes).
 3. Adds a curated set of **~70 liquid ETFs**, each tagged with a sector: sector/
    industry funds merge into their GICS sector tab, while broad-market, foreign,
    commodity, and bond funds get their own buckets (**Broad Market / International /
@@ -273,6 +280,14 @@ Notes: Wikipedia class-share tickers use a dot (`BRK.B`); Yahoo uses a dash
 ## File map
 
 - `src/app/page.tsx` — server component (`force-dynamic`): fetch + render `<Dashboard>`.
+- `src/app/stock/[ticker]/page.tsx` — **per-symbol detail page** (reached by clicking
+  a ticker in the table): price history, option/IV trend (`IvLine` + IV rank, IV/RV,
+  ladder, ATM spread), long-term fundamentals, recent **news** (lexicon-flagged), the
+  user's position (with per-leg action suggestions), and trade-history record on that
+  name. Reuses `getDashboardData`/`getPnlReport`/`getPositionGroups`/`analyzeShortOption`
+  filtered to the ticker; `getIvSeries(ticker)` (in `securities.ts`) feeds the IV chart.
+- `src/lib/news.ts` — `getNews(ticker)`: live `yf.search` headlines (cached 30m) +
+  `flagNegative()` bearish-event lexicon (`_selfCheck` via `scripts/news-check.ts`).
 - `src/app/api/marks/route.ts` — `POST /api/marks` upserts favorite/target.
 - `src/app/api/history/[ticker]/route.ts` — `GET` full daily close history for one ticker (detail chart).
 - `src/app/wiki/page.tsx` — static "Strategy & Metrics" field-manual page (strategy, screens, Harvester/Edge formulas with live color chips, trend/charts).
@@ -304,7 +319,7 @@ Notes: Wikipedia class-share tickers use a dot (`BRK.B`); Yahoo uses a dash
   the P/L engine), and the expanded-row **`OptionDetail`** block (DTE / expiry ladder /
   ATM mid + bid-ask spread).
 - `src/components/PnlDashboard.tsx` — **client** P/L page shell; `src/components/charts.tsx`
-  — hand-rolled SVG charts (EquityLine / DivergingBar / Histogram / Scatter / VBars).
+  — hand-rolled SVG charts (EquityLine / DivergingBar / Histogram / Scatter / VBars / IvLine).
 - `src/components/icons.tsx` — star / bullseye / sprout / sort-arrow SVGs.
 - `src/components/Sparkline.tsx` — inline per-row SVG price line + `sliceWindow()`/`WINDOW_FRACTION`.
 - `src/components/HistoryChart.tsx` — expanded-row detail chart (on-demand fetch, 1M/3M/6M/1Y toggle).
