@@ -20,3 +20,6 @@ __pycache__/
 
 # Claude Code local runtime
 .claude/
+
+# Test DB dumps
+backups/
