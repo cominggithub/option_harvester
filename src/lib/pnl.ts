@@ -19,6 +19,14 @@ import type { TransactionRow } from "./transactions";
 export type Strategy = "short_call" | "short_put" | "long_call" | "long_put";
 export type ContractStatus = "open" | "closed" | "expired";
 
+export type Leg = {
+  date: string | null;
+  action: string; // IB Transaction Type (Buy/Sell/Assignment/…)
+  qty: number;
+  price: number | null;
+  proceeds: number; // net cash for this leg
+};
+
 export type ContractPnl = {
   key: string;
   underlying: string;
@@ -29,11 +37,15 @@ export type ContractPnl = {
   closeDate: string | null; // realization date (last leg, or expiry if it lapsed)
   strategy: Strategy;
   dteEntry: number | null; // expiry − openDate, in days
+  holdDays: number | null; // openDate → closeDate (how long it was on)
   contracts: number; // # contracts opened
   proceeds: number; // realized net cash (Σ legs)
+  credit: number; // Σ positive legs (premium taken in)
+  debit: number; // Σ negative legs (paid out to close)
   commission: number;
   qtyNet: number; // Σ signed qty; 0 ⇒ bought back
   legs: number;
+  legDetail: Leg[];
   status: ContractStatus;
   win: boolean | null; // null while open
   spotAtEntry: number | null; // filled by enrichMoneyness()
@@ -67,6 +79,7 @@ export type AccountFlow = { type: string; count: number; amount: number };
 
 export type PnlReport = {
   contracts: ContractPnl[];
+  rolls: RollChain[];
   bySymbol: SymbolPnl[]; // realized, descending
   byStrategy: StrategyStat[];
   equity: { date: string; cum: number; pnl: number }[]; // cumulative realized over time
@@ -83,6 +96,13 @@ export type PnlReport = {
     best: { symbol: string; pnl: number } | null;
     worst: { symbol: string; pnl: number } | null;
     accountFlowTotal: number; // withdrawals/interest/tax/… (non-trading)
+    premiumCollected: number; // Σ credits taken in across all option legs
+    premiumPaid: number; // Σ debits paid out to close
+    expiredCount: number; // contracts that lapsed
+    boughtBackCount: number; // contracts closed by buying back
+    assignedCount: number; // assignment events
+    rollCount: number; // number of rolls (chain length − 1, summed)
+    symbolsTraded: number;
     firstDate: string | null;
     lastDate: string | null;
   };
@@ -147,6 +167,8 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
       .reduce((s, l) => s + (l.quantity ?? 0), 0);
     const qtyNet = legs.reduce((s, l) => s + (l.quantity ?? 0), 0);
     const proceeds = legs.reduce((s, l) => s + (l.proceeds ?? 0), 0);
+    const credit = legs.reduce((s, l) => s + Math.max(0, l.proceeds ?? 0), 0);
+    const debit = legs.reduce((s, l) => s + Math.min(0, l.proceeds ?? 0), 0);
     const commission = legs.reduce((s, l) => s + (l.commission ?? 0), 0);
     const expired = !!first.expiry && first.expiry < today;
     const status: ContractStatus = qtyNet === 0 ? "closed" : expired ? "expired" : "open";
@@ -161,11 +183,21 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
       closeDate,
       strategy: classify(right, openSign),
       dteEntry: dte(first.tradeDate, first.expiry),
+      holdDays: status === "open" ? dte(first.tradeDate, today) : dte(first.tradeDate, closeDate),
       contracts: Math.abs(openQty),
       proceeds,
+      credit,
+      debit,
       commission,
       qtyNet,
       legs: legs.length,
+      legDetail: legs.map((l) => ({
+        date: l.tradeDate,
+        action: l.txType ?? "—",
+        qty: l.quantity ?? 0,
+        price: l.price,
+        proceeds: l.proceeds ?? 0,
+      })),
       status,
       win: status === "open" ? null : proceeds > 0,
       spotAtEntry: null,
@@ -238,9 +270,11 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
   const realized = bySymbol.reduce((s, e) => s + e.realized, 0);
   const wins = closed.filter((c) => c.win).length;
   const dates = rows.map((r) => r.tradeDate).filter(Boolean).sort() as string[];
+  const rolls = buildRolls(contracts);
 
   return {
     contracts,
+    rolls,
     bySymbol,
     byStrategy,
     equity,
@@ -257,10 +291,83 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
       best: bySymbol[0] ? { symbol: bySymbol[0].symbol, pnl: bySymbol[0].realized } : null,
       worst: bySymbol.length ? { symbol: bySymbol[bySymbol.length - 1].symbol, pnl: bySymbol[bySymbol.length - 1].realized } : null,
       accountFlowTotal: [...flowByType.values()].reduce((s, f) => s + f.amount, 0),
+      premiumCollected: contracts.reduce((s, c) => s + c.credit, 0),
+      premiumPaid: contracts.reduce((s, c) => s + c.debit, 0),
+      expiredCount: contracts.filter((c) => c.status === "expired").length,
+      boughtBackCount: contracts.filter((c) => c.status === "closed").length,
+      assignedCount: [...assignBySym.values()].reduce((s, a) => s + a.count, 0),
+      rollCount: rolls.reduce((s, r) => s + r.rolls, 0),
+      symbolsTraded: symMap.size,
       firstDate: dates[0] ?? null,
       lastDate: dates[dates.length - 1] ?? null,
     },
   };
+}
+
+// A roll = closing one short and opening another on the same underlying+right
+// the same day (or next session). We chain such contracts so a rolled position
+// reads as one campaign: total credit taken, net realized, and each leg.
+export type RollChain = {
+  underlying: string;
+  right: "C" | "P";
+  strategy: Strategy;
+  links: ContractPnl[]; // ordered by open date
+  rolls: number; // links − 1
+  realized: number; // Σ proceeds of closed/expired links
+  creditCollected: number; // Σ credit across links
+  open: boolean; // last link still open
+  startDate: string | null;
+  endDate: string | null;
+};
+
+export function buildRolls(contracts: ContractPnl[]): RollChain[] {
+  // Only short options get rolled in this strategy.
+  const shorts = contracts.filter((c) => c.strategy === "short_call" || c.strategy === "short_put");
+  const byKind = new Map<string, ContractPnl[]>();
+  for (const c of shorts) {
+    const k = `${c.underlying}|${c.right}`;
+    (byKind.get(k) ?? byKind.set(k, []).get(k)!).push(c);
+  }
+  const chains: RollChain[] = [];
+  for (const [, group] of byKind) {
+    group.sort((a, b) => (a.openDate ?? "").localeCompare(b.openDate ?? ""));
+    let chain: ContractPnl[] = [];
+    const flush = () => {
+      if (!chain.length) return;
+      const last = chain[chain.length - 1];
+      chains.push({
+        underlying: chain[0].underlying,
+        right: chain[0].right,
+        strategy: chain[0].strategy,
+        links: chain,
+        rolls: chain.length - 1,
+        realized: chain.filter((c) => c.status !== "open").reduce((s, c) => s + c.proceeds, 0),
+        creditCollected: chain.reduce((s, c) => s + c.credit, 0),
+        open: last.status === "open",
+        startDate: chain[0].openDate,
+        endDate: last.closeDate,
+      });
+      chain = [];
+    };
+    for (const c of group) {
+      if (!chain.length) {
+        chain = [c];
+        continue;
+      }
+      const prev = chain[chain.length - 1];
+      // Linked when the previous leg closed (not expired-lapsed open) and this one
+      // opened within a session of that close → a deliberate roll.
+      const gap = prev.closeDate && c.openDate ? Math.abs(Date.parse(c.openDate) - Date.parse(prev.closeDate)) / DAY : 99;
+      if (prev.status !== "open" && gap <= 4) chain.push(c);
+      else {
+        flush();
+        chain = [c];
+      }
+    }
+    flush();
+  }
+  // Multi-leg chains first (the actual rolls), then by recency.
+  return chains.sort((a, b) => b.rolls - a.rolls || (b.startDate ?? "").localeCompare(a.startDate ?? ""));
 }
 
 // Attach underlying spot at entry → signed %OTM moneyness (+ = OTM in the
@@ -276,7 +383,11 @@ export function enrichMoneyness(
     if (s == null || s === 0) continue;
     c.spotAtEntry = s;
     // Call OTM when strike > spot; put OTM when strike < spot. Sign so + = OTM.
-    c.moneyness = c.right === "C" ? (c.strike - s) / s : (s - c.strike) / s;
+    const m = c.right === "C" ? (c.strike - s) / s : (s - c.strike) / s;
+    // ponytail: |moneyness| > 150% means strike and our price history are on
+    // different scales — almost always a split the daily series adjusted but the
+    // historical strike didn't. Treat as unknown rather than show a bogus +775%.
+    c.moneyness = Math.abs(m) > 1.5 ? null : m;
   }
 }
 
@@ -355,19 +466,26 @@ export function _selfCheck(): void {
     mk({ symbol: "BBB", right: "P", strike: 50, expiry: "2026-06-20", tradeDate: "2026-05-01", quantity: -1, proceeds: 150, txType: "Sell" }),
     // open short call (expiry in future, not closed): excluded from realized
     mk({ symbol: "CCC", right: "C", strike: 200, expiry: "2026-12-18", tradeDate: "2026-06-01", quantity: -1, proceeds: 400, txType: "Sell" }),
+    // a ROLL: short call closed, then re-opened the same day at a new strike
+    mk({ symbol: "DDD", right: "C", strike: 60, expiry: "2026-06-20", tradeDate: "2026-05-01", quantity: -1, proceeds: 200, txType: "Sell" }),
+    mk({ symbol: "DDD", right: "C", strike: 60, expiry: "2026-06-20", tradeDate: "2026-05-20", quantity: 1, proceeds: -50, txType: "Buy" }),
+    mk({ symbol: "DDD", right: "C", strike: 65, expiry: "2026-12-18", tradeDate: "2026-05-20", quantity: -1, proceeds: 180, txType: "Sell" }),
     // account flow: ignored from trading P/L
     mk({ symbol: "-", tradeDate: "2026-06-01", proceeds: -5000, txType: "Withdrawal" }),
   ], asOf);
 
   const assert = (c: boolean, m: string) => { if (!c) throw new Error("pnl self-check: " + m); };
-  assert(r.summary.realized === 350, `realized should be 350, got ${r.summary.realized}`);
-  assert(r.summary.closedTrades === 2, `closedTrades should be 2, got ${r.summary.closedTrades}`);
-  assert(r.summary.openContracts === 1 && r.summary.openCredit === 400, "open contract/credit wrong");
+  assert(r.summary.realized === 500, `realized should be 500, got ${r.summary.realized}`);
+  assert(r.summary.closedTrades === 3, `closedTrades should be 3, got ${r.summary.closedTrades}`);
+  assert(r.summary.openContracts === 2 && r.summary.openCredit === 580, "open contract/credit wrong");
   assert(r.summary.winRate === 1, "winRate should be 1.0");
   assert(r.bySymbol[0].symbol === "AAA" && r.bySymbol[0].realized === 200, "top symbol wrong");
   assert(r.summary.accountFlowTotal === -5000, "account flow total wrong");
   const sc = r.byStrategy.find((s) => s.strategy === "short_call")!;
-  assert(sc.trades === 1 && sc.realized === 200, "short_call stat wrong");
+  assert(sc.trades === 2 && sc.realized === 350, `short_call stat wrong: ${sc.trades}/${sc.realized}`);
+  const ddd = r.rolls.find((x) => x.underlying === "DDD")!;
+  assert(ddd && ddd.rolls === 1 && ddd.links.length === 2, "roll chain not detected");
+  assert(ddd.creditCollected === 380 && ddd.open === true, "roll chain credit/open wrong");
   // moneyness: spot 90 vs call strike 100 → +11.1% OTM
   enrichMoneyness(r.contracts, () => 90);
   const aaa = r.contracts.find((c) => c.underlying === "AAA")!;

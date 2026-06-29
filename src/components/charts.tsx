@@ -39,6 +39,34 @@ export function EquityLine({
   );
 }
 
+// ── Vertical bars over time (monthly realized P/L) ───────────────────────────
+export function VBars({ data, h = 150 }: { data: { label: string; value: number }[]; h?: number }) {
+  if (!data.length) return <div className="text-[12px] text-ink-faint">No closed trades yet.</div>;
+  const w = Math.max(320, data.length * 38);
+  const maxAbs = Math.max(1, ...data.map((d) => Math.abs(d.value)));
+  const pad = { t: 8, b: 26 };
+  const mid = pad.t + (h - pad.t - pad.b) / 2;
+  const bw = (w / data.length) * 0.6;
+  const scale = (h - pad.t - pad.b) / 2 / maxAbs;
+  return (
+    <svg width="100%" viewBox={`0 0 ${w} ${h}`} className="block" preserveAspectRatio="xMinYMid meet" aria-hidden>
+      <line x1={0} x2={w} y1={mid} y2={mid} stroke={GREY} strokeWidth={0.5} />
+      {data.map((d, i) => {
+        const cx = (i + 0.5) * (w / data.length);
+        const bh = Math.abs(d.value) * scale;
+        const y = d.value >= 0 ? mid - bh : mid;
+        return (
+          <g key={d.label}>
+            <rect x={cx - bw / 2} y={y} width={bw} height={Math.max(bh, 0.5)} rx={1} fill={sign(d.value)} fillOpacity={0.85} />
+            <text x={cx} y={h - 14} textAnchor="middle" className="fill-ink-faint tnum" fontSize={8.5}>{d.label}</text>
+            <text x={cx} y={h - 4} textAnchor="middle" className="fill-ink-faint tnum" fontSize={8}>{k(d.value)}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 // ── Diverging horizontal bars (P/L by symbol / strategy) ──────────────────────
 export function DivergingBar({
   items,
