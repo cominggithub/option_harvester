@@ -103,6 +103,19 @@ history+trend (`npm run ingest:history`), logging to `log/daily.log`.
 - Run now: `sudo systemctl start option_harvester-ingest.service`.
 - Units: `/etc/systemd/system/option_harvester-ingest.{service,timer}`.
 
+### Intraday option-spread refresh — `option_harvester-spreads.timer`
+
+Yahoo only returns **live option bid/ask while the US market is open** (off-session
+it's `0/0`), and the nightly ingest runs when it's closed — so a separate timer
+runs `scripts/spreads.sh` (→ `npm run ingest:spreads`, `scripts/ingest-spreads.ts`)
+**during US hours** to capture the ATM ~30-DTE call's bid/ask/mid/spread and stamp
+`spread_at`. Fires at **23:30 / 01:00 / 02:30 GMT+8** (≈US mid-session), several
+shots so one lands whenever the PC is on; **`Persistent=false`** (a catch-up run
+after the close would just hit `0/0`). The nightly ingest deliberately **does not
+touch** `atm_bid/atm_ask/atm_spread_pct/spread_at` so it can't clobber the live
+capture — it only refreshes `atm_strike/atm_mid/expiries` (mid from last trade).
+Logs to `log/spreads.log`. Units: `/etc/systemd/system/option_harvester-spreads.{service,timer}`.
+
 ## Database — IMPORTANT ownership rules
 
 This project owns **two dedicated databases** on the local PostgreSQL instance:
@@ -129,7 +142,15 @@ This project owns **two dedicated databases** on the local PostgreSQL instance:
 - `option_harvest_securities` — static metadata: ticker (PK), name, description,
   sector (GICS), sub_industry, type (`stock` | `etf`), is_active.
 - `option_harvest_quotes` — latest snapshot per ticker: price, market_cap,
-  volume, change_pct, **iv_pct**, **iv_dte**, **weekly_buckets**, currency, as_of.
+  volume, change_pct, **iv_pct**, **iv_dte**, **weekly_buckets**, next_earnings,
+  currency, as_of. Plus ATM option liquidity: **atm_strike**, **atm_mid** (ATM
+  ~30-DTE call mid — bid/ask mid when live, else last trade), **atm_bid/atm_ask**,
+  **atm_spread_pct** ((ask−bid)/mid, 0–1), **spread_at** (when bid/ask were last
+  captured live), and **expiries** (JSONB ladder `[{d,dte}]` within ≤63 DTE).
+  strike/mid/expiries refresh nightly; bid/ask/spread come from the intraday
+  spreads timer (see above). Surfaced in the expanded-row **Options** block
+  (`OptionDetail` in `DataTable.tsx`): DTE, weekly ladder, ATM strike/mid, and the
+  live spread with a too-wide verdict (>15% of mid → "wide spread" auto-label).
 - `option_harvest_iv_history` — daily IV time series, PK `(ticker, date)`:
   iv_pct, iv_dte, weekly_buckets, price. **Appended every `npm run ingest`** (we
   have no other source of past IV — `quotes` keeps only today). Backfill what
@@ -160,6 +181,14 @@ This project owns **two dedicated databases** on the local PostgreSQL instance:
   that section's own header, keeping `Summary` rows (drops per-`Lot` duplicates), so
   decoy sections that also have a Symbol column (Financial Instrument Information,
   Codes) can't leak. Generic header-scan is the fallback for Flex Query / Portfolio CSVs.
+- `option_harvest_transactions` — parsed trade rows from an uploaded IB
+  **Transaction History** export (`src/lib/txparse.ts`, dispatches Activity
+  Statement "Trades" vs Flex/generic). Columns: symbol, description, asset_class,
+  trade_date, `right`, strike, expiry, quantity, price, **proceeds**, commission,
+  realized_pnl, currency, raw, upload_id. **Important:** this export has **no
+  realized-P/L column** — only signed cash flows (`Net Amount`, mapped to
+  `proceeds`, already net of commission). `option_harvest_transaction_uploads`
+  keeps every raw file (re-importable via `POST /api/transactions/reimport`).
 - `option_harvest_marks` — user marks: `favorite` + `target` booleans per ticker
   (written by `POST /api/marks`; survives re-ingest, separate from quote data).
 - `option_harvest_daily_prices` — our own daily OHLCV history, PK `(ticker, date)`,
@@ -184,12 +213,19 @@ This project owns **two dedicated databases** on the local PostgreSQL instance:
 
 ### IV & Harvester score
 
-- **IV %** (`iv_pct`) — front-month at-the-money implied volatility (~30 DTE,
-  prefers the first expiry ≥ 21 days out). Yahoo's own `impliedVolatility`
-  field is unusable here (≈0 with empty bid/ask on stale/closed-market data),
-  so `scripts/iv.ts` **inverts Black–Scholes from the ATM option `lastPrice`**
-  (nearest-strike call + put, averaged). Stored at ingest; some names/ETFs
-  without listed options are null.
+- **IV %** (`iv_pct`) — front-month at-the-money implied volatility. The
+  front-month = listed expiry **closest to 30 DTE among those ≥ 21 days out**;
+  its DTE is stored as **`iv_dte`** (the "DTE" in the Options detail). Yahoo's own
+  `impliedVolatility` field is unusable here (≈0 with empty bid/ask on
+  stale/closed-market data), so `scripts/iv.ts` **inverts Black–Scholes** from the
+  ATM option price (nearest-strike call + put, averaged) — using the **bid/ask
+  midpoint when both sides are live, else `lastPrice`**. Stored at ingest; some
+  names/ETFs without listed options are null.
+- **ATM liquidity & expiry ladder** (`getAtmIv` also returns these): `atm_strike`,
+  `atm_mid` (ATM call mid), and `expiries` (the ≤63-DTE ladder) are stored nightly;
+  `atm_bid/atm_ask/atm_spread_pct` are filled by the **intraday spreads timer**.
+  Spread = (ask−bid)/mid; **> 15% of mid → "wide spread"** auto-label (illiquid,
+  wide fills). All shown in the expanded-row **Options** block (`OptionDetail`).
 - **Harvester score** (0–100, derived at read time in `src/lib/harvester.ts`,
   NOT stored): `ivScore` (IV 15%→0, 65%→100, clamped) × `liqFactor`
   (0.55–1.0 from dollar volume, $10M→0.55, $10B→1.0). Rendered as a green-heat
@@ -240,26 +276,52 @@ Notes: Wikipedia class-share tickers use a dot (`BRK.B`); Yahoo uses a dash
 - `src/app/api/marks/route.ts` — `POST /api/marks` upserts favorite/target.
 - `src/app/api/history/[ticker]/route.ts` — `GET` full daily close history for one ticker (detail chart).
 - `src/app/wiki/page.tsx` — static "Strategy & Metrics" field-manual page (strategy, screens, Harvester/Edge formulas with live color chips, trend/charts).
-- `src/app/upload/page.tsx` — **IB Position Upload**: upload CSV + kept-file history (`PositionsControls` posts to `/api/positions`; `UploadHistory` re-imports).
-- `src/app/positions/page.tsx` — **Positions**: read-only table of current holdings parsed from the latest uploaded file.
-- `src/app/api/positions/route.ts` — `POST` (store file + parse + replace) / `DELETE` (clear; `?uploads=1` also wipes file history). `reimport/route.ts` — re-parse a kept upload.
-- `src/components/TopNav.tsx` — global top bar (home logo + Analyzer / Wiki / Positions), rendered in `layout.tsx`; all pages live under it in a flex-col shell.
-- `src/lib/ibparse.ts` — tolerant IB CSV parser; `src/lib/positions.ts` — `getPositions()` + `getHeldSymbols()`.
+- `src/app/upload/page.tsx` — **IB Upload**: one CSV box (`/api/upload` auto-detects
+  positions vs transaction-history via `src/lib/uploadkind.ts`) + kept-file history.
+  Uploading positions also auto-pulls any newly-held off-index ticker into the
+  universe immediately (`addNewHoldings` in `api/positions/route.ts`, via `enrich.ts`).
+- `src/app/positions/page.tsx` — **Positions** (full-width): holdings grouped by
+  instrument **plus a suggested-action board** — every short option leg analyzed
+  (`src/lib/posanalysis.ts`) into one action: close/harvest, let-expire, roll,
+  buy-spot-to-defend, watch, hold; summary band shows harvestable-$/at-risk-$.
+- `src/app/transactions/page.tsx` — **P/L** (full-width client `PnlDashboard`):
+  realized P/L **reconstructed from cash flows** (`src/lib/pnl.ts`) — overall +
+  equity curve, by-strategy, by-stock, attribution, short call/put deep-dive
+  (DTE-vs-P/L scatter + target band), roll campaigns, and an all-contracts table.
+  Sections are left-nav tabs, deep-linkable via `?s=`.
+- `src/app/api/positions/route.ts` — `POST` (store file + parse + replace + pull new
+  holdings) / `DELETE`. `api/transactions/route.ts` + both `reimport/route.ts`.
+- `src/components/TopNav.tsx` — global top bar (Analyzer / Wiki / IB Upload / Positions / P/L).
+- `src/lib/ibparse.ts` (positions) + `src/lib/txparse.ts` (transactions) — tolerant IB
+  CSV parsers; `src/lib/positions.ts` — `getPositions()`, `getHeldSymbols()`,
+  `getPositionGroups()` (carries underlying spot/IV for analysis).
 - `src/app/layout.tsx`, `src/app/globals.css` (incl. `.scrollbar-none`/`.scrollbar-thin`), `src/app/icon.svg`.
 - `src/components/Dashboard.tsx` — **client** orchestrator: view/sort state, live
   marks (optimistic), counts, filtering. Owns the app shell (nav + main).
 - `src/components/LeftNav.tsx` — left sidebar: Screens + Sectors, counts, active state.
-- `src/components/DataTable.tsx` — sortable table, mark toggles, green-scale Harvester chip.
+- `src/components/DataTable.tsx` — sortable table, mark toggles, green-scale Harvester
+  chip, sortable **Record** column (lifetime realized P/L + win% per underlying, from
+  the P/L engine), and the expanded-row **`OptionDetail`** block (DTE / expiry ladder /
+  ATM mid + bid-ask spread).
+- `src/components/PnlDashboard.tsx` — **client** P/L page shell; `src/components/charts.tsx`
+  — hand-rolled SVG charts (EquityLine / DivergingBar / Histogram / Scatter / VBars).
 - `src/components/icons.tsx` — star / bullseye / sprout / sort-arrow SVGs.
 - `src/components/Sparkline.tsx` — inline per-row SVG price line + `sliceWindow()`/`WINDOW_FRACTION`.
 - `src/components/HistoryChart.tsx` — expanded-row detail chart (on-demand fetch, 1M/3M/6M/1Y toggle).
 - `src/lib/db.ts` — Prisma client singleton.
-- `src/lib/securities.ts` — `getDashboardData()` (flat rows + marks + bestHarvest), `isBestHarvest()`.
+- `src/lib/enrich.ts` — shared per-ticker ingest pipeline (`ingestConstituent` /
+  `ingestHistory`) used by the bulk scripts **and** the upload route's auto-pull.
+- `src/lib/pnl.ts` — cash-flow P/L engine (`computePnl`, `cohortStats`, `buildRolls`);
+  `src/lib/transactions.ts` — `getPnlReport()` (+ moneyness from price history).
+- `src/lib/posanalysis.ts` — `analyzeShortOption()`: per-position action suggestion.
+- `src/lib/securities.ts` — `getDashboardData()` (flat rows + marks + bestHarvest + record), `isBestHarvest()`.
 - `src/lib/harvester.ts` — `computeHarvester()` score + `harvesterColor()` green scale.
 - `src/lib/score.ts` — `computeFinalScore()`: fuses trend + Harvester + Edge (+ IV-rank tilt once ≥20 days, via `ivRankFactor()`) into one **Signal** (0–100) tagged `call` (NC, naked call) / `put` (NP, naked put) / null; `finalColor()` (green=call, indigo=put). Default sort on all screens except Call Model.
 - `src/lib/ivstats.ts` — `computeIvStats()`: IV rank/percentile + sample size from the iv_history series; `IV_RANK_MIN_CONFIDENT` (20) confidence gate.
 - `src/lib/trend.ts` — `computeTrend()`: per-window (1M/3M/6M/1Y) OLS regression → up/down/sideways.
-- `scripts/ingest-history.ts` — daily OHLCV fetch + trend recompute; `scripts/daily.sh` — timer entrypoint.
+- `scripts/ingest-history.ts` — daily OHLCV fetch + trend recompute; `scripts/daily.sh` — daily timer entrypoint.
+- `scripts/ingest-spreads.ts` (`npm run ingest:spreads`) — intraday ATM bid/ask/spread capture; `scripts/spreads.sh` — its US-hours timer entrypoint.
+- `scripts/iv.ts` — `getAtmIv()`: BS-inverted IV + weekly buckets + ATM strike/mid/bid/ask/spread + expiry ladder.
 - `src/lib/view.ts` — sort keys/labels + `sortRows()` (nulls always last).
 - `src/lib/format.ts` — market-cap / volume / price / IV / % formatting.
 - `src/lib/sectors.ts` — sector colors, `SECTOR_ORDER`, `sectorRank()`, slugs.
