@@ -62,7 +62,8 @@ function Overview({ r }: { r: PnlReport }) {
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-4 xl:grid-cols-8">
-        <Stat label="Realized P/L" value={money(s.realized)} tone={cls(s.realized)} sub={`${s.closedTrades} closed`} />
+        <Stat label={`Realized YTD ${s.ytdStart.slice(0, 4)}`} value={money(s.realizedYtd)} tone={cls(s.realizedYtd)} sub={`${s.closedYtd} closed YTD`} />
+        <Stat label="Realized all-time" value={money(s.realized)} tone={cls(s.realized)} sub={`${s.closedTrades} closed`} />
         <Stat label="Win rate" value={pct(s.winRate)} sub={`${s.wins}/${s.closedTrades}`} />
         <Stat label="Avg / trade" value={money(s.avgTrade)} tone={cls(s.avgTrade)} />
         <Stat label="Open premium" value={moneyK(s.openCredit)} sub={`${s.openContracts} open · at risk`} />
@@ -77,7 +78,6 @@ function Overview({ r }: { r: PnlReport }) {
         <Stat label="Symbols traded" value={String(s.symbolsTraded)} />
         <Stat label="Best name" value={s.best?.symbol ?? "—"} tone="text-emerald-700" sub={s.best ? money(s.best.pnl) : undefined} />
         <Stat label="Worst name" value={s.worst?.symbol ?? "—"} tone="text-rose-700" sub={s.worst ? money(s.worst.pnl) : undefined} />
-        <Stat label="Span" value={s.firstDate?.slice(2) ?? "—"} tone="text-ink-muted" sub={s.lastDate ? `→ ${s.lastDate.slice(2)}` : undefined} />
       </div>
 
       <Panel title="Cumulative realized P/L" hint={s.firstDate ? `${s.firstDate} → ${s.lastDate}` : undefined}>

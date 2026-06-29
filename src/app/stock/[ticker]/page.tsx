@@ -209,7 +209,7 @@ export default async function StockPage({ params }: { params: Promise<{ ticker: 
           ) : (
             <>
               <div className="grid grid-cols-4 gap-x-4 border-b border-line pb-2">
-                <div><div className="overline text-ink-faint">Realized</div><div className={`tnum text-[16px] font-semibold ${pnlCls(rec.realized)}`}>{money(rec.realized)}</div></div>
+                <div><div className="overline text-ink-faint">Realized YTD</div><div className={`tnum text-[16px] font-semibold ${pnlCls(rec.realizedYtd)}`}>{money(rec.realizedYtd)}</div><div className="tnum text-[10px] text-ink-faint">all {money(rec.realized)}</div></div>
                 <div><div className="overline text-ink-faint">Win rate</div><div className="tnum text-[16px] font-semibold text-ink">{rec.winRate != null ? `${Math.round(rec.winRate * 100)}%` : "—"}</div></div>
                 <div><div className="overline text-ink-faint">Premium in</div><div className="tnum text-[16px] font-semibold text-emerald-700">{money(premium)}</div></div>
                 <div><div className="overline text-ink-faint">Rolls</div><div className="tnum text-[16px] font-semibold text-ink">{rolls.length}</div></div>

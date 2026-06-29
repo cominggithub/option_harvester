@@ -55,6 +55,7 @@ export type ContractPnl = {
 export type SymbolPnl = {
   symbol: string;
   realized: number;
+  realizedYtd: number; // realized this calendar year (by realization date)
   trades: number; // realized contracts + stock round-trips
   wins: number;
   winRate: number | null;
@@ -85,7 +86,10 @@ export type PnlReport = {
   equity: { date: string; cum: number; pnl: number }[]; // cumulative realized over time
   accountFlows: AccountFlow[];
   summary: {
-    realized: number; // total realized trading P/L
+    realized: number; // total realized trading P/L (all history)
+    realizedYtd: number; // realized this calendar year
+    closedYtd: number; // closed contracts realized this year
+    ytdStart: string; // YYYY-01-01
     tradingCommission: number;
     closedTrades: number;
     openContracts: number;
@@ -127,12 +131,13 @@ function classify(right: "C" | "P", openingQty: number): Strategy {
 
 export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): PnlReport {
   const today = asOf.toISOString().slice(0, 10);
+  const ytdStart = `${today.slice(0, 4)}-01-01`; // realization on/after this = YTD
 
   // ── 1. Split rows into option legs / stock trades / account flows ──────────
   const optByKey = new Map<string, TransactionRow[]>();
   const stockBySym = new Map<string, TransactionRow[]>();
   const flowByType = new Map<string, AccountFlow>();
-  const assignBySym = new Map<string, { amount: number; count: number }>();
+  const assignBySym = new Map<string, { amount: number; ytd: number; count: number }>();
 
   for (const r of rows) {
     const type = (r.txType ?? "").toLowerCase();
@@ -140,8 +145,9 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
       const key = `${r.symbol}|${r.right}|${r.strike}|${r.expiry}`;
       (optByKey.get(key) ?? optByKey.set(key, []).get(key)!).push(r);
     } else if (type === "assignment") {
-      const a = assignBySym.get(r.symbol) ?? { amount: 0, count: 0 };
+      const a = assignBySym.get(r.symbol) ?? { amount: 0, ytd: 0, count: 0 };
       a.amount += r.proceeds ?? 0;
+      if (r.tradeDate && r.tradeDate >= ytdStart) a.ytd += r.proceeds ?? 0;
       a.count += 1;
       assignBySym.set(r.symbol, a);
     } else if (TRADE_TYPES.has(type) && r.symbol && r.symbol !== "-") {
@@ -209,13 +215,14 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
   const symMap = new Map<string, SymbolPnl>();
   const sym = (s: string): SymbolPnl =>
     symMap.get(s) ??
-    symMap.set(s, { symbol: s, realized: 0, trades: 0, wins: 0, winRate: null, options: 0, stock: 0, assignments: 0 }).get(s)!;
+    symMap.set(s, { symbol: s, realized: 0, realizedYtd: 0, trades: 0, wins: 0, winRate: null, options: 0, stock: 0, assignments: 0 }).get(s)!;
 
   for (const c of contracts) {
     if (c.status === "open") continue;
     const e = sym(c.underlying);
     e.realized += c.proceeds;
     e.options += c.proceeds;
+    if (c.closeDate && c.closeDate >= ytdStart) e.realizedYtd += c.proceeds;
     e.trades += 1;
     if (c.win) e.wins += 1;
   }
@@ -224,12 +231,14 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
     const e = sym(s);
     e.realized += realized;
     e.stock += realized;
+    e.realizedYtd += legs.reduce((sum, l) => sum + (l.tradeDate && l.tradeDate >= ytdStart ? l.proceeds ?? 0 : 0), 0);
     e.trades += 1;
     if (realized > 0) e.wins += 1;
   }
   for (const [s, a] of assignBySym) {
     const e = sym(s);
     e.realized += a.amount;
+    e.realizedYtd += a.ytd;
     e.assignments += a.count;
   }
   for (const e of symMap.values()) e.winRate = e.trades ? e.wins / e.trades : null;
@@ -281,6 +290,9 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
     accountFlows: [...flowByType.values()].sort((a, b) => a.amount - b.amount),
     summary: {
       realized,
+      realizedYtd: bySymbol.reduce((s, e) => s + e.realizedYtd, 0),
+      closedYtd: closed.filter((c) => c.closeDate && c.closeDate >= ytdStart).length,
+      ytdStart,
       tradingCommission: closed.reduce((s, c) => s + c.commission, 0),
       closedTrades: closed.length,
       openContracts: open.length,
@@ -476,6 +488,8 @@ export function _selfCheck(): void {
 
   const assert = (c: boolean, m: string) => { if (!c) throw new Error("pnl self-check: " + m); };
   assert(r.summary.realized === 500, `realized should be 500, got ${r.summary.realized}`);
+  // all the closed legs realize in 2026 → YTD equals all-time here
+  assert(r.summary.realizedYtd === 500 && r.summary.closedYtd === 3, `YTD wrong: ${r.summary.realizedYtd}/${r.summary.closedYtd}`);
   assert(r.summary.closedTrades === 3, `closedTrades should be 3, got ${r.summary.closedTrades}`);
   assert(r.summary.openContracts === 2 && r.summary.openCredit === 580, "open contract/credit wrong");
   assert(r.summary.winRate === 1, "winRate should be 1.0");
