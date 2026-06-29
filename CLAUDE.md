@@ -283,8 +283,9 @@ Notes: Wikipedia class-share tickers use a dot (`BRK.B`); Yahoo uses a dash
 - `src/app/stock/[ticker]/page.tsx` — **per-symbol detail page** (reached by clicking
   a ticker in the table): price history, option/IV trend (`IvLine` + IV rank, IV/RV,
   ladder, ATM spread), long-term fundamentals, recent **news** (lexicon-flagged), the
-  user's position (with per-leg action suggestions), and trade-history record on that
-  name. Reuses `getDashboardData`/`getPnlReport`/`getPositionGroups`/`analyzeShortOption`
+  user's position (with per-leg action suggestions), and trade-history record (YTD +
+  all-time realized, win rate, premium, rolls) on that name. Reuses
+  `getDashboardData`/`getPnlReport`/`getPositionGroups`/`analyzeShortOption`
   filtered to the ticker; `getIvSeries(ticker)` (in `securities.ts`) feeds the IV chart.
 - `src/lib/news.ts` — `getNews(ticker)`: live `yf.search` headlines (cached 30m) +
   `flagNegative()` bearish-event lexicon (`_selfCheck` via `scripts/news-check.ts`).
@@ -300,10 +301,10 @@ Notes: Wikipedia class-share tickers use a dot (`BRK.B`); Yahoo uses a dash
   (`src/lib/posanalysis.ts`) into one action: close/harvest, let-expire, roll,
   buy-spot-to-defend, watch, hold; summary band shows harvestable-$/at-risk-$.
 - `src/app/transactions/page.tsx` — **P/L** (full-width client `PnlDashboard`):
-  realized P/L **reconstructed from cash flows** (`src/lib/pnl.ts`) — overall +
-  equity curve, by-strategy, by-stock, attribution, short call/put deep-dive
-  (DTE-vs-P/L scatter + target band), roll campaigns, and an all-contracts table.
-  Sections are left-nav tabs, deep-linkable via `?s=`.
+  realized P/L **reconstructed from cash flows** (`src/lib/pnl.ts`) — overall band
+  leading with **Realized YTD + all-time**, equity curve, by-strategy, by-stock,
+  attribution, short call/put deep-dive (DTE-vs-P/L scatter + target band), roll
+  campaigns, and an all-contracts table. Sections are left-nav tabs, deep-linkable via `?s=`.
 - `src/app/api/positions/route.ts` — `POST` (store file + parse + replace + pull new
   holdings) / `DELETE`. `api/transactions/route.ts` + both `reimport/route.ts`.
 - `src/components/TopNav.tsx` — global top bar (Analyzer / Wiki / IB Upload / Positions / P/L).
@@ -327,6 +328,8 @@ Notes: Wikipedia class-share tickers use a dot (`BRK.B`); Yahoo uses a dash
 - `src/lib/enrich.ts` — shared per-ticker ingest pipeline (`ingestConstituent` /
   `ingestHistory`) used by the bulk scripts **and** the upload route's auto-pull.
 - `src/lib/pnl.ts` — cash-flow P/L engine (`computePnl`, `cohortStats`, `buildRolls`);
+  realized rolls up all-time **and YTD** (`realizedYtd`/`closedYtd`/`ytdStart` on the
+  summary, `realizedYtd` per `SymbolPnl`) attributed by each trade's realization date.
   `src/lib/transactions.ts` — `getPnlReport()` (+ moneyness from price history).
 - `src/lib/posanalysis.ts` — `analyzeShortOption()`: per-position action suggestion.
 - `src/lib/securities.ts` — `getDashboardData()` (flat rows + marks + bestHarvest + record), `isBestHarvest()`.
