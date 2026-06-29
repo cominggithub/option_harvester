@@ -11,11 +11,14 @@
  *       npm run ingest:test   (test DB)
  */
 import * as cheerio from "cheerio";
-import YahooFinance from "yahoo-finance2";
 import { prisma } from "../src/lib/db";
-import { getAtmIv } from "./iv";
-
-const yf = new YahooFinance({ suppressNotices: ["yahooSurvey"] });
+import {
+  type Constituent,
+  OFF_INDEX_SECTOR,
+  ingestConstituent,
+  ivDateFor,
+  toYahooSymbol,
+} from "../src/lib/enrich";
 
 const WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies";
 const USER_AGENT = "Mozilla/5.0 (option_harvester ingest; contact peter_lin@edge-core.com)";
@@ -117,28 +120,6 @@ const LARGE_ETFS: { ticker: string; name: string; sector: string }[] = [
   { ticker: "EMB", name: "iShares J.P. Morgan USD Emerging Markets Bond ETF", sector: "Fixed Income" },
 ];
 
-type Constituent = {
-  ticker: string;
-  name: string;
-  sector: string;
-  subIndustry: string | null;
-  type: "stock" | "etf";
-  source?: "sp" | "etf" | "position"; // "position" = pulled from the user's holdings
-};
-
-// Bucket for held instruments that aren't in the S&P 500 / curated ETF universe.
-const OFF_INDEX_SECTOR = "Off-Index";
-
-// Map held tickers whose IB symbol differs from Yahoo's (e.g. non-US listings).
-const YF_ALIAS: Record<string, string> = {
-  UBSG: "UBSG.SW", // UBS Group AG, SIX Swiss Exchange
-};
-
-// Wikipedia lists class shares with a dot (BRK.B); Yahoo uses a dash (BRK-B).
-function toYahooSymbol(ticker: string): string {
-  return YF_ALIAS[ticker.toUpperCase()] ?? ticker.replace(/\./g, "-");
-}
-
 async function scrapeConstituents(): Promise<Constituent[]> {
   const res = await fetch(WIKI_URL, { headers: { "User-Agent": USER_AGENT } });
   if (!res.ok) throw new Error(`Wikipedia fetch failed: HTTP ${res.status}`);
@@ -161,60 +142,6 @@ async function scrapeConstituents(): Promise<Constituent[]> {
     throw new Error(`Only parsed ${out.length} constituents — Wikipedia layout may have changed`);
   }
   return out;
-}
-
-type Enriched = {
-  name: string | null; // Yahoo short/long name (used for position-sourced tickers)
-  type: "stock" | "etf"; // from Yahoo quoteType
-  yahooSector: string | null; // assetProfile sector (kept as sub-industry for off-index)
-  description: string | null;
-  price: number | null;
-  marketCap: bigint | null;
-  volume: bigint | null;
-  changePct: number | null;
-  ivPct: number | null;
-  ivDte: number | null;
-  weeklyBuckets: number | null;
-  nextEarnings: Date | null;
-  currency: string;
-};
-
-async function enrich(yahooSymbol: string, nowMs: number): Promise<Enriched> {
-  const q = await yf.quote(yahooSymbol);
-  let description: string | null = null;
-  let nextEarnings: Date | null = null;
-  let yahooSector: string | null = null;
-  try {
-    // assetProfile (description) + calendarEvents (earnings date) in one call.
-    const qs = await yf.quoteSummary(yahooSymbol, {
-      modules: ["assetProfile", "calendarEvents"],
-    });
-    description = qs.assetProfile?.longBusinessSummary ?? null;
-    yahooSector = qs.assetProfile?.sector ?? null;
-    const ed = qs.calendarEvents?.earnings?.earningsDate;
-    if (Array.isArray(ed) && ed.length) {
-      const d = ed[0] instanceof Date ? ed[0] : new Date(ed[0] as unknown as string);
-      if (!Number.isNaN(d.getTime())) nextEarnings = d;
-    }
-  } catch {
-    // Unavailable for some ETFs/tickers — leave description/earnings null.
-  }
-  const iv = await getAtmIv(yf, yahooSymbol, nowMs);
-  return {
-    name: q.shortName ?? q.longName ?? null,
-    type: q.quoteType === "ETF" ? "etf" : "stock",
-    yahooSector,
-    description,
-    price: q.regularMarketPrice ?? null,
-    marketCap: q.marketCap != null ? BigInt(Math.round(q.marketCap)) : null,
-    volume: q.regularMarketVolume != null ? BigInt(Math.round(q.regularMarketVolume)) : null,
-    changePct: q.regularMarketChangePercent ?? null,
-    ivPct: iv.ivPct,
-    ivDte: iv.dte,
-    weeklyBuckets: iv.weeklyBuckets,
-    nextEarnings,
-    currency: q.currency ?? "USD",
-  };
 }
 
 // Held instruments (from uploaded IB positions) that aren't already in the
@@ -261,98 +188,19 @@ async function main() {
     const positions = await getPositionConstituents(existing);
     const universe = [...base, ...positions];
     const nowMs = Date.now();
-    // IV-history rows are keyed by the ingest's local calendar date (one
-    // row/ticker/day, idempotent across same-day re-runs). Build UTC-midnight of
-    // the LOCAL date so Prisma's @db.Date stores the intended day (not the prior
-    // UTC day, which a local-midnight Date would map to in GMT+8).
-    const n = new Date(nowMs);
-    const ivDate = new Date(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate()));
+    const ivDate = ivDateFor(nowMs);
     console.log(
       `Ingesting ${stocks.length} S&P 500 stocks + ${etfs.length} ETFs + ${positions.length} held off-index (incl. IV)...`,
     );
 
     await runPool(universe, async (c) => {
-      const yahooSymbol = toYahooSymbol(c.ticker);
       try {
-        const e = await enrich(yahooSymbol, nowMs);
-        // For position-sourced tickers we don't have GICS metadata — take name &
-        // type from Yahoo and bucket them under "Off-Index".
-        const isPos = c.source === "position";
-        const name = isPos ? e.name ?? c.ticker : c.name;
-        const sector = isPos ? OFF_INDEX_SECTOR : c.sector;
-        const subIndustry = isPos ? e.yahooSector : c.subIndustry;
-        const type = isPos ? e.type : c.type;
-        await prisma.security.upsert({
-          where: { ticker: c.ticker },
-          create: {
-            ticker: c.ticker,
-            name,
-            description: e.description,
-            sector,
-            subIndustry,
-            type,
-            isActive: true,
-          },
-          update: {
-            name,
-            description: e.description ?? undefined,
-            sector,
-            subIndustry,
-            type,
-            isActive: true,
-          },
-        });
-        await prisma.quote.upsert({
-          where: { ticker: c.ticker },
-          create: {
-            ticker: c.ticker,
-            price: e.price,
-            marketCap: e.marketCap,
-            volume: e.volume,
-            changePct: e.changePct,
-            ivPct: e.ivPct,
-            ivDte: e.ivDte,
-            weeklyBuckets: e.weeklyBuckets,
-            nextEarnings: e.nextEarnings,
-            currency: e.currency,
-            asOf: new Date(),
-          },
-          update: {
-            price: e.price,
-            marketCap: e.marketCap,
-            volume: e.volume,
-            changePct: e.changePct,
-            ivPct: e.ivPct,
-            ivDte: e.ivDte,
-            weeklyBuckets: e.weeklyBuckets,
-            nextEarnings: e.nextEarnings,
-            currency: e.currency,
-            asOf: new Date(),
-          },
-        });
-        // Append today's IV snapshot to the rolling history (idempotent per day).
-        await prisma.ivHistory.upsert({
-          where: { ticker_date: { ticker: c.ticker, date: ivDate } },
-          create: {
-            ticker: c.ticker,
-            date: ivDate,
-            ivPct: e.ivPct,
-            ivDte: e.ivDte,
-            weeklyBuckets: e.weeklyBuckets,
-            price: e.price,
-          },
-          update: {
-            ivPct: e.ivPct,
-            ivDte: e.ivDte,
-            weeklyBuckets: e.weeklyBuckets,
-            price: e.price,
-          },
-        });
+        await ingestConstituent(c, nowMs, ivDate);
         ok++;
         if (ok % 50 === 0) console.log(`  ...${ok} done`);
       } catch (err) {
         fail++;
-        console.warn(`  ! ${c.ticker} (${yahooSymbol}): ${(err as Error).message}`);
+        console.warn(`  ! ${c.ticker} (${toYahooSymbol(c.ticker)}): ${(err as Error).message}`);
       }
     });
 
