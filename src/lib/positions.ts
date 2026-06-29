@@ -132,6 +132,7 @@ export type PositionGroup = {
   symbol: string;
   currency: string | null;
   ivPct: number | null; // underlying IV from our quotes (not the contract's own IV)
+  price: number | null; // underlying spot from our quotes (for moneyness/analysis)
   legs: PositionGroupLeg[];
   totalCost: number | null;
   marketValue: number | null;
@@ -148,16 +149,17 @@ const rawNum = (raw: unknown, key: string): number | null => {
 export async function getPositionGroups(): Promise<PositionGroup[]> {
   const [rows, quotes] = await Promise.all([
     prisma.position.findMany({ orderBy: { symbol: "asc" } }),
-    prisma.quote.findMany({ select: { ticker: true, ivPct: true } }),
+    prisma.quote.findMany({ select: { ticker: true, ivPct: true, price: true } }),
   ]);
   const iv = new Map(quotes.map((q) => [q.ticker.toUpperCase(), q.ivPct != null ? Number(q.ivPct) : null]));
+  const px = new Map(quotes.map((q) => [q.ticker.toUpperCase(), q.price != null ? Number(q.price) : null]));
 
   const m = new Map<string, PositionGroup>();
   for (const r of rows) {
     const key = r.symbol.toUpperCase();
     const g =
       m.get(key) ??
-      { symbol: key, currency: r.currency, ivPct: iv.get(key) ?? null, legs: [], totalCost: 0, marketValue: 0, unrealizedPnl: 0 };
+      { symbol: key, currency: r.currency, ivPct: iv.get(key) ?? null, price: px.get(key) ?? null, legs: [], totalCost: 0, marketValue: 0, unrealizedPnl: 0 };
 
     const isOpt = r.right != null || /option/i.test(r.secType ?? "");
     const kind: PositionKind = r.right === "C" ? "call" : r.right === "P" ? "put" : isOpt ? "opt" : "spot";
