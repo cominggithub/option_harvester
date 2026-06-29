@@ -67,12 +67,28 @@ function impliedVol(
 
 type YF = InstanceType<typeof YahooFinance>;
 
+export type Expiry = { d: string; dte: number }; // d = YYYY-MM-DD
+
 export type IvResult = {
   ivPct: number | null;
   dte: number | null;
   // Weekly-ladder coverage 0–6: distinct expiries within ~5.5 weeks (0–38 DTE).
   weeklyBuckets: number | null;
+  // ATM (~30-DTE) call liquidity. mid = bid/ask midpoint when both sides are live,
+  // else the last trade. bid/ask/spreadPct are null off-session (Yahoo returns 0/0).
+  atmStrike: number | null;
+  atmMid: number | null;
+  atmBid: number | null;
+  atmAsk: number | null;
+  atmSpreadPct: number | null; // (ask − bid) / mid, 0–1
+  expiries: Expiry[]; // near-term ladder within ~63 DTE
 };
+
+const EMPTY_IV: IvResult = {
+  ivPct: null, dte: null, weeklyBuckets: 0, atmStrike: null, atmMid: null,
+  atmBid: null, atmAsk: null, atmSpreadPct: null, expiries: [],
+};
+const LADDER_DTE = 63; // how far out to list the expiry ladder for the detail panel
 
 // Covered-call ladder horizon: the strategy sells ~35-DTE and manages weekly, so
 // we measure how dense the near-term expiry ladder is over the next ~6 weeks.
@@ -95,13 +111,16 @@ export async function getAtmIv(yf: YF, symbol: string, nowMs: number): Promise<I
     const o = await yf.options(symbol);
     const S = o.quote?.regularMarketPrice;
     const dates = o.expirationDates ?? [];
-    if (!S || !dates.length) return { ivPct: null, dte: null, weeklyBuckets: 0 };
+    if (!S || !dates.length) return EMPTY_IV;
 
     const dted = dates.map((d) => ({
       d,
       dte: (new Date(d).getTime() - nowMs) / DAY,
     }));
     const weeklyBuckets = countWeeklyBuckets(dted.map((x) => x.dte));
+    const expiries: Expiry[] = dted
+      .filter((x) => x.dte >= -1 && x.dte <= LADDER_DTE)
+      .map((x) => ({ d: new Date(x.d).toISOString().slice(0, 10), dte: Math.round(x.dte) }));
     const future = dted.filter((x) => x.dte >= 21);
     const pick = (future.length ? future : dted).sort(
       (a, b) => Math.abs(a.dte - 30) - Math.abs(b.dte - 30),
@@ -109,7 +128,7 @@ export async function getAtmIv(yf: YF, symbol: string, nowMs: number): Promise<I
 
     const chain = await yf.options(symbol, { date: new Date(pick.d) });
     const exp = chain.options?.[0];
-    if (!exp) return { ivPct: null, dte: null, weeklyBuckets };
+    if (!exp) return { ...EMPTY_IV, weeklyBuckets, expiries };
     const T = pick.dte / YEAR_DAYS;
 
     // Price each contract at the bid/ask midpoint when both sides are live (IB's
@@ -130,19 +149,30 @@ export async function getAtmIv(yf: YF, symbol: string, nowMs: number): Promise<I
 
     const call = nearest(exp.calls as never);
     const put = nearest(exp.puts as never);
+
+    // ATM call liquidity: live bid/ask when both sides quote, else last-trade mid.
+    const cBid = call?.bid ?? 0;
+    const cAsk = call?.ask ?? 0;
+    const live = cBid > 0 && cAsk >= cBid;
+    const atmMid = call ? px(call) : null;
+    const atmBid = live ? cBid : null;
+    const atmAsk = live ? cAsk : null;
+    const atmSpreadPct = live && atmMid && atmMid > 0 ? +(((cAsk - cBid) / atmMid).toFixed(4)) : null;
+
+    const base = {
+      weeklyBuckets, expiries, atmStrike: call?.strike ?? null,
+      atmMid: atmMid != null ? +atmMid.toFixed(2) : null, atmBid, atmAsk, atmSpreadPct,
+    };
+
     const ivs = [
       call && impliedVol("c", S, call.strike, T, px(call)!),
       put && impliedVol("p", S, put.strike, T, px(put)!),
     ].filter((v): v is number => v != null);
 
-    if (!ivs.length) return { ivPct: null, dte: Math.round(pick.dte), weeklyBuckets };
+    if (!ivs.length) return { ...base, ivPct: null, dte: Math.round(pick.dte) };
     const sigma = ivs.reduce((a, b) => a + b, 0) / ivs.length;
-    return {
-      ivPct: +(sigma * 100).toFixed(1),
-      dte: Math.round(pick.dte),
-      weeklyBuckets,
-    };
+    return { ...base, ivPct: +(sigma * 100).toFixed(1), dte: Math.round(pick.dte) };
   } catch {
-    return { ivPct: null, dte: null, weeklyBuckets: null };
+    return { ...EMPTY_IV, weeklyBuckets: null };
   }
 }

@@ -77,6 +77,50 @@ function RecordCell({ r }: { r: SecurityRow["record"] }) {
   );
 }
 
+// Expanded-row option detail: front-month DTE, the weekly-expiry ladder (and why
+// it's a "bad option date" when sparse), and the ATM ~30-DTE call's mid + live
+// bid/ask spread with a too-wide verdict.
+function OptionDetail({ s }: { s: SecurityRow }) {
+  if (!s.expiries?.length && s.ivDte == null && s.atmStrike == null) return null;
+  const sp = s.atmSpreadPct;
+  const known = sp != null;
+  const verdict = known ? (sp > 0.15 ? "too wide" : sp <= 0.07 ? "tight" : "ok") : null;
+  const vcls = verdict === "too wide" ? "bg-rose-100 text-rose-800" : verdict === "tight" ? "bg-emerald-100 text-emerald-800" : "bg-amber-50 text-amber-700";
+  const bucket = s.weeklyBuckets ?? 0;
+  const badLadder = bucket < 5;
+  const px = (n: number | null) => (n == null ? "—" : `$${n.toFixed(2)}`);
+  return (
+    <div className="mb-3 rounded-md border border-line bg-surface px-3 py-2.5 text-[12px]">
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-ink-muted">
+        <span className="overline text-ink-faint">Options</span>
+        <span>Front-month DTE <b className="tnum text-ink">{s.ivDte ?? "—"}</b></span>
+        <span>Weekly ladder <b className={`tnum ${badLadder ? "text-amber-700" : "text-ink"}`}>{bucket}/6</b>{badLadder && <span className="text-amber-700"> · sparse → “bad option date”</span>}</span>
+        <span>ATM strike <b className="tnum text-ink">{s.atmStrike ?? "—"}</b></span>
+        <span>Mid <b className="tnum text-ink">{px(s.atmMid)}</b></span>
+        {known ? (
+          <span className="flex items-center gap-2">
+            <span>Bid/Ask <b className="tnum text-ink">{px(s.atmBid)} / {px(s.atmAsk)}</b></span>
+            <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${vcls}`}>spread {(sp * 100).toFixed(0)}% · {verdict}</span>
+            {s.spreadAt && <span className="text-[10.5px] text-ink-faint">as of {s.spreadAt.slice(5, 16).replace("T", " ")}</span>}
+          </span>
+        ) : (
+          <span className="text-ink-faint">bid/ask — no live quote yet (filled intraday during US hours)</span>
+        )}
+      </div>
+      {s.expiries?.length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-1">
+          <span className="mr-1 text-[10.5px] uppercase tracking-wide text-ink-faint">Expiries ≤63d</span>
+          {s.expiries.map((e) => (
+            <span key={e.d} className="tnum rounded bg-canvas px-1.5 py-0.5 text-[10.5px] text-ink-muted">
+              {e.d.slice(5)} <span className="text-ink-faint">{e.dte}d</span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const POS_LANES = ["spot", "call", "put"] as const;
 
 // Signed, sign-colored value per S/C/P lane, right-aligned to line up under the
@@ -689,6 +733,7 @@ function Row({
           onSetLabels={(next) => onSetLabels(s.ticker, next)}
         />
         {showPositions && s.position && <PositionDetail p={s.position} />}
+        <OptionDetail s={s} />
         <HistoryChart s={s} initialWindow={trendWindow} />
       </li>
     )}

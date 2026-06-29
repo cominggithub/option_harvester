@@ -45,6 +45,12 @@ type Enriched = {
   ivPct: number | null;
   ivDte: number | null;
   weeklyBuckets: number | null;
+  atmStrike: number | null;
+  atmMid: number | null;
+  atmBid: number | null;
+  atmAsk: number | null;
+  atmSpreadPct: number | null;
+  expiries: { d: string; dte: number }[];
   nextEarnings: Date | null;
   currency: string;
 };
@@ -82,6 +88,12 @@ async function enrich(yahooSymbol: string, nowMs: number): Promise<Enriched> {
     ivPct: iv.ivPct,
     ivDte: iv.dte,
     weeklyBuckets: iv.weeklyBuckets,
+    atmStrike: iv.atmStrike,
+    atmMid: iv.atmMid,
+    atmBid: iv.atmBid,
+    atmAsk: iv.atmAsk,
+    atmSpreadPct: iv.atmSpreadPct,
+    expiries: iv.expiries,
     nextEarnings,
     currency: q.currency ?? "USD",
   };
@@ -117,12 +129,17 @@ export async function ingestConstituent(c: Constituent, nowMs: number, ivDate: D
     ivPct: e.ivPct,
     ivDte: e.ivDte,
     weeklyBuckets: e.weeklyBuckets,
+    atmStrike: e.atmStrike,
+    atmMid: e.atmMid,
+    expiries: e.expiries,
     nextEarnings: e.nextEarnings,
     currency: e.currency,
   };
+  // Nightly bid/ask are 0 (US market closed), so seed them only on insert and
+  // never overwrite in update — the intraday spread fetch owns those fields.
   await prisma.quote.upsert({
     where: { ticker: c.ticker },
-    create: { ticker: c.ticker, ...quote, asOf: new Date() },
+    create: { ticker: c.ticker, ...quote, asOf: new Date(), atmBid: e.atmBid, atmAsk: e.atmAsk, atmSpreadPct: e.atmSpreadPct },
     update: { ...quote, asOf: new Date() },
   });
   // Append today's IV snapshot to the rolling history (idempotent per day).

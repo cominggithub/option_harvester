@@ -26,6 +26,14 @@ export type SecurityRow = {
   changePct: number | null;
   ivPct: number | null;
   weeklyBuckets: number | null;
+  ivDte: number | null; // DTE of the front-month expiry the IV/ATM figures use
+  atmStrike: number | null; // ATM (~30-DTE) call strike
+  atmMid: number | null; // ATM call mid (bid/ask mid when live, else last trade)
+  atmBid: number | null;
+  atmAsk: number | null;
+  atmSpreadPct: number | null; // (ask−bid)/mid, 0–1; from the intraday fetch
+  spreadAt: string | null; // when bid/ask were last captured live (ISO)
+  expiries: { d: string; dte: number }[]; // near-term expiry ladder (≤~63 DTE)
   harvesterScore: number | null;
   bestHarvest: boolean;
   favorite: boolean;
@@ -75,11 +83,15 @@ const LOW_VOL = 5_000_000; // shares/day below this → "low vol"
 // fewer means the chain is monthly-only / sparse — "bad option date".
 const MIN_LADDER_BUCKETS = 5;
 
+// ATM bid/ask spread above this fraction of mid = illiquid options (wide fills).
+const WIDE_SPREAD = 0.15;
+
 function computeAutoLabels(s: {
   volume: number | null;
   weeklyBuckets: number | null;
   ivPct: number | null;
   price: number | null;
+  atmSpreadPct: number | null;
 }): string[] {
   const out: string[] = [];
   if (s.volume != null && s.volume < LOW_VOL) out.push("low vol");
@@ -87,6 +99,7 @@ function computeAutoLabels(s: {
   const hasOptions = s.ivPct != null || (wb != null && wb > 0);
   if (!hasOptions) out.push("no option");
   else if (wb != null && wb < MIN_LADDER_BUCKETS) out.push("bad option date");
+  if (s.atmSpreadPct != null && s.atmSpreadPct > WIDE_SPREAD) out.push("wide spread");
   // Price band = the strategy's $20–150 sweet spot (BEST_PRICE_*); tunable.
   if (s.price != null && s.price > BEST_PRICE_MAX) out.push("high price");
   if (s.price != null && s.price < BEST_PRICE_MIN) out.push("low price");
@@ -217,6 +230,14 @@ export async function getDashboardData(): Promise<DashboardData> {
       changePct: r.quote?.changePct != null ? Number(r.quote.changePct) : null,
       ivPct,
       weeklyBuckets,
+      ivDte: r.quote?.ivDte ?? null,
+      atmStrike: r.quote?.atmStrike != null ? Number(r.quote.atmStrike) : null,
+      atmMid: r.quote?.atmMid != null ? Number(r.quote.atmMid) : null,
+      atmBid: r.quote?.atmBid != null ? Number(r.quote.atmBid) : null,
+      atmAsk: r.quote?.atmAsk != null ? Number(r.quote.atmAsk) : null,
+      atmSpreadPct: r.quote?.atmSpreadPct != null ? Number(r.quote.atmSpreadPct) : null,
+      spreadAt: r.quote?.spreadAt ? r.quote.spreadAt.toISOString() : null,
+      expiries: (r.quote?.expiries as { d: string; dte: number }[] | null) ?? [],
       harvesterScore: score,
       bestHarvest: isBestHarvest(price, ivPct, weeklyBuckets),
       favorite: r.mark?.favorite ?? false,

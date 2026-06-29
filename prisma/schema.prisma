@@ -85,6 +85,16 @@ model Quote {
   ivDte     Int?     @map("iv_dte") // days-to-expiry used for the IV calc
   weeklyBuckets Int?  @map("weekly_buckets") // of {0,7,14,21,28,35} DTE expiries available (0-6)
   nextEarnings DateTime? @map("next_earnings") // next earnings date (gap-risk gate); null for ETFs
+  // ATM ~30-DTE option liquidity. strike/mid/expiries refresh nightly (mid from
+  // last trade since the US market is closed at ingest); bid/ask/spread come from
+  // the intraday spread fetch (scripts/ingest-spreads.ts) during US hours.
+  atmStrike   Decimal?  @map("atm_strike")
+  atmMid      Decimal?  @map("atm_mid")       // ATM call mid (bid/ask mid if live, else last)
+  atmBid      Decimal?  @map("atm_bid")
+  atmAsk      Decimal?  @map("atm_ask")
+  atmSpreadPct Decimal? @map("atm_spread_pct") // (ask-bid)/mid, 0-1; null when no live quote
+  spreadAt    DateTime? @map("spread_at")      // when bid/ask were last captured live
+  expiries    Json?                            // near-term ladder: [{d:"YYYY-MM-DD",dte:n}] within ~63 DTE
   currency  String   @default("USD")
   asOf      DateTime @default(now()) @map("as_of")
   updatedAt DateTime @updatedAt @map("updated_at")
