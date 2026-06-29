@@ -6,6 +6,8 @@ import { getPositionSummaries, type PositionSummary } from "@/lib/positions";
 import { getPnlReport } from "@/lib/transactions";
 import type { TrendWindows } from "@/lib/trend";
 
+const numOrNull = (v: unknown): number | null => (v != null ? Number(v) : null);
+
 // Naked-call "Best Harvest" qualification (rule from the brief):
 //   spot price $20–150, IV > 50%, and all six {0,7,14,21,28,35} DTE expiries.
 const BEST_PRICE_MIN = 20;
@@ -34,6 +36,18 @@ export type SecurityRow = {
   atmSpreadPct: number | null; // (ask−bid)/mid, 0–1; from the intraday fetch
   spreadAt: string | null; // when bid/ask were last captured live (ISO)
   expiries: { d: string; dte: number }[]; // near-term expiry ladder (≤~63 DTE)
+  fundamentals: {
+    trailingPe: number | null;
+    forwardPe: number | null;
+    pegRatio: number | null;
+    dividendYield: number | null; // fraction
+    beta: number | null;
+    week52Low: number | null;
+    week52High: number | null;
+    profitMargins: number | null; // fraction
+    analystRec: string | null;
+    targetMeanPrice: number | null;
+  };
   harvesterScore: number | null;
   bestHarvest: boolean;
   favorite: boolean;
@@ -195,6 +209,22 @@ async function getIvHistory(): Promise<Map<string, number[]>> {
   return map;
 }
 
+// Dated IV (+ weekly-bucket) series for one ticker — feeds the detail page's
+// option-trend chart. Full history (the table only keeps what we've ingested).
+export type IvPoint = { date: string; ivPct: number | null; weeklyBuckets: number | null };
+export async function getIvSeries(ticker: string): Promise<IvPoint[]> {
+  const rows = await prisma.ivHistory.findMany({
+    where: { ticker: ticker.toUpperCase() },
+    orderBy: { date: "asc" },
+    select: { date: true, ivPct: true, weeklyBuckets: true },
+  });
+  return rows.map((r) => ({
+    date: r.date.toISOString().slice(0, 10),
+    ivPct: numOrNull(r.ivPct),
+    weeklyBuckets: r.weeklyBuckets,
+  }));
+}
+
 export async function getDashboardData(): Promise<DashboardData> {
   const [rows, sparkMap, ivHistMap, posMap, pnl] = await Promise.all([
     prisma.security.findMany({
@@ -238,6 +268,18 @@ export async function getDashboardData(): Promise<DashboardData> {
       atmSpreadPct: r.quote?.atmSpreadPct != null ? Number(r.quote.atmSpreadPct) : null,
       spreadAt: r.quote?.spreadAt ? r.quote.spreadAt.toISOString() : null,
       expiries: (r.quote?.expiries as { d: string; dte: number }[] | null) ?? [],
+      fundamentals: {
+        trailingPe: numOrNull(r.quote?.trailingPe),
+        forwardPe: numOrNull(r.quote?.forwardPe),
+        pegRatio: numOrNull(r.quote?.pegRatio),
+        dividendYield: numOrNull(r.quote?.dividendYield),
+        beta: numOrNull(r.quote?.beta),
+        week52Low: numOrNull(r.quote?.week52Low),
+        week52High: numOrNull(r.quote?.week52High),
+        profitMargins: numOrNull(r.quote?.profitMargins),
+        analystRec: r.quote?.analystRec ?? null,
+        targetMeanPrice: numOrNull(r.quote?.targetMeanPrice),
+      },
       harvesterScore: score,
       bestHarvest: isBestHarvest(price, ivPct, weeklyBuckets),
       favorite: r.mark?.favorite ?? false,

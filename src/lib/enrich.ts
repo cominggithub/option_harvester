@@ -33,7 +33,25 @@ export type Constituent = {
   source?: "sp" | "etf" | "position"; // "position" = pulled from the user's holdings
 };
 
+export type Fundamentals = {
+  trailingPe: number | null;
+  forwardPe: number | null;
+  pegRatio: number | null;
+  dividendYield: number | null;
+  beta: number | null;
+  week52Low: number | null;
+  week52High: number | null;
+  profitMargins: number | null;
+  analystRec: string | null;
+  targetMeanPrice: number | null;
+};
+const EMPTY_FUNDAMENTALS: Fundamentals = {
+  trailingPe: null, forwardPe: null, pegRatio: null, dividendYield: null, beta: null,
+  week52Low: null, week52High: null, profitMargins: null, analystRec: null, targetMeanPrice: null,
+};
+
 type Enriched = {
+  fund: Fundamentals;
   name: string | null; // Yahoo short/long name (used for position-sourced tickers)
   type: "stock" | "etf"; // from Yahoo quoteType
   yahooSector: string | null; // assetProfile sector (kept as sub-industry for off-index)
@@ -55,15 +73,20 @@ type Enriched = {
   currency: string;
 };
 
+const numOrNull = (v: unknown): number | null =>
+  typeof v === "number" && Number.isFinite(v) ? v : null;
+
 async function enrich(yahooSymbol: string, nowMs: number): Promise<Enriched> {
   const q = await yf.quote(yahooSymbol);
   let description: string | null = null;
   let nextEarnings: Date | null = null;
   let yahooSector: string | null = null;
+  let fund: Fundamentals = EMPTY_FUNDAMENTALS;
   try {
-    // assetProfile (description) + calendarEvents (earnings date) in one call.
+    // assetProfile (description) + calendarEvents (earnings) + long-term fundamentals,
+    // all in ONE quoteSummary call (no extra Yahoo request).
     const qs = await yf.quoteSummary(yahooSymbol, {
-      modules: ["assetProfile", "calendarEvents"],
+      modules: ["assetProfile", "calendarEvents", "summaryDetail", "defaultKeyStatistics", "financialData"],
     });
     description = qs.assetProfile?.longBusinessSummary ?? null;
     yahooSector = qs.assetProfile?.sector ?? null;
@@ -72,11 +95,27 @@ async function enrich(yahooSymbol: string, nowMs: number): Promise<Enriched> {
       const d = ed[0] instanceof Date ? ed[0] : new Date(ed[0] as unknown as string);
       if (!Number.isNaN(d.getTime())) nextEarnings = d;
     }
+    const sd = qs.summaryDetail as Record<string, unknown> | undefined;
+    const ks = qs.defaultKeyStatistics as Record<string, unknown> | undefined;
+    const fd = qs.financialData as Record<string, unknown> | undefined;
+    fund = {
+      trailingPe: numOrNull(sd?.trailingPE),
+      forwardPe: numOrNull(sd?.forwardPE),
+      pegRatio: numOrNull(ks?.pegRatio),
+      dividendYield: numOrNull(sd?.dividendYield),
+      beta: numOrNull(sd?.beta),
+      week52Low: numOrNull(sd?.fiftyTwoWeekLow),
+      week52High: numOrNull(sd?.fiftyTwoWeekHigh),
+      profitMargins: numOrNull(fd?.profitMargins),
+      analystRec: typeof fd?.recommendationKey === "string" ? (fd.recommendationKey as string) : null,
+      targetMeanPrice: numOrNull(fd?.targetMeanPrice),
+    };
   } catch {
-    // Unavailable for some ETFs/tickers — leave description/earnings null.
+    // Unavailable for some ETFs/tickers — leave description/earnings/fundamentals null.
   }
   const iv = await getAtmIv(yf, yahooSymbol, nowMs);
   return {
+    fund,
     name: q.shortName ?? q.longName ?? null,
     type: q.quoteType === "ETF" ? "etf" : "stock",
     yahooSector,
@@ -133,6 +172,16 @@ export async function ingestConstituent(c: Constituent, nowMs: number, ivDate: D
     atmMid: e.atmMid,
     expiries: e.expiries,
     nextEarnings: e.nextEarnings,
+    trailingPe: e.fund.trailingPe,
+    forwardPe: e.fund.forwardPe,
+    pegRatio: e.fund.pegRatio,
+    dividendYield: e.fund.dividendYield,
+    beta: e.fund.beta,
+    week52Low: e.fund.week52Low,
+    week52High: e.fund.week52High,
+    profitMargins: e.fund.profitMargins,
+    analystRec: e.fund.analystRec,
+    targetMeanPrice: e.fund.targetMeanPrice,
     currency: e.currency,
   };
   // Nightly bid/ask are 0 (US market closed), so seed them only on insert and

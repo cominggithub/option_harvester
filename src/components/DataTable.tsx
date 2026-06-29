@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type MouseEvent } from "react";
+import Link from "next/link";
 import type { SecurityRow } from "@/lib/securities";
 import type { SortKey, SortDir, TrendWindowKey } from "@/lib/view";
 import { harvesterColor } from "@/lib/harvester";
@@ -585,7 +586,14 @@ function Row({
         {showSector && (
           <span className="dot shrink-0" style={{ background: sectorColor(s.sector) }} title={s.sector} aria-hidden />
         )}
-        <span className="tnum truncate text-[13px] font-semibold text-ink">{s.ticker}</span>
+        <Link
+          href={`/stock/${s.ticker}`}
+          onClick={(e) => e.stopPropagation()}
+          title={`${s.ticker} detail`}
+          className="tnum truncate text-[13px] font-semibold text-ink hover:text-accent hover:underline"
+        >
+          {s.ticker}
+        </Link>
         {s.type === "etf" && (
           <span className="shrink-0 rounded-sm border border-line px-1 text-[9px] font-medium uppercase tracking-wide text-ink-faint">
             ETF

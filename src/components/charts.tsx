@@ -39,6 +39,33 @@ export function EquityLine({
   );
 }
 
+// ── IV over time (option-trend) — line with min/max guides ───────────────────
+export function IvLine({ points, w = 680, h = 150 }: { points: { date: string; ivPct: number | null }[]; w?: number; h?: number }) {
+  const pts = points.filter((p): p is { date: string; ivPct: number } => p.ivPct != null);
+  if (pts.length < 2) return <div className="text-[12px] text-ink-faint">Not enough IV history yet (builds daily).</div>;
+  const vals = pts.map((p) => p.ivPct);
+  const lo = Math.min(...vals);
+  const hi = Math.max(...vals);
+  const range = hi - lo || 1;
+  const pad = { l: 8, r: 8, t: 12, b: 16 };
+  const x = (i: number) => pad.l + (i * (w - pad.l - pad.r)) / (pts.length - 1);
+  const y = (v: number) => pad.t + (h - pad.t - pad.b) * (1 - (v - lo) / range);
+  const line = pts.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)} ${y(p.ivPct).toFixed(1)}`).join(" ");
+  const last = pts[pts.length - 1].ivPct;
+  const C = "#6d28d9";
+  return (
+    <svg width="100%" viewBox={`0 0 ${w} ${h}`} className="block" preserveAspectRatio="none" aria-hidden>
+      <line x1={pad.l} x2={w - pad.r} y1={y(hi)} y2={y(hi)} stroke={GREY} strokeWidth={0.5} strokeDasharray="2 2" />
+      <line x1={pad.l} x2={w - pad.r} y1={y(lo)} y2={y(lo)} stroke={GREY} strokeWidth={0.5} strokeDasharray="2 2" />
+      <path d={`${line} L${x(pts.length - 1)} ${y(lo)} L${x(0)} ${y(lo)} Z`} fill={C} fillOpacity={0.06} />
+      <path d={line} fill="none" stroke={C} strokeWidth={1.5} strokeLinejoin="round" />
+      <circle cx={x(pts.length - 1)} cy={y(last)} r={2.4} fill={C} />
+      <text x={pad.l} y={y(hi) - 2} className="fill-ink-faint tnum" fontSize={9}>{hi.toFixed(0)}%</text>
+      <text x={pad.l} y={y(lo) + 9} className="fill-ink-faint tnum" fontSize={9}>{lo.toFixed(0)}%</text>
+    </svg>
+  );
+}
+
 // ── Vertical bars over time (monthly realized P/L) ───────────────────────────
 export function VBars({ data, h = 150 }: { data: { label: string; value: number }[]; h?: number }) {
   if (!data.length) return <div className="text-[12px] text-ink-faint">No closed trades yet.</div>;
