@@ -209,6 +209,7 @@ export type OrderRow = {
   action: string | null;
   orderType: string | null;
   auxPrice: number | null; // stop trigger
+  limitPrice: number | null;
   tif: string | null;
   quantity: number | null;
   status: string | null;
@@ -226,6 +227,7 @@ export async function getOrders(): Promise<OrderRow[]> {
     action: r.action,
     orderType: r.orderType,
     auxPrice: r.auxPrice != null ? Number(r.auxPrice) : null,
+    limitPrice: r.limitPrice != null ? Number(r.limitPrice) : null,
     tif: r.tif,
     quantity: r.quantity != null ? Number(r.quantity) : null,
     status: r.status,
@@ -282,6 +284,40 @@ export function analyzeCallProtection(groups: PositionGroup[], orders: OrderRow[
       });
     }
   return out;
+}
+
+// Each pending order annotated with the short call(s) it protects. A protective
+// stop = BUY-STOP whose trigger equals a held short call's strike on the same
+// underlying. Stops that match no current short call are flagged orphan (the call
+// was probably closed — the stop should likely be cancelled).
+export type OrderView = {
+  order: OrderRow;
+  isStop: boolean; // a BUY-STOP (the protective shape)
+  protects: { strike: number | null; expiry: string | null; qty: number; contract: string }[];
+  orphan: boolean; // a buy-stop with no matching short call
+};
+
+export function analyzeOrders(orders: OrderRow[], groups: PositionGroup[]): OrderView[] {
+  // Index short calls by symbol for quick trigger→strike matching.
+  const shortCallsBySym = new Map<string, { strike: number | null; expiry: string | null; qty: number; contract: string }[]>();
+  for (const g of groups)
+    for (const leg of g.legs)
+      if (leg.right === "C" && (leg.quantity ?? 0) < 0) {
+        const arr = shortCallsBySym.get(g.symbol) ?? [];
+        arr.push({ strike: leg.strike, expiry: leg.expiry, qty: leg.quantity ?? 0, contract: leg.contract });
+        shortCallsBySym.set(g.symbol, arr);
+      }
+
+  return orders.map((order) => {
+    const isStop = /buy/i.test(order.action ?? "") && /stop|stp/i.test(order.orderType ?? "");
+    const protects =
+      isStop && order.auxPrice != null
+        ? (shortCallsBySym.get(order.symbol) ?? []).filter(
+            (c) => c.strike != null && Math.abs((order.auxPrice as number) - c.strike) < STRIKE_EPS,
+          )
+        : [];
+    return { order, isStop, protects, orphan: isStop && protects.length === 0 };
+  });
 }
 
 export type UploadRow = {
