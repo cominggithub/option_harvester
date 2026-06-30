@@ -77,6 +77,27 @@ function StopChip({ p }: { p: CallProtection | undefined }) {
   );
 }
 
+// Sticky left table-of-contents — jumps to each rendered section.
+function SectionNav({ items }: { items: { id: string; label: string; count?: number }[] }) {
+  return (
+    <aside className="sticky top-4 hidden h-fit w-44 shrink-0 self-start lg:block">
+      <p className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-faint">On this page</p>
+      <nav className="flex flex-col gap-0.5">
+        {items.map((s) => (
+          <a
+            key={s.id}
+            href={`#${s.id}`}
+            className="flex items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-[12.5px] text-ink-muted transition-colors hover:bg-canvas hover:text-ink"
+          >
+            <span className="truncate">{s.label}</span>
+            {s.count != null && <span className="tnum text-[11px] text-ink-faint">{s.count}</span>}
+          </a>
+        ))}
+      </nav>
+    </aside>
+  );
+}
+
 // One section of the suggested-action board.
 const ACTION_ORDER: ActionKind[] = ["defend", "roll", "harvest", "let_expire", "watch", "hold"];
 const ACTION_BLURB: Record<ActionKind, string> = {
@@ -177,8 +198,20 @@ export default async function PositionsPage() {
     { cost: 0, value: 0, pnl: 0 },
   );
 
+  // Left-nav table of contents — only the sections actually rendered.
+  const toc = [
+    { id: "summary", label: "Summary" },
+    ...(unprotected.length ? [{ id: "coverage", label: "No stop", count: unprotected.length }] : []),
+    ...(earningsRisks.length ? [{ id: "earnings", label: "ER warning", count: earningsRisks.length }] : []),
+    ...(ACTION_ORDER.some((a) => counts[a] > 0) ? [{ id: "actions", label: "Actions", count: suggestions.length }] : []),
+    { id: "holdings", label: "Holdings", count: groups.length },
+  ];
+
   return (
     <main className="min-h-full bg-canvas px-6 py-7 2xl:px-10">
+     <div className="flex gap-6">
+      {groups.length > 0 && <SectionNav items={toc} />}
+      <div className="min-w-0 flex-1">
       <div className="flex items-baseline justify-between gap-4">
         <div>
           <div className="overline text-ink-faint">Interactive Brokers</div>
@@ -204,7 +237,7 @@ export default async function PositionsPage() {
       ) : (
         <>
           {/* Summary band */}
-          <div className="mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-3 lg:grid-cols-8">
+          <div id="summary" className="mt-6 scroll-mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-3 lg:grid-cols-8">
             {[
               { label: "Total Cost", value: money(total.cost), cls: "text-ink" },
               { label: "Market Value", value: money(total.value), cls: "text-ink" },
@@ -230,7 +263,7 @@ export default async function PositionsPage() {
 
           {/* Protective-stop alert — short calls not (fully) backed by a GTC buy-stop. */}
           {unprotected.length > 0 && (
-            <div className="mt-5 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3">
+            <div id="coverage" className="mt-5 scroll-mt-6 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3">
               <div className="flex items-center gap-2 text-[13px] font-semibold text-rose-800">
                 ✕ {unprotected.length} short call{unprotected.length === 1 ? "" : "s"} without a full protective stop
               </div>
@@ -279,7 +312,7 @@ export default async function PositionsPage() {
 
           {/* Earnings-gap alert — short options held across an upcoming report. */}
           {earningsRisks.length > 0 && (
-            <div className="mt-5 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3">
+            <div id="earnings" className="mt-5 scroll-mt-6 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3">
               <div className="flex items-center gap-2 text-[13px] font-semibold text-rose-800">
                 ⚠ {earningsRisks.length} short option{earningsRisks.length === 1 ? "" : "s"} held across an upcoming earnings report
               </div>
@@ -301,7 +334,7 @@ export default async function PositionsPage() {
           )}
 
           {/* Suggested actions board */}
-          <div className="mt-6 space-y-4">
+          <div id="actions" className="mt-6 scroll-mt-6 space-y-4">
             {ACTION_ORDER.filter((a) => counts[a] > 0).map((a) => (
               <section key={a} className="overflow-hidden rounded-lg border border-line bg-surface">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-4 py-2.5">
@@ -315,7 +348,7 @@ export default async function PositionsPage() {
           </div>
 
           {/* Full holdings detail */}
-          <h2 className="mt-8 mb-3 text-[13px] font-semibold uppercase tracking-wider text-ink-faint">All holdings · detail</h2>
+          <h2 id="holdings" className="mt-8 mb-3 scroll-mt-6 text-[13px] font-semibold uppercase tracking-wider text-ink-faint">All holdings · detail</h2>
           <div className="space-y-5">
             {groups.map((g) => (
               <div key={g.symbol} className="overflow-hidden rounded-lg border border-line">
@@ -386,6 +419,8 @@ export default async function PositionsPage() {
           </div>
         </>
       )}
+      </div>
+     </div>
     </main>
   );
 }
