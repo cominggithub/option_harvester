@@ -8,7 +8,7 @@
 // U12128967.TRANSACTIONS.YTD lands, tighten/extend SECTION_TRADES + COL to match
 // its exact headers (Flex Query field names vary by what you selected).
 
-import { splitCsvLine, classify, toNum, normSymbol } from "@/lib/ibparse";
+import { splitCsvLine, classify, toNum, normSymbol, underlyingSymbol } from "@/lib/ibparse";
 
 export type ParsedTransaction = {
   symbol: string; // underlying
@@ -150,7 +150,9 @@ function parseGeneric(rows: string[][]): ParsedTransaction[] {
       ? { right: explicit, strike: toNum(at("strike")), expiry: toDate(at("expiry")) }
       : classify(symCell || desc, assetClass);
     out.push({
-      symbol: normSymbol(underlying || full),
+      // Prefer an explicit UnderlyingSymbol column; else recover the real ticker
+      // (handles IB's right-letter-first ids like "C UBSE 20291221 28 M" → UBSG).
+      symbol: underlying ? normSymbol(underlying) : underlyingSymbol(full, desc),
       description: desc || (full !== normSymbol(full) ? full : null),
       assetClass,
       tradeDate: toDate(at("date")),
@@ -175,7 +177,8 @@ function buildTx(
   idx: Record<string, number>,
   get: (...names: string[]) => string,
 ): ParsedTransaction {
-  const sym = normSymbol(full);
+  const desc = get("description", "contractdescription", "name");
+  const sym = underlyingSymbol(full, desc);
   const raw: Record<string, string> = {};
   header.forEach((h, j) => {
     const key = h.trim();
@@ -184,7 +187,7 @@ function buildTx(
   const assetClass = get("asset category", "assetclass", "asset class") || null;
   return {
     symbol: sym,
-    description: full !== sym ? full : null,
+    description: desc || (full !== normSymbol(full) ? full : null),
     assetClass,
     tradeDate: toDate(get("date/time", "tradedate", "date", "datetime")),
     ...classify(full, assetClass),
@@ -206,4 +209,44 @@ export function parseTransactions(csv: string): ParsedTransaction[] {
   const statement = parseStatement(rows);
   if (statement && statement.length) return statement;
   return parseGeneric(rows);
+}
+
+// ── IBKR Client Portal trades feed (/iserver/account/trades, last 7 days) ────
+// Maps each execution to the same ParsedTransaction shape as the CSV so the P/L
+// engine treats them identically. The portal's `net_amount` is UNSIGNED GROSS
+// (no commission; options already ×100); CSV "Net Amount" is SIGNED and net of
+// commission — so proceeds = (sell ? +gross : −gross) − commission. Only STK/OPT
+// (the strategy's instruments) are kept; forex (CASH) conversions are dropped.
+export function parseIbPortalTrades(records: Record<string, unknown>[]): ParsedTransaction[] {
+  return records
+    .filter((t) => /^(STK|OPT)$/i.test(String(t.sec_type ?? "")))
+    .map((t) => {
+      const isSell = String(t.side ?? "")
+        .toUpperCase()
+        .startsWith("S");
+      const size = Number(t.size) || 0;
+      const gross = Number(t.net_amount) || 0; // unsigned
+      const commission = Math.abs(Number(t.commission) || 0);
+      const isOpt = /opt/i.test(String(t.sec_type ?? ""));
+      const desc1 = String(t.contract_description_1 ?? t.symbol ?? "");
+      const desc2 = String(t.contract_description_2 ?? "");
+      const meta = isOpt ? classify(`${desc1} ${desc2}`, "OPT") : { right: null, strike: null, expiry: null };
+      const poc = String(t.put_or_call ?? "")[0]?.toUpperCase();
+      return {
+        symbol: normSymbol(desc1),
+        description: isOpt ? `${desc1} ${desc2}`.trim() : desc1 || null,
+        assetClass: (t.sec_type as string) ?? null,
+        tradeDate: toDate(String(t.trade_time ?? "")),
+        right: isOpt ? ((poc === "C" || poc === "P" ? poc : meta.right) as "C" | "P" | null) : null,
+        strike: meta.strike,
+        expiry: meta.expiry,
+        quantity: isSell ? -size : size,
+        price: toNum(String(t.price ?? "")),
+        proceeds: (isSell ? gross : -gross) - commission,
+        commission: commission ? -commission : null, // CSV stores commission negative
+        realizedPnl: null, // the P/L engine derives this from proceeds
+        currency: null,
+        raw: t as Record<string, string>,
+      };
+    });
 }

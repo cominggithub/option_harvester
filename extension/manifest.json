@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "IB → option_harvester sync",
-  "version": "0.1.6",
+  "version": "0.1.8",
   "description": "Captures positions + pending orders from the logged-in IB portal and sends them to the option_harvester backend.",
   "icons": { "16": "icon-16.png", "48": "icon-48.png", "128": "icon-128.png" },
   "permissions": ["storage", "scripting", "tabs"],

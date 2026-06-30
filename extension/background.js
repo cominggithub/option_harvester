@@ -36,6 +36,7 @@ async function collectAndSend(msg) {
   let dom = null;
   let pageUrl = null;
   let grabError = null;
+  let fetched = null;
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id) throw new Error("no active tab");
@@ -47,10 +48,32 @@ async function collectAndSend(msg) {
     });
     dom = res?.result?.html ?? null;
     pageUrl = res?.result?.url ?? null;
+    if (msg.label === "trades") {
+      // Trades stream over WebSocket (not caught by the passive hook), so fetch
+      // IBKR's executions endpoint directly using the page's authenticated session.
+      const [tr] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: fetchTradesInPage });
+      fetched = tr?.result ?? null;
+    }
   } catch (e) {
     grabError = String(e);
   }
-  return post(`${msg.backend}/api/ib-capture`, { label: msg.label || "", pageUrl, dom, grabError, captures });
+  return post(`${msg.backend}/api/ib-capture`, { label: msg.label || "", pageUrl, dom, fetched, grabError, captures });
+}
+
+// Runs in the page: pulls the last 7 days of executions from the portal proxy.
+async function fetchTradesInPage() {
+  const base = location.origin + "/portal.proxy/v1/portal";
+  const urls = [base + "/iserver/account/trades", base + "/iserver/account/trades?days=7"];
+  const out = [];
+  for (const u of urls) {
+    try {
+      const r = await fetch(u, { credentials: "include" });
+      out.push({ u, status: r.status, body: (await r.text()).slice(0, 300000) });
+    } catch (e) {
+      out.push({ u, error: String(e) });
+    }
+  }
+  return out;
 }
 
 async function sync(backend) {
@@ -58,9 +81,25 @@ async function sync(backend) {
   const out = {};
   if (ibPositions) out.positions = await post(`${backend}/api/positions`, { ibPositions, source: "ib-extension" });
   if (ibOrders) out.orders = await post(`${backend}/api/orders`, { ibOrders });
-  if (!ibPositions && !ibOrders)
-    return { error: "No positions/orders feed captured — open the Positions and Orders pages, then Sync." };
+  // Trades stream over WebSocket (not in passive captures) — fetch fresh from
+  // the active IB tab. Works from any portal page; merged/deduped server-side.
+  const ibTrades = await fetchTradesActive();
+  if (ibTrades?.length) out.trades = await post(`${backend}/api/trades`, { ibTrades });
+  if (!ibPositions && !ibOrders && !ibTrades?.length)
+    return { error: "Nothing captured — open the Positions/Orders pages on an IB tab, then Sync." };
   return out;
+}
+
+async function fetchTradesActive() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) return null;
+    const [tr] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: fetchTradesInPage });
+    const ok = (tr?.result ?? []).find((r) => r.status === 200 && r.body);
+    return ok ? JSON.parse(ok.body) : null;
+  } catch {
+    return null;
+  }
 }
 
 async function post(url, payload) {
