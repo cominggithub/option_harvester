@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { parseIbPositions } from "@/lib/ibparse";
+import { parseIbPositions, type ParsedPosition } from "@/lib/ibparse";
 import { ingestConstituent, ingestHistory, ivDateFor } from "@/lib/enrich";
 
 // Pull any held symbols not yet in the universe into option_harvest_securities
@@ -33,27 +33,38 @@ async function addNewHoldings(symbols: string[]): Promise<string[]> {
   return added;
 }
 
-// Upload an IB position CSV. The raw file is kept (PositionUpload, an audit/history
-// trail), and its parse becomes the current positions (replacing the prior set).
-// Body: { filename?: string, content: string } (CSV text).
+// Set the current positions (replacing the prior set). Two body shapes:
+//   { content: string, filename?: string }      — an IB CSV (upload page)
+//   { positions: ParsedPosition[], source?: string } — structured rows (extension)
+// Either way the raw payload is kept in PositionUpload as an audit/history trail.
 export async function POST(req: Request) {
-  let content = "";
-  let filename: string | null = null;
+  let body: { content?: unknown; filename?: unknown; positions?: unknown; source?: unknown };
   try {
-    const body = await req.json();
-    content = typeof body?.content === "string" ? body.content : "";
-    filename = typeof body?.filename === "string" ? body.filename : null;
+    body = await req.json();
   } catch {
-    return Response.json({ error: "Expected JSON { content }" }, { status: 400 });
+    return Response.json({ error: "Expected JSON { content } or { positions }" }, { status: 400 });
   }
-  if (!content.trim()) return Response.json({ error: "Empty file" }, { status: 400 });
 
-  const parsed = parseIbPositions(content);
-  if (!parsed.length)
-    return Response.json(
-      { error: "No positions found — expected an IB CSV (Activity Statement or a Symbol column)." },
-      { status: 422 },
-    );
+  let parsed: ParsedPosition[];
+  let content: string; // what we archive in PositionUpload
+  let filename: string | null;
+
+  if (Array.isArray(body.positions)) {
+    parsed = (body.positions as ParsedPosition[]).filter((p) => p && typeof p.symbol === "string");
+    if (!parsed.length) return Response.json({ error: "No positions in payload" }, { status: 422 });
+    content = JSON.stringify(body.positions);
+    filename = typeof body.source === "string" ? body.source : "extension";
+  } else {
+    content = typeof body.content === "string" ? body.content : "";
+    filename = typeof body.filename === "string" ? body.filename : null;
+    if (!content.trim()) return Response.json({ error: "Empty file" }, { status: 400 });
+    parsed = parseIbPositions(content);
+    if (!parsed.length)
+      return Response.json(
+        { error: "No positions found — expected an IB CSV (Activity Statement or a Symbol column)." },
+        { status: 422 },
+      );
+  }
 
   const upload = await prisma.positionUpload.create({
     data: { filename, content, rowCount: parsed.length },

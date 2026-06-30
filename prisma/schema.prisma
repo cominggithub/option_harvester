@@ -138,6 +138,33 @@ model Position {
   @@map("option_harvest_positions")
 }
 
+/// Live working/pending orders pulled from the IB portal (via the Chrome
+/// extension). Replaced wholesale on each sync — pending orders are ephemeral, so
+/// unlike positions there's no raw-file audit table to re-import from.
+model Order {
+  id          Int      @id @default(autoincrement())
+  orderId     String?  @map("order_id") // IB order id, for reference/dedup
+  symbol      String // underlying ticker
+  description String? // full instrument when it's an option
+  secType     String?  @map("sec_type")
+  action      String? // "BUY" | "SELL"
+  quantity    Decimal?
+  orderType   String?  @map("order_type") // "LMT" | "MKT" | "STP" | …
+  limitPrice  Decimal? @map("limit_price")
+  auxPrice    Decimal? @map("aux_price") // stop / trigger price
+  tif         String? // time-in-force: "DAY" | "GTC" | …
+  status      String? // "Submitted" | "PreSubmitted" | …
+  right       String? // option right: "C" | "P"; null for spot
+  strike      Decimal?
+  expiry      String? // YYYY-MM-DD
+  currency    String?
+  raw         Json? // the original portal record
+  uploadedAt  DateTime @default(now()) @map("uploaded_at")
+
+  @@index([symbol])
+  @@map("option_harvest_orders")
+}
+
 /// Every uploaded IB CSV is kept here (the raw file), so the upload history
 /// survives and a file can be re-imported. The current positions are the parse
 /// of the most recent upload.
