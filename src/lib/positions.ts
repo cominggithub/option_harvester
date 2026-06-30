@@ -133,6 +133,7 @@ export type PositionGroup = {
   currency: string | null;
   ivPct: number | null; // underlying IV from our quotes (not the contract's own IV)
   price: number | null; // underlying spot from our quotes (for moneyness/analysis)
+  nextEarnings: string | null; // next earnings date (YYYY-MM-DD) — short-call gap-risk gate
   legs: PositionGroupLeg[];
   totalCost: number | null;
   marketValue: number | null;
@@ -149,17 +150,20 @@ const rawNum = (raw: unknown, key: string): number | null => {
 export async function getPositionGroups(): Promise<PositionGroup[]> {
   const [rows, quotes] = await Promise.all([
     prisma.position.findMany({ orderBy: { symbol: "asc" } }),
-    prisma.quote.findMany({ select: { ticker: true, ivPct: true, price: true } }),
+    prisma.quote.findMany({ select: { ticker: true, ivPct: true, price: true, nextEarnings: true } }),
   ]);
   const iv = new Map(quotes.map((q) => [q.ticker.toUpperCase(), q.ivPct != null ? Number(q.ivPct) : null]));
   const px = new Map(quotes.map((q) => [q.ticker.toUpperCase(), q.price != null ? Number(q.price) : null]));
+  const earn = new Map(
+    quotes.map((q) => [q.ticker.toUpperCase(), q.nextEarnings ? q.nextEarnings.toISOString().slice(0, 10) : null]),
+  );
 
   const m = new Map<string, PositionGroup>();
   for (const r of rows) {
     const key = r.symbol.toUpperCase();
     const g =
       m.get(key) ??
-      { symbol: key, currency: r.currency, ivPct: iv.get(key) ?? null, price: px.get(key) ?? null, legs: [], totalCost: 0, marketValue: 0, unrealizedPnl: 0 };
+      { symbol: key, currency: r.currency, ivPct: iv.get(key) ?? null, price: px.get(key) ?? null, nextEarnings: earn.get(key) ?? null, legs: [], totalCost: 0, marketValue: 0, unrealizedPnl: 0 };
 
     const isOpt = r.right != null || /option/i.test(r.secType ?? "");
     const kind: PositionKind = r.right === "C" ? "call" : r.right === "P" ? "put" : isOpt ? "opt" : "spot";
@@ -194,6 +198,90 @@ export async function getPositionGroups(): Promise<PositionGroup[]> {
     );
   }
   return [...m.values()].sort((a, b) => a.symbol.localeCompare(b.symbol));
+}
+
+// ── Protective-stop coverage ─────────────────────────────────────────────────
+// Strategy rule: every short call must be backed by a GTC BUY-STOP on the
+// underlying triggered at the call's strike, so an ITM breakout auto-buys the
+// shares (turning the naked call into a covered one) instead of running open.
+export type OrderRow = {
+  symbol: string;
+  action: string | null;
+  orderType: string | null;
+  auxPrice: number | null; // stop trigger
+  tif: string | null;
+  quantity: number | null;
+  status: string | null;
+};
+
+export async function getOrders(): Promise<OrderRow[]> {
+  let rows;
+  try {
+    rows = await prisma.order.findMany({ orderBy: { symbol: "asc" } });
+  } catch {
+    return []; // orders table not yet provisioned on this DB — degrade gracefully
+  }
+  return rows.map((r) => ({
+    symbol: r.symbol.toUpperCase(),
+    action: r.action,
+    orderType: r.orderType,
+    auxPrice: r.auxPrice != null ? Number(r.auxPrice) : null,
+    tif: r.tif,
+    quantity: r.quantity != null ? Number(r.quantity) : null,
+    status: r.status,
+  }));
+}
+
+export type CallProtection = {
+  symbol: string;
+  contract: string;
+  strike: number | null;
+  expiry: string | null;
+  qty: number; // short-call contracts (negative)
+  spot: number | null;
+  status: "covered" | "partial" | "unprotected";
+  trigger: number | null; // matched stop's trigger price
+  tif: string | null;
+  sharesNeeded: number; // 100 × |qty|
+  sharesCovered: number; // shares the matched stop(s) would buy
+};
+
+const STRIKE_EPS = 0.005;
+
+// Match each short call to a GTC BUY-STOP on the same underlying triggered at the
+// call's strike. covered = stop exists AND buys enough shares; partial = stop at
+// strike but too few shares; unprotected = no stop at that strike.
+export function analyzeCallProtection(groups: PositionGroup[], orders: OrderRow[]): CallProtection[] {
+  const stops = orders.filter(
+    (o) => /buy/i.test(o.action ?? "") && /stop|stp/i.test(o.orderType ?? "") && o.auxPrice != null,
+  );
+  const out: CallProtection[] = [];
+  for (const g of groups)
+    for (const leg of g.legs) {
+      if (leg.right !== "C" || (leg.quantity ?? 0) >= 0) continue; // short calls only
+      const matches =
+        leg.strike == null
+          ? []
+          : stops.filter((o) => o.symbol === g.symbol && Math.abs((o.auxPrice as number) - leg.strike!) < STRIKE_EPS);
+      const sharesCovered = matches.reduce((a, o) => a + (o.quantity ?? 0), 0);
+      const sharesNeeded = 100 * Math.abs(leg.quantity ?? 0);
+      const status: CallProtection["status"] =
+        matches.length === 0 ? "unprotected" : sharesCovered >= sharesNeeded ? "covered" : "partial";
+      out.push({
+        symbol: g.symbol,
+        contract: leg.contract,
+        strike: leg.strike,
+        expiry: leg.expiry,
+        qty: leg.quantity ?? 0,
+        spot: g.price,
+        status,
+        trigger: matches[0]?.auxPrice ?? null,
+        tif: matches[0]?.tif ?? null,
+        sharesNeeded,
+        sharesCovered,
+      });
+    }
+  return out;
 }
 
 export type UploadRow = {

@@ -54,6 +54,12 @@ Windows reboot → "WSL Autostart" task → systemd (PID 1) → this unit runs
 - **Do NOT** `scripts/server.sh {start|stop|restart} prod` while the unit is active —
   it detaches its own copy and fights `Restart=always`. `server.sh` is for **test** + dev.
 - After a code change: `npm run build` then `sudo systemctl restart option_harvester`.
+- **`npm run build` breaks live prod until you restart it** — prod **and** the test
+  server share one `.next` dir, so any build (even one done just to verify on test)
+  swaps the on-disk chunks under the running prod process; its served HTML then points
+  at chunk hashes that no longer exist → "Application error: a client-side exception".
+  **Always pair a build with `sudo systemctl restart option_harvester` immediately**,
+  or don't rebuild while prod is serving.
 
 ### Timers (systemd)
 
@@ -80,13 +86,17 @@ This project owns **two dedicated databases**: `option_harvester` (prod) and
   (`fairy_fight`, `minds_over_markets`, `teacher_jessica`, `album_dl`, …) belong to
   other projects. Never create/alter/drop anything outside the `option_harvest_*`
   tables in the two `option_harvester*` databases.
-- **Read tests on prod, WRITE tests on test only.** Read-only checks (SQL spot-checks,
-  page screenshots) may run against prod (19210). Anything that **mutates** data —
-  ingests (`ingest*`), `db:push`, write endpoints (`POST /api/{marks,upload,positions,
-  transactions}`) — runs **only** against the test server (19211, `option_harvester_test`,
-  the `:test` npm scripts). **Back up the test DB first:**
+- **Read tests on prod, DATA writes on test only.** Read-only checks (SQL spot-checks,
+  page screenshots) may run against prod (19210). Anything that **mutates data** —
+  ingests (`ingest*`), write endpoints (`POST /api/{marks,upload,positions,orders,
+  trades,transactions}`) — runs **only** against the test server (19211,
+  `option_harvester_test`, the `:test` npm scripts). **Back up the test DB first:**
   `pg_dump postgresql://coming@localhost/option_harvester_test?host=/var/run/postgresql > backups/option_harvester_test-$(date +%Y%m%d-%H%M%S).sql`.
   Start the test server with `scripts/server.sh start test`.
+- **Schema (DDL) is the exception — push to BOTH.** `prisma db push` only creates/
+  alters `option_harvest_*` tables; it does not write business data, so an **additive**
+  push to prod is allowed and expected (a new table left only on test 500s the prod
+  page that queries it). Destructive column/table drops still go to test first.
 
 **Apply schema changes** (`prisma/schema.prisma`): `npm run db:push` + `db:push:test`,
 then `db:generate`. Tables/columns are documented in **docs/spec.md § 6**.
