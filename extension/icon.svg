@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- Stylized "value-investing sage" caricature — NOT a photo of any real person. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1f8a4c"/>
+      <stop offset="1" stop-color="#0c5c30"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="26" fill="url(#bg)"/>
+
+  <!-- suit shoulders -->
+  <path d="M22 128 C22 100 42 90 64 90 C86 90 106 100 106 128 Z" fill="#26303a"/>
+  <!-- shirt + tie -->
+  <path d="M55 92 L64 104 L73 92 L70 128 L58 128 Z" fill="#f3f4f6"/>
+  <path d="M61 96 L64 104 L67 96 L70 128 L58 128 Z" fill="#b8202e"/>
+
+  <!-- neck -->
+  <rect x="56" y="80" width="16" height="18" rx="6" fill="#e7b08a"/>
+
+  <!-- white side + back hair -->
+  <path d="M30 64 C30 36 46 22 64 22 C82 22 98 36 98 64 C98 80 90 90 90 90 L82 70 L46 70 L38 90 C38 90 30 80 30 64 Z" fill="#eef1f3"/>
+  <!-- face -->
+  <ellipse cx="64" cy="60" rx="30" ry="33" fill="#f0c19a"/>
+  <!-- bald top -->
+  <path d="M40 50 C42 34 52 26 64 26 C76 26 86 34 88 50 C80 42 72 40 64 40 C56 40 48 42 40 50 Z" fill="#f0c19a"/>
+  <!-- thin combover -->
+  <path d="M44 46 C52 40 76 40 84 46" stroke="#e9eef0" stroke-width="4" fill="none" stroke-linecap="round"/>
+
+  <!-- signature thick glasses -->
+  <g fill="none" stroke="#2b2b2b" stroke-width="4">
+    <rect x="40" y="54" width="20" height="16" rx="4"/>
+    <rect x="68" y="54" width="20" height="16" rx="4"/>
+    <path d="M60 60 L68 60"/>
+    <path d="M40 58 L32 56"/>
+    <path d="M88 58 L96 56"/>
+  </g>
+  <!-- eyes -->
+  <circle cx="50" cy="62" r="2.4" fill="#2b2b2b"/>
+  <circle cx="78" cy="62" r="2.4" fill="#2b2b2b"/>
+
+  <!-- friendly smile -->
+  <path d="M52 78 C58 86 70 86 76 78" stroke="#9a5a3a" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+</svg>

@@ -1,20 +1,25 @@
 import { prisma } from "@/lib/db";
+import { parseIbPortalOrders } from "@/lib/ibparse";
 
 // Live pending/working orders, synced from the IB portal via the Chrome extension.
 // Replaced wholesale each sync (pending orders are ephemeral — no audit table).
-// Body: { orders: Order[] } where each row matches the Order model's fields.
+// Body: { ibOrders: object[] } (raw IBKR portal JSON) or { orders: Order[] } (pre-mapped).
 // ponytail: no Yahoo enrichment for order symbols — positions sync already pulls
 // held off-index names; add here if you start placing orders on unheld tickers.
 export async function POST(req: Request) {
-  let orders: unknown;
+  let body: { orders?: unknown; ibOrders?: unknown };
   try {
-    orders = (await req.json())?.orders;
+    body = await req.json();
   } catch {
-    return Response.json({ error: "Expected JSON { orders }" }, { status: 400 });
+    return Response.json({ error: "Expected JSON { ibOrders } or { orders }" }, { status: 400 });
   }
-  if (!Array.isArray(orders)) return Response.json({ error: "Expected { orders: [...] }" }, { status: 400 });
 
-  const rows = (orders as Record<string, unknown>[]).filter((o) => o && typeof o.symbol === "string");
+  const rows = Array.isArray(body.ibOrders)
+    ? parseIbPortalOrders(body.ibOrders as Record<string, unknown>[])
+    : Array.isArray(body.orders)
+      ? (body.orders as Record<string, unknown>[]).filter((o) => o && typeof o.symbol === "string")
+      : null;
+  if (!rows) return Response.json({ error: "Expected { ibOrders: [...] } or { orders: [...] }" }, { status: 400 });
 
   await prisma.order.deleteMany({});
   if (rows.length) {

@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { parseIbPositions, type ParsedPosition } from "@/lib/ibparse";
+import { parseIbPositions, parseIbPortalPositions, type ParsedPosition } from "@/lib/ibparse";
 import { ingestConstituent, ingestHistory, ivDateFor } from "@/lib/enrich";
 
 // Pull any held symbols not yet in the universe into option_harvest_securities
@@ -33,23 +33,29 @@ async function addNewHoldings(symbols: string[]): Promise<string[]> {
   return added;
 }
 
-// Set the current positions (replacing the prior set). Two body shapes:
-//   { content: string, filename?: string }      — an IB CSV (upload page)
-//   { positions: ParsedPosition[], source?: string } — structured rows (extension)
+// Set the current positions (replacing the prior set). Body shapes:
+//   { content: string, filename?: string }            — an IB CSV (upload page)
+//   { positions: ParsedPosition[], source?: string }  — structured rows
+//   { ibPositions: object[], source?: string }        — raw IBKR portal JSON (extension)
 // Either way the raw payload is kept in PositionUpload as an audit/history trail.
 export async function POST(req: Request) {
-  let body: { content?: unknown; filename?: unknown; positions?: unknown; source?: unknown };
+  let body: { content?: unknown; filename?: unknown; positions?: unknown; ibPositions?: unknown; source?: unknown };
   try {
     body = await req.json();
   } catch {
-    return Response.json({ error: "Expected JSON { content } or { positions }" }, { status: 400 });
+    return Response.json({ error: "Expected JSON { content | positions | ibPositions }" }, { status: 400 });
   }
 
   let parsed: ParsedPosition[];
   let content: string; // what we archive in PositionUpload
   let filename: string | null;
 
-  if (Array.isArray(body.positions)) {
+  if (Array.isArray(body.ibPositions)) {
+    parsed = parseIbPortalPositions(body.ibPositions as Record<string, unknown>[]);
+    if (!parsed.length) return Response.json({ error: "No positions in IBKR payload" }, { status: 422 });
+    content = JSON.stringify(body.ibPositions);
+    filename = typeof body.source === "string" ? body.source : "ib-extension";
+  } else if (Array.isArray(body.positions)) {
     parsed = (body.positions as ParsedPosition[]).filter((p) => p && typeof p.symbol === "string");
     if (!parsed.length) return Response.json({ error: "No positions in payload" }, { status: 422 });
     content = JSON.stringify(body.positions);

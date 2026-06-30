@@ -1,11 +1,16 @@
 {
   "manifest_version": 3,
   "name": "IB → option_harvester sync",
-  "version": "0.1.0",
+  "version": "0.1.6",
   "description": "Captures positions + pending orders from the logged-in IB portal and sends them to the option_harvester backend.",
-  "permissions": ["storage"],
+  "icons": { "16": "icon-16.png", "48": "icon-48.png", "128": "icon-128.png" },
+  "permissions": ["storage", "scripting", "tabs"],
   "host_permissions": [
     "https://*.interactivebrokers.com/*",
+    "https://*.interactivebrokers.com.au/*",
+    "https://*.interactivebrokers.co.uk/*",
+    "https://*.interactivebrokers.com.hk/*",
+    "https://*.interactivebrokers.ca/*",
     "https://*.ibkr.com/*",
     "http://114.33.62.221:19210/*",
     "http://114.33.62.221:19211/*",
@@ -13,16 +18,20 @@
     "http://localhost:19211/*"
   ],
   "background": { "service_worker": "background.js" },
-  "action": { "default_popup": "popup.html", "default_title": "IB sync" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "IB sync",
+    "default_icon": { "16": "icon-16.png", "48": "icon-48.png", "128": "icon-128.png" }
+  },
   "content_scripts": [
     {
-      "matches": ["https://*.interactivebrokers.com/*", "https://*.ibkr.com/*"],
+      "matches": ["https://*.interactivebrokers.com/*", "https://*.interactivebrokers.com.au/*", "https://*.interactivebrokers.co.uk/*", "https://*.interactivebrokers.com.hk/*", "https://*.interactivebrokers.ca/*", "https://*.ibkr.com/*"],
       "js": ["hook.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
-      "matches": ["https://*.interactivebrokers.com/*", "https://*.ibkr.com/*"],
+      "matches": ["https://*.interactivebrokers.com/*", "https://*.interactivebrokers.com.au/*", "https://*.interactivebrokers.co.uk/*", "https://*.interactivebrokers.com.hk/*", "https://*.interactivebrokers.ca/*", "https://*.ibkr.com/*"],
       "js": ["relay.js"],
       "run_at": "document_start",
       "world": "ISOLATED"

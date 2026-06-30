@@ -22,10 +22,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
     return true;
   }
   if (msg.type === "sendCapture") {
-    // Recon: dump everything captured on this page to the backend for the dev.
-    post(`${msg.backend}/api/ib-capture`, { label: msg.label || "", captures })
-      .then(reply)
-      .catch((e) => reply({ error: String(e) }));
+    // Recon: dump the rendered DOM + any captured network JSON to the backend.
+    collectAndSend(msg).then(reply).catch((e) => reply({ error: String(e) }));
     return true;
   }
   if (msg.type === "sync") {
@@ -34,13 +32,34 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   }
 });
 
+async function collectAndSend(msg) {
+  let dom = null;
+  let pageUrl = null;
+  let grabError = null;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) throw new Error("no active tab");
+    // Inject on demand — doesn't depend on the declarative content script having
+    // matched/loaded, only on host_permissions covering the tab's domain.
+    const [res] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => ({ html: document.documentElement.outerHTML, url: location.href }),
+    });
+    dom = res?.result?.html ?? null;
+    pageUrl = res?.result?.url ?? null;
+  } catch (e) {
+    grabError = String(e);
+  }
+  return post(`${msg.backend}/api/ib-capture`, { label: msg.label || "", pageUrl, dom, grabError, captures });
+}
+
 async function sync(backend) {
-  const { positions, orders } = extract(captures);
+  const { ibPositions, ibOrders } = extract(captures);
   const out = {};
-  if (positions.length) out.positions = await post(`${backend}/api/positions`, { positions, source: "ib-extension" });
-  if (orders.length) out.orders = await post(`${backend}/api/orders`, { orders });
-  if (!positions.length && !orders.length)
-    return { error: "No positions/orders found in capture — open the Portfolio and Orders views, then retry." };
+  if (ibPositions) out.positions = await post(`${backend}/api/positions`, { ibPositions, source: "ib-extension" });
+  if (ibOrders) out.orders = await post(`${backend}/api/orders`, { ibOrders });
+  if (!ibPositions && !ibOrders)
+    return { error: "No positions/orders feed captured — open the Positions and Orders pages, then Sync." };
   return out;
 }
 
@@ -53,24 +72,20 @@ async function post(url, payload) {
   return r.json();
 }
 
-// ── Mapping ──────────────────────────────────────────────────────────────────
-// TODO: fill in once we have a real capture sample. Find the capture whose URL is
-// the portfolio/positions feed and the one for live orders, then map their fields
-// to our schema (see Position/Order models). Returns { positions:[], orders:[] }.
+// Pull the raw IBKR feeds out of the captured network JSON. The backend
+// (src/lib/ibparse.ts) does the field mapping. URLs:
+//   …/portfolio/{acct}/positions/all   → { positions:[…] }
+//   …/iserver/account/orders           → { orders:[…] }
 function extract(captures) {
-  const positions = [];
-  const orders = [];
+  let ibPositions = null;
+  let ibOrders = null;
   for (const [url, { body }] of Object.entries(captures)) {
-    let json;
     try {
-      json = JSON.parse(body);
+      if (/\/positions\/all/.test(url)) ibPositions = JSON.parse(body).positions ?? null;
+      else if (/\/account\/orders/.test(url)) ibOrders = JSON.parse(body).orders ?? null;
     } catch {
-      continue;
+      // non-JSON or unexpected shape — ignore
     }
-    void url;
-    void json;
-    // e.g. if (/positions/.test(url)) positions.push(...json.map(toPosition));
-    //      if (/orders/.test(url))    orders.push(...json.map(toOrder));
   }
-  return { positions, orders };
+  return { ibPositions, ibOrders };
 }
