@@ -319,16 +319,33 @@ export default async function PositionsPage() {
               <p className="mt-1 text-[12px] leading-snug text-rose-700">
                 Earnings can gap the underlying through your strike overnight. Close or roll these past the report date to avoid the spike:
               </p>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {earningsRisks.map((s, i) => (
-                  <span
-                    key={i}
-                    className="tnum rounded bg-rose-100 px-1.5 py-0.5 text-[11px] text-rose-800"
-                    title={`Short ${s.right === "C" ? "call" : "put"} ${s.strike ?? ""} expiring ${s.expiry ?? "?"} · earnings ${s.earningsDate}`}
-                  >
-                    {s.symbol} {s.right}{s.strike ?? ""} · ER {s.earningsDate?.slice(5)} &lt; exp {s.expiry?.slice(5)}
-                  </span>
-                ))}
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full text-[12px]">
+                  <thead className="text-left text-[9.5px] uppercase tracking-wider text-rose-400">
+                    <tr className="border-b border-rose-200">
+                      <th className="py-1 pr-3 font-medium">Symbol</th>
+                      <th className="py-1 pr-2 text-center font-medium">C/P</th>
+                      <th className="py-1 pr-2 text-right font-medium">Strike</th>
+                      <th className="py-1 pr-2 text-right font-medium">Qty</th>
+                      <th className="py-1 pr-2 font-medium">Earnings</th>
+                      <th className="py-1 pr-2 font-medium">Expiry</th>
+                      <th className="py-1 pr-2 text-right font-medium">DTE</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {earningsRisks.map((s, i) => (
+                      <tr key={i} className="border-b border-rose-100 last:border-0">
+                        <td className="py-1 pr-3 font-medium text-rose-900">{s.symbol}</td>
+                        <td className="py-1 pr-2 text-center font-semibold text-rose-800">{s.right}</td>
+                        <td className="tnum py-1 pr-2 text-right text-rose-900">{s.strike ?? "—"}</td>
+                        <td className="tnum py-1 pr-2 text-right text-rose-700">{s.qty}</td>
+                        <td className="tnum py-1 pr-2 font-semibold text-rose-800">{s.earningsDate ?? "—"}</td>
+                        <td className="tnum py-1 pr-2 text-rose-700">{s.expiry ?? "—"}</td>
+                        <td className="tnum py-1 pr-2 text-right text-rose-700">{s.dte ?? "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
