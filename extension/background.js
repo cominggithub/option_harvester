@@ -98,7 +98,41 @@ function scheduleAuto(minutes) {
   chrome.alarms.create(ALARM, { periodInMinutes: Math.max(1, minutes || 15), delayInMinutes: 0.1 });
 }
 
+// ── DEV recon buffer (capture.js → relay.js) ─────────────────────────────────
+const captures = {}; // url -> {body, at}   (fetch/xhr, latest per url)
+const wsFrames = []; // {url, body, at}      (websocket, capped)
+
 chrome.runtime.onMessage.addListener((msg, _s, reply) => {
+  if (msg.type === "capture") {
+    if (msg.kind === "ws") {
+      wsFrames.push({ url: msg.url, body: msg.body, at: Date.now() });
+      if (wsFrames.length > 800) wsFrames.shift();
+    } else {
+      captures[msg.url] = { body: msg.body, at: Date.now() };
+    }
+    return; // no reply
+  }
+  if (msg.type === "sendCapture") {
+    (async () => {
+      let dom = null;
+      let pageUrl = null;
+      try {
+        const tab = await findIbTab(true);
+        if (tab?.id) {
+          const [r] = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => ({ html: document.documentElement.outerHTML, url: location.href }),
+          });
+          dom = r?.result?.html ?? null;
+          pageUrl = r?.result?.url ?? null;
+        }
+      } catch {}
+      return post(`${msg.backend}/api/ib-capture`, { label: msg.label || "", pageUrl, dom, captures, wsFrames });
+    })()
+      .then(reply)
+      .catch((e) => reply({ error: String(e) }));
+    return true;
+  }
   if (msg.type === "sync") {
     runSync(msg.backend, { preferActive: true })
       .then((r) => {

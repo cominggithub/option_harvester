@@ -30,3 +30,12 @@ const updateAuto = () =>
   );
 $("auto").onchange = updateAuto;
 $("mins").onchange = () => $("auto").checked && updateAuto();
+
+// Dev recon: dump the current page's DOM + captured fetch/XHR/WebSocket to the backend.
+$("capture").onclick = () => {
+  $("log").textContent = "Sending page capture…";
+  chrome.runtime.sendMessage(
+    { type: "sendCapture", backend: backend(), label: ($("label").value.trim() || "page") },
+    (r) => ($("log").textContent = r?.error ? `✕ ${r.error}` : `✓ captured → ${r?.file ?? "backend"}`),
+  );
+};

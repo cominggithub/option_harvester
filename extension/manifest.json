@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "IB → option_harvester sync",
-  "version": "0.2.0",
-  "description": "Syncs positions, pending orders, and recent trades from the logged-in IB portal to the option_harvester backend — manually or on a timer.",
+  "version": "0.3.0",
+  "description": "Syncs positions, pending orders, and recent trades from the logged-in IB portal to the option_harvester backend — manually or on a timer. Dev capture for building new parsers.",
   "icons": { "16": "icon-16.png", "48": "icon-48.png", "128": "icon-128.png" },
   "permissions": ["storage", "scripting", "tabs", "alarms"],
   "host_permissions": [
@@ -22,5 +22,19 @@
     "default_popup": "popup.html",
     "default_title": "IB sync",
     "default_icon": { "16": "icon-16.png", "48": "icon-48.png", "128": "icon-128.png" }
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.interactivebrokers.com/*", "https://*.interactivebrokers.com.au/*", "https://*.interactivebrokers.co.uk/*", "https://*.interactivebrokers.com.hk/*", "https://*.interactivebrokers.ca/*", "https://*.ibkr.com/*"],
+      "js": ["capture.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://*.interactivebrokers.com/*", "https://*.interactivebrokers.com.au/*", "https://*.interactivebrokers.co.uk/*", "https://*.interactivebrokers.com.hk/*", "https://*.interactivebrokers.ca/*", "https://*.ibkr.com/*"],
+      "js": ["relay.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ]
 }
