@@ -59,6 +59,9 @@ export type SecurityRow = {
   spark: number[] | null; // downsampled ~1Y daily closes for the inline sparkline
   pctFromHigh: number | null;
   downtrend: boolean; // sustained bearish (1Y down, or 3M & 6M both down)
+  nextEarnings: string | null; // next earnings date (YYYY-MM-DD); null = ETF / unknown
+  earningsInDays: number | null; // calendar days until next earnings; <0 = stale/past, null = unknown
+  nc: boolean; // user NC screen: liquid mid-priced high-IV, full ladder, 1M/3M/6M not up
   ccTarget: boolean; // strategy screen: weak liquid ETF for naked calls
   cspEligible: boolean; // strategy screen: quality/index name for panic naked puts
   // Δ0.30 naked-call model (option_harvest_cc_scores, computed by scripts/predict-cc.py):
@@ -89,6 +92,37 @@ const WEAK_SLOPE = -1; // sideways with slope below this = grinding-weak (陰跌
 // mega-cap blue chips — liquid enough for Deep-OTM puts.
 const CSP_INDEX_ETFS = new Set(["SPY", "QQQ", "VOO", "VTI", "IWM", "DIA"]);
 const CSP_MIN_MARKETCAP = 1_000_000_000_000; // $1T
+
+// "NC" auto-target — the user's naked-call screen: liquid, mid-priced, juicy IV,
+// a full weekly ladder, and NOT rising on any of 1M/3M/6M. Tagged red "NC" + /nc page.
+const NC_MIN_VOLUME = 3_000_000;
+const NC_PRICE_MIN = 20;
+const NC_PRICE_MAX = 180;
+const NC_IV_MIN = 40;
+// ponytail: ≥5 expiries ≤42d is the 7/14/21/28/35 ladder (same threshold as
+// "bad option date"); swap to exact-DTE matching only if a phase bug ever bites.
+const NC_MIN_WEEKLY_BUCKETS = 5;
+
+function isNcTarget(s: {
+  volume: number | null;
+  price: number | null;
+  weeklyBuckets: number | null;
+  ivPct: number | null;
+  trend: TrendWindows | null;
+}): boolean {
+  const t = s.trend;
+  if (!t) return false;
+  const notUp = t.m1?.label !== "up" && t.m3?.label !== "up" && t.m6?.label !== "up";
+  return (
+    notUp &&
+    (s.volume ?? 0) > NC_MIN_VOLUME &&
+    s.price != null &&
+    s.price > NC_PRICE_MIN &&
+    s.price < NC_PRICE_MAX &&
+    (s.weeklyBuckets ?? 0) >= NC_MIN_WEEKLY_BUCKETS &&
+    (s.ivPct ?? 0) > NC_IV_MIN
+  );
+}
 
 // Data-derived labels (the rule-based seeds). Recomputed every read so they
 // track the latest snapshot — never stored, never user-editable.
@@ -238,6 +272,11 @@ export async function getDashboardData(): Promise<DashboardData> {
   ]);
   const recMap = new Map(pnl.bySymbol.map((s) => [s.symbol.toUpperCase(), s]));
 
+  // Midnight today (local) — days-until-earnings is computed server-side so the
+  // client never does date math (avoids the TZ hydration mismatch this app guards against).
+  const today = new Date();
+  const todayMs = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+
   let asOf: Date | null = null;
   const securities: SecurityRow[] = rows.map((r) => {
     const price = r.quote?.price != null ? Number(r.quote.price) : null;
@@ -291,6 +330,11 @@ export async function getDashboardData(): Promise<DashboardData> {
       spark: sparkMap.get(r.ticker) ?? null,
       pctFromHigh: r.trend?.pctFromHigh != null ? Number(r.trend.pctFromHigh) : null,
       downtrend: false, // set below
+      nextEarnings: r.quote?.nextEarnings ? r.quote.nextEarnings.toISOString().slice(0, 10) : null,
+      earningsInDays: r.quote?.nextEarnings
+        ? Math.round((r.quote.nextEarnings.getTime() - todayMs) / 86_400_000)
+        : null,
+      nc: false, // set below
       ccTarget: false, // set below
       cspEligible: false, // set below
       ccScore: cc?.eScore != null ? Number(cc.eScore) : null,
@@ -316,6 +360,8 @@ export async function getDashboardData(): Promise<DashboardData> {
   for (const s of securities) {
     s.autoLabels = computeAutoLabels(s);
     s.downtrend = isDowntrend(s.trend);
+    s.nc = isNcTarget(s);
+    if (s.nc) s.autoLabels.push("NC");
     const liquid = (s.weeklyBuckets ?? 0) >= CC_MIN_WEEKLY_BUCKETS;
     s.ccTarget = s.type === "etf" && isWeak(s.trend) && liquid;
     s.cspEligible =

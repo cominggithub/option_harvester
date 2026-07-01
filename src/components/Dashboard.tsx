@@ -25,9 +25,9 @@ const VIEW_META: Record<string, { title: string; blurb: string; empty: string }>
   cc: {
     title: "Naked Call",
     blurb:
-      "Sell naked calls against these: ETF-level, weak / no upward momentum (downtrend or grinding-sideways 陰跌), with a weekly expiry ladder. ▾ = clean downtrend.",
+      "NC screen — stocks & ETFs to sell naked calls against: volume > 3M, price $20–180, IV > 40%, a full 7/14/21/28/35-DTE ladder, and 1M/3M/6M all not in an uptrend. ▾ = clean downtrend.",
     empty:
-      "No ETF currently qualifies — needs a weak trend plus a weekly option ladder.",
+      "No name currently clears the NC screen.",
   },
   model: {
     title: "Call Model",
@@ -148,7 +148,7 @@ export function Dashboard({ securities, asOf }: Props) {
 
   const specials = useMemo(
     () => [
-      { id: "cc" as ViewId, label: "Naked Call", count: rows.filter((r) => r.ccTarget).length },
+      { id: "cc" as ViewId, label: "Naked Call", count: rows.filter((r) => r.nc).length },
       { id: "model" as ViewId, label: "Call Model", count: rows.filter((r) => r.ccTargetModel && (r.ccScore ?? 0) > 0).length },
       { id: "csp" as ViewId, label: "Naked Put / Panic", count: rows.filter((r) => r.cspEligible).length },
       { id: "best" as ViewId, label: "Best Harvest", count: rows.filter((r) => r.bestHarvest).length },
@@ -164,7 +164,7 @@ export function Dashboard({ securities, asOf }: Props) {
     const filtered = rows.filter((r) => {
       const inView =
         view === "cc"
-          ? r.ccTarget
+          ? r.nc
           : view === "model"
           ? r.ccTargetModel && (r.ccScore ?? 0) > 0
           : view === "csp"

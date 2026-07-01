@@ -15,6 +15,7 @@ export const SEED_LABELS = [
 // Rule-based labels computed from the data (see securities.ts computeAutoLabels).
 // They're auto-derived, so they're not user-editable — the editor hides them.
 export const AUTO_LABELS = [
+  "NC",
   "low vol",
   "no option",
   "bad option date",
@@ -38,6 +39,7 @@ export function cleanLabels(raw: unknown): string[] {
 export type LabelColor = { bg: string; fg: string };
 
 const LABEL_COLORS: Record<string, LabelColor> = {
+  NC: { bg: "#fde2e2", fg: "#b91c1c" }, // auto naked-call target — RED
   nc: { bg: "#e3f1e9", fg: "#1f7a44" }, // call green (matches Signal NC)
   np: { bg: "#e7e9fb", fg: "#4f46e5" }, // put indigo (matches Signal NP)
   "value invest": { bg: "#e4eefb", fg: "#1d4ed8" },

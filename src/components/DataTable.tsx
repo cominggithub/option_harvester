@@ -4,13 +4,11 @@ import { useState, type MouseEvent } from "react";
 import Link from "next/link";
 import type { SecurityRow } from "@/lib/securities";
 import type { SortKey, SortDir, TrendWindowKey } from "@/lib/view";
-import { harvesterColor } from "@/lib/harvester";
-import { ccEdgeColor, formatEdge } from "@/lib/ccscore";
-import { finalColor, sideLabel } from "@/lib/score";
 import { sectorColor } from "@/lib/sectors";
 import { AUTO_LABELS, labelColor } from "@/lib/labels";
 import {
   formatChangePct,
+  formatEarningsDate,
   formatIv,
   formatMarketCapParts,
   formatPrice,
@@ -32,9 +30,6 @@ const gridCols = (showPositions: boolean, showRating: boolean): string =>
     showRating ? "92px" : null, // Rating (NC/NP stars)
     "150px", // Symbol + badges
     "minmax(110px,1fr)", // Company name
-    "66px", // Signal
-    "58px", // Harvester
-    "56px", // Edge
     "54px", // IV
     "78px", // Last
     "62px", // Chg %
@@ -94,6 +89,14 @@ function OptionDetail({ s }: { s: SecurityRow }) {
     <div className="mb-3 rounded-md border border-line bg-surface px-3 py-2.5 text-[12px]">
       <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-ink-muted">
         <span className="overline text-ink-faint">Options</span>
+        {s.nextEarnings && s.earningsInDays != null && s.earningsInDays >= 0 && (
+          <span title={`Next earnings ${s.nextEarnings} (in ${s.earningsInDays}d) — avoid writing a short call over it`}>
+            Next earnings{" "}
+            <b className={`tnum ${s.earningsInDays <= 10 ? "text-rose-700" : s.earningsInDays <= 35 ? "text-amber-700" : "text-ink"}`}>
+              {formatEarningsDate(s.nextEarnings)} · {s.earningsInDays}d
+            </b>
+          </span>
+        )}
         <span>Front-month DTE <b className="tnum text-ink">{s.ivDte ?? "—"}</b></span>
         <span>Weekly ladder <b className={`tnum ${badLadder ? "text-amber-700" : "text-ink"}`}>{bucket}/6</b>{badLadder && <span className="text-amber-700"> · sparse → “bad option date”</span>}</span>
         <span>ATM strike <b className="tnum text-ink">{s.atmStrike ?? "—"}</b></span>
@@ -410,9 +413,6 @@ export function DataTable({
         )}
         <HeadCell label="Symbol" col="ticker" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
         <HeadCell label="Company" col="name" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
-        <HeadCell label="Signal" col="final" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
-        <HeadCell label="Harv" col="harvesterScore" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
-        <HeadCell label="Edge" col="ccScore" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
         <HeadCell label="IV" col="ivPct" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
         <HeadCell label="Last" col="price" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
         <HeadCell label="Chg %" col="changePct" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
@@ -515,9 +515,6 @@ function Row({
   expanded: boolean;
   onToggleExpand: () => void;
 }) {
-  const hc = harvesterColor(s.harvesterScore);
-  const ec = ccEdgeColor(s.ccScore);
-  const fc = finalColor(s.final.side, s.final.score);
   const cap = formatMarketCapParts(s.marketCap);
   const lowVol = s.volume != null && s.volume < 2_000_000; // thin options liquidity warning
   const chgTone =
@@ -632,56 +629,6 @@ function Row({
         )}
       </div>
 
-      {/* Scores — right-aligned colored chips */}
-      <div className="flex justify-end">
-        {s.final.side == null || s.final.score == null ? (
-          <span className="text-[13px] text-ink-faint">—</span>
-        ) : (
-          <span
-            className="tnum inline-flex items-center gap-1 rounded px-1.5 text-[12.5px] font-semibold leading-5"
-            style={{ background: fc.bg, color: fc.fg }}
-            title={s.final.reason}
-          >
-            <span className="text-[9px] font-bold uppercase tracking-wide opacity-80">
-              {sideLabel(s.final.side)}
-            </span>
-            {s.final.score}
-          </span>
-        )}
-      </div>
-
-      <div className="flex justify-end">
-        {s.harvesterScore == null ? (
-          <span className="text-[13px] text-ink-faint">—</span>
-        ) : (
-          <span
-            className="tnum inline-block w-9 rounded text-center text-[12.5px] font-semibold leading-5"
-            style={{ background: hc.bg, color: hc.fg }}
-          >
-            {s.harvesterScore}
-          </span>
-        )}
-      </div>
-
-      <div className="flex justify-end">
-        {s.ccScore == null ? (
-          <span className="text-[13px] text-ink-faint">—</span>
-        ) : (
-          <span
-            className="tnum inline-block w-[50px] rounded text-center text-[12px] font-semibold leading-5"
-            style={{ background: ec.bg, color: ec.fg }}
-            title={
-              `Δ0.30 35-DTE expected capture: ${formatEdge(s.ccScore)}% of spot/trade` +
-              ` · P(assign) ${s.ccPAssign ?? "—"}% · P(stop) ${s.ccPStop ?? "—"}%` +
-              ` · strike ${s.ccStrike ?? "—"} (+${s.ccOtm ?? "—"}%) · prem ${s.ccPremYield ?? "—"}%` +
-              ` · IV/RV ${s.ccIvRv ?? "—"}${s.ccTargetModel ? " · ✓ doctrine target" : ""}`
-            }
-          >
-            {formatEdge(s.ccScore)}
-          </span>
-        )}
-      </div>
-
       <span className="tnum text-right text-[13px] text-ink">{formatIv(s.ivPct)}</span>
       <span className="tnum text-right text-[13px] text-ink">{formatPrice(s.price)}</span>
       <span className={`tnum text-right text-[13px] ${chgTone}`}>{formatChangePct(s.changePct)}</span>
@@ -706,6 +653,17 @@ function Row({
         className="flex items-center justify-between gap-6 pl-[52px]"
       >
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          {/* Earnings warning — only when a report lands within a short-call's horizon (≤45d). */}
+          {s.nextEarnings && s.earningsInDays != null && s.earningsInDays >= 0 && s.earningsInDays <= 45 && (
+            <span
+              className={`shrink-0 rounded-sm px-1 text-[10px] font-semibold leading-4 ${
+                s.earningsInDays <= 10 ? "bg-rose-100 text-rose-800" : "bg-amber-100 text-amber-800"
+              }`}
+              title={`Next earnings ${s.nextEarnings} (in ${s.earningsInDays}d) — gap risk for short calls`}
+            >
+              ⚡ ER {formatEarningsDate(s.nextEarnings)}·{s.earningsInDays}d
+            </span>
+          )}
           {[...s.autoLabels, ...s.labels].map((l) => {
             const c = labelColor(l);
             return (

@@ -16,6 +16,7 @@ model Security {
   sector      String   @default("Unclassified")
   subIndustry String?  @map("sub_industry")
   type        String   @default("stock") // "stock" | "etf"
+  conid       String?  // IB contract id for the underlying (backfilled via /trsrv/stocks)
   isActive    Boolean  @default(true) @map("is_active")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
@@ -109,6 +110,22 @@ model Quote {
   currency  String   @default("USD")
   asOf      DateTime @default(now()) @map("as_of")
   updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Parallel IB-sourced option snapshot (from the Chrome extension, /api/options).
+  // Kept separate from the Yahoo-sourced fields above so IB vs Yahoo can be compared
+  // before the screens switch source. Populated for the ~30-DTE ATM call; live
+  // bid/ask/IV only meaningful during US market hours.
+  ibPrice        Decimal?  @map("ib_price")        // underlying last (spot) from IB
+  ibIvPct        Decimal?  @map("ib_iv_pct")       // ATM call implied vol %, IB-computed
+  ibIvDte        Int?      @map("ib_iv_dte")        // DTE of the chosen expiry
+  ibExpiry       String?   @map("ib_expiry")        // chosen option expiry, YYYY-MM-DD
+  ibAtmStrike    Decimal?  @map("ib_atm_strike")
+  ibAtmBid       Decimal?  @map("ib_atm_bid")
+  ibAtmAsk       Decimal?  @map("ib_atm_ask")
+  ibAtmMid       Decimal?  @map("ib_atm_mid")
+  ibAtmSpreadPct Decimal?  @map("ib_atm_spread_pct") // (ask-bid)/mid, 0-1
+  ibDelta        Decimal?  @map("ib_delta")
+  ibAt           DateTime? @map("ib_at")             // when the IB snapshot was captured
 
   security Security @relation(fields: [ticker], references: [ticker], onDelete: Cascade)
 
@@ -256,6 +273,28 @@ model CcScore {
   security Security @relation(fields: [ticker], references: [ticker], onDelete: Cascade)
 
   @@map("option_harvest_cc_scores")
+}
+
+/// User's IB watchlists, synced from the portal via the Chrome extension. One row
+/// per (watchlist, instrument); replaced wholesale on each sync (like Order — the
+/// lists are ephemeral, no raw-file audit table). Lets the dashboard show which
+/// curated lists a ticker belongs to. `raw` keeps the original portal instrument.
+model WatchlistItem {
+  id            Int      @id @default(autoincrement())
+  watchlistId   String   @map("watchlist_id")   // IB watchlist id ("113", "NAMED_CRYPTO", …)
+  watchlistName String   @map("watchlist_name") // IB list name ("AI", "Doom", …)
+  position      Int      @default(0)            // order of the instrument within the list
+  conid         String?                          // IB contract id
+  ticker        String?                          // symbol, upper-cased; null for non-symbol instruments
+  name          String?                          // instrument name / full name
+  secType       String?  @map("sec_type")        // "STK" | "ETF" | …
+  assetClass    String?  @map("asset_class")
+  raw           Json?
+  syncedAt      DateTime @default(now()) @map("synced_at")
+
+  @@index([ticker])
+  @@index([watchlistId])
+  @@map("option_harvest_watchlist")
 }
 
 /// Audit log for each ingestion run.

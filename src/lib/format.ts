@@ -70,3 +70,14 @@ export function formatTimestamp(d: Date | null | undefined): string {
     timeZoneName: "short",
   });
 }
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// Format a YYYY-MM-DD earnings date as "Jul 30" by string-parsing (no Date object)
+// so server and client render identically regardless of timezone.
+export function formatEarningsDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const [, m, d] = iso.split("-").map(Number);
+  if (!m || !d) return "—";
+  return `${MONTHS[m - 1]} ${d}`;
+}

@@ -9,7 +9,7 @@ import type { ContractPnl } from "@/lib/pnl";
 import { HistoryChart } from "@/components/HistoryChart";
 import { IvLine } from "@/components/charts";
 import { sectorColor } from "@/lib/sectors";
-import { formatMarketCap, formatVolume } from "@/lib/format";
+import { formatEarningsDate, formatMarketCap, formatVolume } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
@@ -143,6 +143,21 @@ export default async function StockPage({ params }: { params: Promise<{ ticker: 
           <div className="grid grid-cols-2 gap-x-4">
             <Field label="Market cap" value={formatMarketCap(s.marketCap)} />
             <Field label="Volume" value={formatVolume(s.volume)} />
+            <Field
+              label="Next earnings"
+              value={
+                s.nextEarnings && s.earningsInDays != null && s.earningsInDays >= 0
+                  ? `${formatEarningsDate(s.nextEarnings)} · ${s.earningsInDays}d`
+                  : "—"
+              }
+              cls={
+                s.earningsInDays != null && s.earningsInDays >= 0 && s.earningsInDays <= 10
+                  ? "text-rose-700"
+                  : s.earningsInDays != null && s.earningsInDays >= 0 && s.earningsInDays <= 35
+                    ? "text-amber-700"
+                    : "text-ink"
+              }
+            />
             <Field label="P/E" value={num(f.trailingPe, 1)} />
             <Field label="Fwd P/E" value={num(f.forwardPe, 1)} />
             <Field label="PEG" value={num(f.pegRatio, 2)} />

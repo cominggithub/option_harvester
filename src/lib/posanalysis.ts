@@ -43,6 +43,8 @@ export type LegSuggestion = {
   action: ActionKind;
   why: string;
   urgency: number; // 3 = act now … 0 = nothing to do
+  earningsDate: string | null; // next earnings (YYYY-MM-DD)
+  earningsRisk: boolean; // earnings report lands on/before this leg's expiry → held through the gap
 };
 
 const DAY = 86_400_000;
@@ -54,12 +56,17 @@ export function analyzeShortOption(
   leg: PositionGroupLeg,
   spot: number | null,
   asOf: Date = new Date(),
+  earningsDate: string | null = null,
 ): LegSuggestion | null {
   const right = leg.right;
   const qty = leg.quantity;
   if ((right !== "C" && right !== "P") || qty == null || qty >= 0) return null;
 
   const today = asOf.toISOString().slice(0, 10);
+  // Earnings gap risk: a future report lands on/before expiry, so the short option
+  // is still open across the announcement spike. Dates are YYYY-MM-DD → string compare.
+  const earningsRisk =
+    earningsDate != null && leg.expiry != null && earningsDate >= today && earningsDate <= leg.expiry;
   const dte = leg.expiry ? Math.round((Date.parse(leg.expiry) - Date.parse(today)) / DAY) : null;
   const credit = leg.unitCost != null ? Math.abs(leg.unitCost) * Math.abs(qty) * 100 : null;
   const costToClose = leg.marketValue != null ? Math.abs(leg.marketValue) : null;
@@ -125,7 +132,8 @@ export function analyzeShortOption(
   }
 
   return { symbol: leg.contract.split(" ")[0], right, strike: leg.strike, expiry: leg.expiry, qty,
-    spot, dte, moneyness, itm, credit, costToClose, unrealizedPnl: upnl, capturedPct: captured, action, why, urgency };
+    spot, dte, moneyness, itm, credit, costToClose, unrealizedPnl: upnl, capturedPct: captured, action, why, urgency,
+    earningsDate, earningsRisk };
 }
 
 // ponytail: minimal check. Run: npx tsx scripts/posanalysis-check.ts
@@ -161,6 +169,15 @@ export function _selfCheck(): void {
   // long / stock legs ignored
   assert(analyzeShortOption(mk({ quantity: 1 }), 90, asOf) === null, "long leg should be null");
   assert(analyzeShortOption(mk({ right: null, kind: "spot" }), 90, asOf) === null, "stock leg should be null");
+
+  // Earnings gap risk — report (2026-07-30) lands before expiry (2026-08-21) → flagged.
+  a = analyzeShortOption(mk({ expiry: "2026-08-21" }), 90, asOf, "2026-07-30")!;
+  assert(a.earningsRisk, "earnings before expiry should flag risk");
+  // Earnings after expiry → safe; no earnings date → safe.
+  assert(!analyzeShortOption(mk({ expiry: "2026-07-15" }), 90, asOf, "2026-07-30")!.earningsRisk, "earnings after expiry must not flag");
+  assert(!analyzeShortOption(mk({ expiry: "2026-08-21" }), 90, asOf, null)!.earningsRisk, "no earnings date must not flag");
+  // Earnings already past (before today) → safe.
+  assert(!analyzeShortOption(mk({ expiry: "2026-08-21" }), 90, asOf, "2026-06-01")!.earningsRisk, "past earnings must not flag");
 
   // eslint-disable-next-line no-console
   console.log("posanalysis self-check OK");

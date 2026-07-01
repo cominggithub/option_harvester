@@ -329,3 +329,149 @@ export function parseIbPortalOrders(records: Record<string, unknown>[]): ParsedO
       };
     });
 }
+
+// ── IB watchlists (Client Portal JSON, from the Chrome extension) ────────────
+// The portal's /iserver/watchlist?id=<id> feed. The extension sends one entry per
+// user list: { id, name, instruments:[{ ST, conid, C, ticker, name, fullName,
+// assetClass }] }. We flatten to one row per instrument, preserving list order.
+// Column-header / separator pseudo-rows (no conid and no ticker) are dropped.
+export type ParsedWatchlistItem = {
+  watchlistId: string;
+  watchlistName: string;
+  position: number;
+  conid: string | null;
+  ticker: string | null;
+  name: string | null;
+  secType: string | null;
+  assetClass: string | null;
+  raw: Record<string, unknown>;
+};
+
+export function parseIbPortalWatchlists(
+  lists: { id?: unknown; name?: unknown; instruments?: unknown }[],
+): ParsedWatchlistItem[] {
+  const out: ParsedWatchlistItem[] = [];
+  for (const wl of lists ?? []) {
+    const wid = wl?.id != null && wl.id !== "" ? String(wl.id) : "";
+    if (!wid) continue;
+    const wname = wl?.name != null && String(wl.name).trim() ? String(wl.name) : wid;
+    const instruments = Array.isArray(wl?.instruments) ? (wl.instruments as Record<string, unknown>[]) : [];
+    instruments.forEach((it, i) => {
+      if (!it || typeof it !== "object") return;
+      const tickRaw = it.ticker ?? it.symbol;
+      const ticker = typeof tickRaw === "string" && tickRaw.trim() ? tickRaw.trim().toUpperCase() : null;
+      const conidRaw = it.conid ?? it.C;
+      const conid = conidRaw != null && conidRaw !== "" ? String(conidRaw) : null;
+      if (!ticker && !conid) return; // header/separator pseudo-row
+      out.push({
+        watchlistId: wid,
+        watchlistName: wname,
+        position: i,
+        conid,
+        ticker,
+        name: (it.name ?? it.fullName ?? null) as string | null,
+        secType: (it.ST ?? it.secType ?? null) as string | null,
+        assetClass: (it.assetClass ?? null) as string | null,
+        raw: it,
+      });
+    });
+  }
+  return out;
+}
+
+// ── IB /trsrv/stocks symbol → conid resolver (Chrome extension) ──────────────
+// /trsrv/stocks?symbols=A,B,C returns { SYMBOL: [ { name, assetClass, contracts:
+// [{ conid, exchange, isUS }] } ] }. We pick the US stock/ETF listing's conid.
+// Preference: assetClass STK entry, then a US contract, else the first contract.
+export type ParsedConid = { ticker: string; conid: string };
+
+export function parseIbStocks(stocks: Record<string, unknown>): ParsedConid[] {
+  const out: ParsedConid[] = [];
+  for (const [sym, val] of Object.entries(stocks ?? {})) {
+    if (!Array.isArray(val)) continue;
+    // Prefer an assetClass === "STK" entry; fall back to the first entry.
+    const entries = val as Record<string, unknown>[];
+    const entry = entries.find((e) => String(e?.assetClass ?? "").toUpperCase() === "STK") ?? entries[0];
+    const contracts = Array.isArray(entry?.contracts) ? (entry.contracts as Record<string, unknown>[]) : [];
+    if (!contracts.length) continue;
+    const pick = contracts.find((c) => c?.isUS === true) ?? contracts[0];
+    const conid = pick?.conid;
+    if (conid == null || conid === "") continue;
+    out.push({ ticker: sym.trim().toUpperCase(), conid: String(conid) });
+  }
+  return out;
+}
+
+// ── IB option snapshot mapper (Client Portal marketdata, from the extension) ──
+// The extension runs the chain lookup (secdef/search → strikes → info → snapshot)
+// in the logged-in IB page and posts one record per ticker. Field mapping lives
+// here (server-side) so the exact /iserver/marketdata/snapshot field ids can be
+// tuned against IB's live response without re-releasing the extension.
+//   31=Last  84=Bid  86=Ask  87=Volume  7283=Implied Vol %  7308=Delta
+// IB prefixes some numeric strings (e.g. Last "C746.77", "H12.3"); pnumIb strips them.
+export type IbOptionFetch = {
+  ticker: string;
+  underlyingConid?: unknown;
+  spot?: unknown; // pre-parsed spot, if the extension resolved it
+  spotRaw?: Record<string, unknown> | null; // underlying snapshot object (field 31)
+  expiry?: string | null; // YYYY-MM-DD
+  strike?: unknown;
+  right?: string | null;
+  optionConid?: unknown;
+  optionRaw?: Record<string, unknown> | null; // option snapshot (31/84/86/7283/7308)
+};
+
+export type MappedIbOption = {
+  ticker: string;
+  ibPrice: number | null;
+  ibIvPct: number | null;
+  ibIvDte: number | null;
+  ibExpiry: string | null;
+  ibAtmStrike: number | null;
+  ibAtmBid: number | null;
+  ibAtmAsk: number | null;
+  ibAtmMid: number | null;
+  ibAtmSpreadPct: number | null;
+  ibDelta: number | null;
+};
+
+// Strip IB's letter prefixes / thousands separators from a snapshot value.
+const pnumIb = (v: unknown): number | null => {
+  if (v == null || v === "") return null;
+  const n = Number(String(v).replace(/[^0-9.\-]/g, ""));
+  return Number.isFinite(n) ? n : null;
+};
+
+const dteFrom = (expiry: string | null | undefined): number | null => {
+  if (!expiry) return null;
+  const d = new Date(expiry + "T00:00:00Z");
+  if (isNaN(d.getTime())) return null;
+  return Math.round((d.getTime() - Date.now()) / 86_400_000);
+};
+
+export function parseIbOptionSnapshot(f: IbOptionFetch): MappedIbOption | null {
+  if (!f || typeof f.ticker !== "string" || !f.ticker.trim()) return null;
+  const opt = (f.optionRaw ?? {}) as Record<string, unknown>;
+  const und = (f.spotRaw ?? {}) as Record<string, unknown>;
+
+  const price = f.spot != null && f.spot !== "" ? pnumIb(f.spot) : pnumIb(und["31"]);
+  const bid = pnumIb(opt["84"]);
+  const ask = pnumIb(opt["86"]);
+  const mid = bid != null && ask != null && bid + ask > 0 ? (bid + ask) / 2 : null;
+  const spreadPct = mid && bid != null && ask != null && mid > 0 ? (ask - bid) / mid : null;
+  const expiry = f.expiry ?? null;
+
+  return {
+    ticker: f.ticker.trim().toUpperCase(),
+    ibPrice: price,
+    ibIvPct: pnumIb(opt["7283"]),
+    ibIvDte: dteFrom(expiry),
+    ibExpiry: expiry,
+    ibAtmStrike: pnumIb(f.strike),
+    ibAtmBid: bid,
+    ibAtmAsk: ask,
+    ibAtmMid: mid,
+    ibAtmSpreadPct: spreadPct,
+    ibDelta: pnumIb(opt["7308"]),
+  };
+}
