@@ -1,16 +1,32 @@
 const $ = (id) => document.getElementById(id);
-const log = (m) => ($("log").textContent = typeof m === "string" ? m : JSON.stringify(m, null, 2));
 const DEFAULT = "http://114.33.62.221:19210"; // prod — only port reachable outside the NAT
 
-chrome.storage.local.get("backend", ({ backend }) => ($("backend").value = backend || DEFAULT));
-$("backend").addEventListener("change", () => chrome.storage.local.set({ backend: $("backend").value.trim() }));
-
+const show = (r) => {
+  if (!r) return;
+  $("log").textContent = r.error
+    ? `✕ ${r.error}`
+    : `✓ acct ${r.acct ?? "?"} · pos ${r.positions?.count ?? "—"} · ord ${r.orders?.count ?? "—"} · trades +${r.trades?.added ?? 0}`;
+};
 const backend = () => ($("backend").value.trim() || DEFAULT).replace(/\/$/, "");
-const send = (msg) => chrome.runtime.sendMessage(msg, log);
 
-$("send-pos").onclick = () => send({ type: "sendCapture", backend: backend(), label: "positions" });
-$("send-ord").onclick = () => send({ type: "sendCapture", backend: backend(), label: "orders" });
-$("send-trd").onclick = () => send({ type: "sendCapture", backend: backend(), label: "trades" });
-$("sync").onclick = () => send({ type: "sync", backend: backend() });
-$("list").onclick = () => send({ type: "getCaptures" });
-$("clear").onclick = () => send({ type: "clear" });
+chrome.storage.local.get(["backend", "autoOn", "autoMin", "lastStatus", "lastAt"], (s) => {
+  $("backend").value = s.backend || DEFAULT;
+  $("auto").checked = !!s.autoOn;
+  $("mins").value = s.autoMin || 15;
+  if (s.lastStatus) $("log").textContent = `${s.lastStatus}${s.lastAt ? ` · ${new Date(s.lastAt).toLocaleTimeString()}` : ""}`;
+});
+
+$("backend").addEventListener("change", () => chrome.storage.local.set({ backend: backend() }));
+
+$("sync").onclick = () => {
+  $("log").textContent = "Syncing…";
+  chrome.runtime.sendMessage({ type: "sync", backend: backend() }, show);
+};
+
+const updateAuto = () =>
+  chrome.runtime.sendMessage(
+    { type: "setAuto", on: $("auto").checked, minutes: Number($("mins").value) || 15 },
+    () => ($("log").textContent = $("auto").checked ? `Auto-sync on · every ${$("mins").value} min` : "Auto-sync off"),
+  );
+$("auto").onchange = updateAuto;
+$("mins").onchange = () => $("auto").checked && updateAuto();

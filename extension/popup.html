@@ -5,36 +5,27 @@
     <style>
       body { font: 13px system-ui, sans-serif; width: 280px; margin: 0; padding: 12px; }
       label { display: block; font-size: 11px; color: #666; margin: 8px 0 2px; }
-      input { width: 100%; box-sizing: border-box; padding: 5px; }
-      button { width: 100%; padding: 7px; margin-top: 8px; cursor: pointer; }
-      .row { display: flex; gap: 6px; }
-      .row button { margin-top: 0; }
+      input[type="text"] { width: 100%; box-sizing: border-box; padding: 5px; }
+      button { width: 100%; padding: 8px; margin-top: 10px; cursor: pointer; font-weight: 600; }
+      .auto { display: flex; align-items: center; gap: 6px; margin-top: 12px; font-size: 12px; }
+      .auto input[type="number"] { width: 48px; }
       #log { white-space: pre-wrap; font-size: 11px; color: #333; margin-top: 10px;
-             max-height: 160px; overflow: auto; background: #f5f5f5; padding: 6px; }
-      h4 { margin: 10px 0 0; }
+             background: #f5f5f5; padding: 6px; border-radius: 4px; min-height: 16px; }
     </style>
   </head>
   <body>
     <label>Backend URL</label>
-    <input id="backend" placeholder="http://114.33.62.221:19211" />
+    <input type="text" id="backend" placeholder="http://114.33.62.221:19210" />
 
-    <h4>1. Recon (co-dev)</h4>
-    <label>Open the Positions / Orders / Trades page, then send what it loaded:</label>
-    <div class="row">
-      <button id="send-pos">Send (positions)</button>
-      <button id="send-ord">Send (orders)</button>
-    </div>
-    <button id="send-trd">Send (trades)</button>
+    <button id="sync">Sync now</button>
 
-    <h4>2. Sync</h4>
-    <button id="sync">Sync now → DB</button>
-
-    <div class="row" style="margin-top: 8px">
-      <button id="list">List captured</button>
-      <button id="clear">Clear capture</button>
+    <div class="auto">
+      <input type="checkbox" id="auto" />
+      <label for="auto" style="margin: 0">Auto-sync every</label>
+      <input type="number" id="mins" min="1" value="15" /> min
     </div>
 
-    <div id="log"></div>
+    <div id="log">Log in to IB, then Sync (or turn on auto-sync).</div>
     <script src="popup.js"></script>
   </body>
 </html>
