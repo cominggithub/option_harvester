@@ -38,7 +38,9 @@ async function fetchAllInPage() {
   let ibWatchlists = null;
   try {
     const idx = await j(base + "/iserver/watchlists");
-    const userLists = idx?.data?.user_lists ?? [];
+    const userLists = (idx?.data?.user_lists ?? []).filter(
+      (w) => !String(w?.name || "").startsWith("OH:"), // skip our own pushed lists
+    );
     const details = await Promise.all(
       userLists.map((w) => j(`${base}/iserver/watchlist?id=${encodeURIComponent(w.id)}`)),
     );
@@ -86,6 +88,10 @@ async function runSync(backend, { preferActive } = {}) {
   if (d.ibOrders != null) out.orders = await post(`${backend}/api/orders`, { ibOrders: d.ibOrders });
   if (d.ibTrades?.length) out.trades = await post(`${backend}/api/trades`, { ibTrades: d.ibTrades });
   if (d.ibWatchlists?.length) out.watchlists = await post(`${backend}/api/watchlist`, { ibWatchlists: d.ibWatchlists });
+  // Push OH watchlists back to IB. Positions were just posted above, so the OH
+  // lists (Cpos/Ppos/NCcan) reflect the fresh snapshot. Failure here doesn't fail
+  // the pull.
+  out.ohPush = await pushOhWatchlists(backend).catch((e) => ({ error: String(e) }));
   return out;
 }
 
@@ -216,6 +222,62 @@ async function getOptions(backend, tickers) {
   return { ...out, tried: targets.length };
 }
 
+// Push Option Harvester's OH watchlists to IB: create/overwrite "OH:*" lists in
+// the logged-in IB account. IB has no in-place edit, so each list is delete +
+// recreate. Only touches "OH:"-prefixed lists — never the user's own lists.
+async function pushOhWatchlists(backend) {
+  const data = await (await fetch(`${backend}/api/oh-watchlists`)).json().catch(() => null);
+  const lists = data?.lists;
+  if (!Array.isArray(lists) || !lists.length) return { error: "no OH lists from backend" };
+
+  const tab = await findIbTab(false);
+  if (!tab?.id) return { error: "no IB tab open — log into the IB portal" };
+
+  const [res] = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    args: [lists],
+    func: async (lists) => {
+      const base = location.origin + "/portal.proxy/v1/portal";
+      const del = async (id) => {
+        try {
+          await fetch(`${base}/iserver/watchlist?id=${encodeURIComponent(id)}`, { method: "DELETE", credentials: "include" });
+        } catch {}
+      };
+      // Existing user lists — used to delete any stale "OH:*" by name.
+      let existing = [];
+      try {
+        const w = await (await fetch(`${base}/iserver/watchlists?SC=USER_WATCHLIST`, { credentials: "include" })).json();
+        existing = w?.data?.user_lists || [];
+      } catch {}
+
+      const results = [];
+      for (const l of lists) {
+        await del(l.id); // stale copy at our fixed id
+        for (const e of existing) if (e && e.name === l.name && String(e.id) !== String(l.id)) await del(e.id);
+        await new Promise((s) => setTimeout(s, 350));
+        try {
+          const r = await fetch(`${base}/iserver/watchlist`, {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: l.id, name: l.name, rows: l.rows }),
+          });
+          const j = await r.json().catch(() => null);
+          results.push({ name: l.name, ok: r.ok && !!j && !j.error, rows: l.rows.length, error: j?.error || (r.ok ? null : `HTTP ${r.status}`) });
+        } catch (e) {
+          results.push({ name: l.name, ok: false, rows: l.rows.length, error: String(e) });
+        }
+        await new Promise((s) => setTimeout(s, 450));
+      }
+      return results;
+    },
+  });
+
+  const results = res?.result || [];
+  const pushed = results.filter((r) => r.ok).length;
+  return { pushed, total: lists.length, results };
+}
+
 // Timer: sync whenever the alarm fires, if auto-sync is on and an IB tab exists.
 chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name !== ALARM) return;
@@ -230,7 +292,8 @@ function summary(r) {
   const o = r.orders?.count ?? "—";
   const t = r.trades ? `+${r.trades.added}` : "—";
   const w = r.watchlists?.lists != null ? `${r.watchlists.lists}` : "—";
-  return `pos ${p} · ord ${o} · trd ${t} · wl ${w}`;
+  const oh = r.ohPush?.pushed != null ? `${r.ohPush.pushed}/${r.ohPush.total}` : "—";
+  return `pos ${p} · ord ${o} · trd ${t} · wl ${w} · OH→IB ${oh}`;
 }
 
 function scheduleAuto(minutes) {
@@ -289,6 +352,12 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
   }
   if (msg.type === "getOptions") {
     getOptions(msg.backend, msg.tickers || [])
+      .then(reply)
+      .catch((e) => reply({ error: String(e) }));
+    return true;
+  }
+  if (msg.type === "pushOhWatchlists") {
+    pushOhWatchlists(msg.backend)
       .then(reply)
       .catch((e) => reply({ error: String(e) }));
     return true;

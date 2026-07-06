@@ -355,6 +355,9 @@ export function parseIbPortalWatchlists(
     const wid = wl?.id != null && wl.id !== "" ? String(wl.id) : "";
     if (!wid) continue;
     const wname = wl?.name != null && String(wl.name).trim() ? String(wl.name) : wid;
+    // Skip our own pushed lists ("OH:*") — they're Option Harvester's, not the
+    // user's IB lists, so they must not round-trip back in as IB watchlists.
+    if (wname.startsWith("OH:")) continue;
     const instruments = Array.isArray(wl?.instruments) ? (wl.instruments as Record<string, unknown>[]) : [];
     instruments.forEach((it, i) => {
       if (!it || typeof it !== "object") return;

@@ -94,7 +94,8 @@ const CSP_INDEX_ETFS = new Set(["SPY", "QQQ", "VOO", "VTI", "IWM", "DIA"]);
 const CSP_MIN_MARKETCAP = 1_000_000_000_000; // $1T
 
 // "NC" auto-target — the user's naked-call screen: liquid, mid-priced, juicy IV,
-// a full weekly ladder, and NOT rising on any of 1M/3M/6M. Tagged red "NC" + /nc page.
+// a full weekly ladder, and NOT rising on any of 1M/3M/6M. Drives the Analyzer's
+// "Naked Call" screen (view "cc") + the "NC" auto-label chip.
 const NC_MIN_VOLUME = 3_000_000;
 const NC_PRICE_MIN = 20;
 const NC_PRICE_MAX = 180;

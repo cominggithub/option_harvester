@@ -76,7 +76,7 @@ function RecordCell({ r }: { r: SecurityRow["record"] }) {
 // Expanded-row option detail: front-month DTE, the weekly-expiry ladder (and why
 // it's a "bad option date" when sparse), and the ATM ~30-DTE call's mid + live
 // bid/ask spread with a too-wide verdict.
-function OptionDetail({ s }: { s: SecurityRow }) {
+export function OptionDetail({ s }: { s: SecurityRow }) {
   if (!s.expiries?.length && s.ivDte == null && s.atmStrike == null) return null;
   const sp = s.atmSpreadPct;
   const known = sp != null;
@@ -160,7 +160,7 @@ const KIND_LABEL: Record<"spot" | "call" | "put" | "opt", string> = {
 };
 
 // Per-leg detail shown when a held row is expanded.
-function PositionDetail({ p }: { p: NonNullable<SecurityRow["position"]> }) {
+export function PositionDetail({ p }: { p: NonNullable<SecurityRow["position"]> }) {
   return (
     <div className="mb-4">
       <div className="mb-1.5 flex items-center gap-3 text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
@@ -243,7 +243,7 @@ function RateRow({
   );
 }
 
-function RatingCell({ rating, onRate }: { rating: number; onRate: (n: number) => void }) {
+export function RatingCell({ rating, onRate }: { rating: number; onRate: (n: number) => void }) {
   return (
     <div className="flex flex-col gap-0.5" onClick={(e) => e.stopPropagation()}>
       <RateRow label="NC" value={rating > 0 ? rating : 0} color="text-emerald-600" onSet={(n) => onRate(n)} />
@@ -256,7 +256,7 @@ function RatingCell({ rating, onRate }: { rating: number; onRate: (n: number) =>
 // on/off, or type a new one to create it. Removing the last use of a custom
 // label drops it from the catalog. Auto-derived labels (AUTO_LABELS) are shown
 // read-only — they come from the data, not the user.
-function LabelEditor({
+export function LabelEditor({
   labels,
   autoLabels,
   catalog,

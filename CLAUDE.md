@@ -17,6 +17,7 @@ lives in the knowledge map below; read the row that matches your task before div
 | Verify a change before shipping | **`docs/test-plan.md`** — static gates, `*-check.ts` self-checks, manual steps |
 | Know *why* the strategy trades what it does | **`docs/strategy.md`** — trading rationale |
 | Work on the Δ0.30 naked-call model / `ccscore` / predictions | **`docs/cc-target-strategy.md`** — model, backtest, predict→validate loop |
+| Work on watchlists (OH + IB), conid backfill, IB option fetch, plugin sync | **`docs/watchlists.md`** — sources, `/watchlists` page, IB↔web sync flows |
 | Find where code lives | **File map** (below) |
 
 (Terminology: calls are naked, puts cash-backed; legacy code uses `cc`/`csp`/`ccScore`.)
@@ -114,9 +115,12 @@ then `db:generate`. Tables/columns are documented in **docs/spec.md § 6**.
 Behavior/why is in **docs/spec.md**; this is where code lives.
 
 Pages (all `force-dynamic`):
-- `src/app/page.tsx` — analyzer → `<Dashboard>`.
+- `src/app/page.tsx` — analyzer → `<Dashboard>`. The naked-call screen is the
+  default "Naked Call" view here (the old standalone `/nc` route was removed).
 - `src/app/stock/[ticker]/page.tsx` — per-symbol detail page (7 sections).
-- `src/app/nc/page.tsx` — naked-call screen (the "NC"-tagged names), grouped by sector.
+- `src/app/watchlists/page.tsx` — watchlists browser (`<WatchlistBrowser>`): OH
+  (computed) + IB (synced) lists in the Analyzer table view. See docs/watchlists.md.
+- `src/app/ib/page.tsx` — IB-vs-Yahoo option-data comparison (`ib_*` quote columns).
 - `src/app/positions/page.tsx` — positions + action board (sticky TOC nav).
 - `src/app/orders/page.tsx` — pending orders + which short call each GTC stop protects.
 - `src/app/transactions/page.tsx` — P/L (`<PnlDashboard>`).
@@ -128,11 +132,18 @@ API (`src/app/api/…`, mutations + on-demand data):
   `orders`, `trades` — write endpoints; `positions` POST auto-pulls newly-held
   off-index tickers.
 - `ib-capture` — receives positions/orders/trades pushed by the Chrome extension.
+- `watchlist` — IB watchlists sync-in (full replace; `OH:*` excluded); `oh-watchlists`
+  — OH lists with conid rows for the OH→IB push; `securities/conids` — conid backfill
+  (GET missing / POST `/trsrv/stocks`); `options` — GET ticker→conid, POST IB option
+  snapshot into `ib_*`. All extension-driven; see docs/watchlists.md.
 
-Components: `Dashboard.tsx` (client shell), `LeftNav.tsx`, `TopNav.tsx`, `DataTable.tsx`
-(table + Record column + `OptionDetail` expand), `PnlDashboard.tsx`, `charts.tsx` (SVG
-charts), `Sparkline.tsx`, `HistoryChart.tsx`, `UploadControl.tsx`, `UploadHistory.tsx`,
-`icons.tsx`.
+Components: `Dashboard.tsx` (client shell), `LeftNav.tsx`, `TopNav.tsx`,
+`WideStockList.tsx` (the wide two-row table body — basic + sortable stats + 1M/3M/6M/1Y
+charts + highlighted Pos — used by the Analyzer **and** Watchlists), `DataTable.tsx`
+(now the shared row sub-components: `OptionDetail`/`PositionDetail`/`LabelEditor`/`RatingCell`),
+`WatchlistBrowser.tsx` (watchlists page: left-nav tabs + `WideStockList`), `PnlDashboard.tsx`,
+`charts.tsx` (SVG charts), `Sparkline.tsx`, `HistoryChart.tsx`, `UploadControl.tsx`,
+`UploadHistory.tsx`, `icons.tsx`.
 
 Libs (`src/lib`): `securities.ts` (`getDashboardData`, `getIvSeries`, screens),
 `pnl.ts` (cash-flow P/L engine), `transactions.ts` (`getPnlReport`), `posanalysis.ts`
@@ -140,7 +151,10 @@ Libs (`src/lib`): `securities.ts` (`getDashboardData`, `getIvSeries`, screens),
 `news.ts` (headlines + lexicon), `score.ts` (Signal), `ccscore.ts` (Δ0.30 Call-Edge
 `E`, read from `option_harvest_cc_scores`), `harvester.ts`, `ivstats.ts` (IV rank),
 `trend.ts`, `view.ts` (sort), `labels.ts` (derived stock-label catalog),
-`enrich.ts` (shared ingest pipeline), `ibparse.ts`/`txparse.ts` (IB CSV),
+`watchlists.ts` (OH watchlist definitions + IB reader — see docs/watchlists.md),
+`enrich.ts` (shared ingest pipeline), `ibparse.ts`/`txparse.ts` (IB CSV +
+Client-Portal JSON parsers: `parseIbPortal{Positions,Orders,Watchlists}`,
+`parseIbStocks`, `parseIbOptionSnapshot`),
 `uploadkind.ts` (positions-vs-transactions CSV detection), `format.ts`, `sectors.ts`,
 `db.ts`.
 
@@ -155,9 +169,14 @@ Scripts (`scripts/`):
 - Self-checks: `*-check.ts` (`pnl`, `posanalysis`, `positions`, `trades`, `news`) —
   see test plan.
 
-Chrome extension (`extension/`): syncs IB portal positions/orders/trades → `ib-capture`
-API (manual + timer). **Bump `manifest.json` `version` on every edit** (see
-`[[bump-extension-version]]`).
+Chrome extension (`extension/`): runs in the logged-in IB portal tab. **Sync now**
+pulls positions/orders/trades/watchlists → the write APIs (IB→web, full replace) and
+then pushes OH watchlists → IB (`OH:*`); auto-sync does the same on a timer. Other
+popup actions: **Resolve conids** (backfill `securities.conid` via `/trsrv/stocks`),
+**Get options (IB)** (per-ticker option snapshot → `ib_*`), **Push OH → IB**, and
+**Send page (dev)** capture → `ib-capture`. Full flows in **docs/watchlists.md**.
+**Bump `manifest.json` `version` on every edit** (see
+`[[bump-extension-version]]`; currently 0.7.2).
 
 ## Local dev gotchas (WSL on `/mnt/d`)
 

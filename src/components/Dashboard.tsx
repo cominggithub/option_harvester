@@ -15,7 +15,7 @@ import {
 import { SECTOR_ORDER, sectorRank } from "@/lib/sectors";
 import { labelCatalog, labelColor } from "@/lib/labels";
 import { LeftNav } from "@/components/LeftNav";
-import { DataTable } from "@/components/DataTable";
+import { WideStockList } from "@/components/WideStockList";
 
 type Props = { securities: SecurityRow[]; asOf: string | null };
 
@@ -607,7 +607,7 @@ export function Dashboard({ securities, asOf }: Props) {
         </header>
 
         <div className="scrollbar-thin flex-1 overflow-y-auto">
-          <DataTable
+          <WideStockList
             rows={visible}
             sortKey={sortKey}
             sortDir={sortDir}

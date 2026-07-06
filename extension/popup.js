@@ -5,7 +5,7 @@ const show = (r) => {
   if (!r) return;
   $("log").textContent = r.error
     ? `✕ ${r.error}`
-    : `✓ acct ${r.acct ?? "?"} · pos ${r.positions?.count ?? "—"} · ord ${r.orders?.count ?? "—"} · trades +${r.trades?.added ?? 0} · wl ${r.watchlists?.lists ?? 0}`;
+    : `✓ acct ${r.acct ?? "?"} · pos ${r.positions?.count ?? "—"} · ord ${r.orders?.count ?? "—"} · trades +${r.trades?.added ?? 0} · wl ${r.watchlists?.lists ?? 0} · OH→IB ${r.ohPush?.pushed ?? 0}/${r.ohPush?.total ?? 0}`;
 };
 const backend = () => ($("backend").value.trim() || DEFAULT).replace(/\/$/, "");
 
@@ -50,6 +50,16 @@ $("getopts").onclick = () => {
     ($("log").textContent = r?.error
       ? `✕ ${r.error}`
       : `✓ options updated ${r?.updated ?? 0}/${r?.tried ?? 0}${r?.errors?.length ? ` · ${r.errors.length} err` : ""}`),
+  );
+};
+
+// Push Option Harvester's OH watchlists (NC/NCcan/Cpos/Ppos) to IB as "OH:*" lists.
+$("pushoh").onclick = () => {
+  $("log").textContent = "Pushing OH → IB watchlists…";
+  chrome.runtime.sendMessage({ type: "pushOhWatchlists", backend: backend() }, (r) =>
+    ($("log").textContent = r?.error
+      ? `✕ ${r.error}`
+      : `✓ pushed ${r?.pushed ?? 0}/${r?.total ?? 0} OH lists → IB${(r?.results || []).some((x) => !x.ok) ? " (some failed)" : ""}`),
   );
 };
 

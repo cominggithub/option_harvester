@@ -41,15 +41,16 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
 
 ## 4. Pages & behaviors
 
-- **Analyzer** (`/`, `Dashboard.tsx`) — the table. Each row: inline **Sparkline**
-  (close line for the Trend-filter window, colored by that window's label) + a
-  sortable **Record** column (lifetime realized P/L + win% per underlying) + a **Pos**
-  column (net spot/call/put, toggleable). Clicking a row expands an inline panel:
-  `HistoryChart` (full daily line, 1M/3M/6M/1Y + per-window return/slope/R²) and the
-  **`OptionDetail`** block (front-month DTE, weekly ladder, expiry chips, ATM
-  strike/mid + bid-ask spread with a too-wide verdict). The ticker symbol links to the
-  detail page. Sparkline data ships in the page payload (`SecurityRow.spark`); the
-  detail chart fetches full closes from `GET /api/history/[ticker]`.
+- **Analyzer** (`/`, `Dashboard.tsx`) — the table (`WideStockList`). Wide-screen,
+  **two rows per name**: a basic-info line (ticker, Signal NC/NP tag, ★/◎/held marks,
+  name, sector, weekly-ladder/DTE/spread/earnings/labels) over a **sortable stats line**
+  (Last, Chg %, IV, IV-rank, Harvester, Volume, Mkt-cap, Record, and a highlighted
+  **Pos** = net spot/call/put); the **1M/3M/6M/1Y trend charts span both rows** on the
+  right (from `SecurityRow.spark`, colored by each window's label). Clicking ▸ expands
+  `PositionDetail` (per-leg) + `OptionDetail` (front-month DTE, weekly ladder, expiry
+  chips, ATM strike/mid + bid-ask spread with a too-wide verdict) + the inline
+  `LabelEditor`. Ticker links to the detail page. (`DataTable.tsx` still houses those
+  shared expand/mark sub-components.)
 - **Stock detail** (`/stock/[ticker]`) — per-symbol deep dive, seven sections: price
   history, option/IV trend (`IvLine` + IV rank/percentile, IV/RV, ladder, ATM spread),
   long-term fundamentals, recent **news** (lexicon-flagged), the user's position (with
@@ -69,6 +70,13 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   transaction-history (`uploadkind.ts`). Uploading positions auto-pulls any newly-held
   off-index ticker into the universe immediately (`addNewHoldings`, via `enrich.ts`).
 - **Wiki** (`/wiki`) — static field-manual page (strategy, screens, formulas).
+- **Watchlists** (`/watchlists`, `WatchlistBrowser.tsx`) — left-nav tabs over two
+  groups: **OH** (Option Harvester's computed lists — NC / NCcan / Cpos / Ppos) and
+  **IB** (the user's Interactive Brokers lists, synced by the extension). Each tab
+  renders the Analyzer's wide table view (`WideStockList`) for its members. Full spec: **docs/watchlists.md**.
+- **IB vs Yahoo** (`/ib`) — compares the IB-sourced option snapshot (price / IV / DTE /
+  bid-ask spread, from the extension) against the Yahoo-sourced values per ticker, so
+  the two feeds can be eyeballed before a screen switches source.
 
 ## 5. Metrics & formulas
 
@@ -107,13 +115,18 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
 All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
 
 - **securities** — static metadata: ticker (PK), name, description, sector (GICS),
-  sub_industry, type (`stock`|`etf`), is_active.
+  sub_industry, type (`stock`|`etf`), is_active. **conid** — IB underlying contract id,
+  backfilled via the extension (`/trsrv/stocks`); keys all IB option/watchlist calls.
 - **quotes** — latest snapshot per ticker: price, market_cap, volume, change_pct,
   iv_pct, iv_dte, weekly_buckets, next_earnings, currency, as_of. **ATM liquidity:**
   atm_strike, atm_mid, atm_bid, atm_ask, atm_spread_pct, spread_at, expiries (JSONB
   `[{d,dte}]`). **Fundamentals** (same `quoteSummary` call as description/earnings —
   no extra request): trailing_pe, forward_pe, peg_ratio, dividend_yield, beta,
   week52_low/high, profit_margins, analyst_rec, target_mean_price; ETFs leave most null.
+  **IB-sourced (parallel, on-demand from the extension):** ib_price, ib_iv_pct,
+  ib_iv_dte, ib_expiry, ib_atm_strike/bid/ask/mid/spread_pct, ib_delta, ib_at — the
+  ~30-DTE ATM call snapshot, kept separate from the Yahoo fields for the `/ib`
+  comparison (see docs/watchlists.md § endpoints).
 - **iv_history** — daily IV series, PK `(ticker, date)`: iv_pct, iv_dte,
   weekly_buckets, price. **Appended every `npm run ingest`** (only source of past IV —
   `quotes` keeps only today). Backfill via `npm run ingest:iv-backfill`
@@ -132,6 +145,9 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   commission). So P/L is *reconstructed* (§ P/L engine). **transaction_uploads** keeps
   every raw file.
 - **marks** — favorite + target booleans per ticker (survives re-ingest).
+- **watchlist** — user's IB watchlists synced by the extension (one row per
+  list+instrument); replaced wholesale each sync, `OH:*` lists excluded. Read via
+  `getIbWatchlists()`; OH lists are computed, not stored. See **docs/watchlists.md**.
 - **ingest_runs** — audit log of each run.
 
 ### IB parsers
