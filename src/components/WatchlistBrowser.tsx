@@ -160,25 +160,27 @@ export function WatchlistBrowser({ securities, asOf, tabs }: Props) {
           {active?.desc && <p className="mt-1 max-w-3xl text-[12.5px] leading-snug text-ink-muted">{active.desc}</p>}
         </header>
 
-        <WideStockList
-          rows={visible}
-          sortKey={sortKey}
-          sortDir={sortDir}
-          trendWindow={trendWindow}
-          showSector
-          showPositions
-          showRating={false}
-          catalog={catalog}
-          onSort={onSort}
-          onToggle={onToggle}
-          onRate={onRate}
-          onSetLabels={onSetLabels}
-          emptyMessage={
-            total === 0
-              ? "This watchlist is empty."
-              : "None of this watchlist's names are in the tracked universe."
-          }
-        />
+        <div className="scrollbar-thin flex-1 overflow-y-auto">
+          <WideStockList
+            rows={visible}
+            sortKey={sortKey}
+            sortDir={sortDir}
+            trendWindow={trendWindow}
+            showSector
+            showPositions
+            showRating={false}
+            catalog={catalog}
+            onSort={onSort}
+            onToggle={onToggle}
+            onRate={onRate}
+            onSetLabels={onSetLabels}
+            emptyMessage={
+              total === 0
+                ? "This watchlist is empty."
+                : "None of this watchlist's names are in the tracked universe."
+            }
+          />
+        </div>
       </main>
     </div>
   );

@@ -138,8 +138,10 @@ API (`src/app/api/…`, mutations + on-demand data):
   snapshot into `ib_*`. All extension-driven; see docs/watchlists.md.
 
 Components: `Dashboard.tsx` (client shell), `LeftNav.tsx`, `TopNav.tsx`,
-`WideStockList.tsx` (the wide two-row table body — basic + sortable stats + 1M/3M/6M/1Y
-charts + highlighted Pos — used by the Analyzer **and** Watchlists), `DataTable.tsx`
+`WideStockList.tsx` (the wide table body — per name a 3-line left block [basic /
+sortable stats + highlighted Pos / option-meta + per-row "last updated" freshness]
+and a single row of four tall 1M/3M/6M/1Y charts; used by the Analyzer **and**
+Watchlists), `DataTable.tsx`
 (now the shared row sub-components: `OptionDetail`/`PositionDetail`/`LabelEditor`/`RatingCell`),
 `WatchlistBrowser.tsx` (watchlists page: left-nav tabs + `WideStockList`), `PnlDashboard.tsx`,
 `charts.tsx` (SVG charts), `Sparkline.tsx`, `HistoryChart.tsx`, `UploadControl.tsx`,

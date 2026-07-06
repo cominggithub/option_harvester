@@ -35,6 +35,7 @@ export type SecurityRow = {
   atmAsk: number | null;
   atmSpreadPct: number | null; // (ask−bid)/mid, 0–1; from the intraday fetch
   spreadAt: string | null; // when bid/ask were last captured live (ISO)
+  asOf: string | null; // when this ticker's quote snapshot was last ingested (ISO)
   expiries: { d: string; dte: number }[]; // near-term expiry ladder (≤~63 DTE)
   fundamentals: {
     trailingPe: number | null;
@@ -307,6 +308,7 @@ export async function getDashboardData(): Promise<DashboardData> {
       atmAsk: r.quote?.atmAsk != null ? Number(r.quote.atmAsk) : null,
       atmSpreadPct: r.quote?.atmSpreadPct != null ? Number(r.quote.atmSpreadPct) : null,
       spreadAt: r.quote?.spreadAt ? r.quote.spreadAt.toISOString() : null,
+      asOf: r.quote?.asOf ? r.quote.asOf.toISOString() : null,
       expiries: (r.quote?.expiries as { d: string; dte: number }[] | null) ?? [],
       fundamentals: {
         trailingPe: numOrNull(r.quote?.trailingPe),

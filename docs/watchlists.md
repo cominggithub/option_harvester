@@ -45,11 +45,12 @@ Columns: `watchlist_id`, `watchlist_name`, `position` (order in list), `conid`,
 
 - **Left-nav tabs** in two groups — **Option Harvester** (NC, NCcan, Cpos, Ppos)
   and **Interactive Brokers** (the synced lists) — each with a member count.
-- **Table view** = the Analyzer's wide table (`WideStockList`): two rows per name
-  (basic-info line + sortable stats line — Last/Chg%/IV/rank/Harvester/Vol/Cap/Record
-  + highlighted **Pos**), with the 1M/3M/6M/1Y trend charts spanning both rows on the
-  right, plus row-expand (`PositionDetail` + `OptionDetail`) and live star/target/
-  label marks (`POST /api/marks`).
+- **Table view** = the Analyzer's wide table (`WideStockList`): a three-line left
+  block per name (basic / sortable stats — Last/Chg%/IV/rank/Harvester/Vol/Cap/Record
+  + highlighted **Pos** / option-meta + a per-instrument "last updated" freshness
+  stamp), with the 1M/3M/6M/1Y trend charts in a single row of four on the right, plus
+  row-expand (`PositionDetail` + `OptionDetail`) and live star/target/label marks
+  (`POST /api/marks`). The list scrolls within the page; left-nav + header stay fixed.
 - Selecting a tab filters the tracked universe to that list's tickers.
 - Header shows the active list's source badge, name, and — for IB lists carrying
   names outside the tracked universe (crypto/non-US) — "**X of Y shown · N not in

@@ -41,12 +41,15 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
 
 ## 4. Pages & behaviors
 
-- **Analyzer** (`/`, `Dashboard.tsx`) — the table (`WideStockList`). Wide-screen,
-  **two rows per name**: a basic-info line (ticker, Signal NC/NP tag, ★/◎/held marks,
-  name, sector, weekly-ladder/DTE/spread/earnings/labels) over a **sortable stats line**
-  (Last, Chg %, IV, IV-rank, Harvester, Volume, Mkt-cap, Record, and a highlighted
-  **Pos** = net spot/call/put); the **1M/3M/6M/1Y trend charts span both rows** on the
-  right (from `SecurityRow.spark`, colored by each window's label). Clicking ▸ expands
+- **Analyzer** (`/`, `Dashboard.tsx`) — the table (`WideStockList`), a wide-screen
+  block per name. Left column = **three stacked lines**: (1) **basic** — ticker,
+  Signal NC/NP tag, ★/◎/held marks, name, sector; (2) a **sortable stats line** —
+  Last, Chg %, IV, IV-rank, Harvester, Volume, Mkt-cap, Record, and a highlighted
+  **Pos** (net spot/call/put); (3) an **option-meta line** — weekly-ladder, DTE, ATM
+  spread, next-earnings, auto/user labels, and a per-instrument **“last updated”**
+  freshness stamp (from `quotes.as_of`; amber > 30h / red > 72h stale). Right column =
+  the **1M/3M/6M/1Y trend charts in a single row of four tall panels** (from
+  `SecurityRow.spark`, colored by each window's label). Clicking ▸ expands
   `PositionDetail` (per-leg) + `OptionDetail` (front-month DTE, weekly ladder, expiry
   chips, ATM strike/mid + bid-ask spread with a too-wide verdict) + the inline
   `LabelEditor`. Ticker links to the detail page. (`DataTable.tsx` still houses those

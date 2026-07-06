@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import type { SecurityRow } from "@/lib/securities";
 import { Sparkline } from "@/components/Sparkline";
@@ -24,6 +24,25 @@ import {
 const WINDOWS: TrendWindowKey[] = ["m1", "m3", "m6", "y1"];
 const sign = (v: number | null | undefined) => (v != null && v < 0 ? "text-negative" : v != null && v > 0 ? "text-positive" : "text-ink");
 
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// Stable UTC stamp from the ISO string (no Date object → no SSR/CSR drift).
+function fmtIsoShort(iso: string): string {
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  return m ? `${MON[+m[2] - 1]} ${+m[3]} ${m[4]}:${m[5]}` : iso.slice(0, 16);
+}
+// Per-instrument freshness: absolute stamp on the server, relative "x ago" once
+// mounted (nowMs set client-side), colored amber >30h / red >72h so a stale name
+// (e.g. one the daily ingest missed) stands out.
+function Updated({ iso, nowMs }: { iso: string | null; nowMs: number | null }) {
+  if (!iso) return <span className="text-ink-faint/50">upd —</span>;
+  const abs = fmtIsoShort(iso);
+  if (nowMs == null) return <span className="tnum text-ink-faint">upd {abs}</span>;
+  const h = (nowMs - Date.parse(iso)) / 3.6e6;
+  const rel = h < 1 ? `${Math.max(1, Math.round(h * 60))}m` : h < 48 ? `${Math.round(h)}h` : `${Math.round(h / 24)}d`;
+  const cls = h > 72 ? "font-semibold text-negative" : h > 30 ? "text-[#b45309]" : "text-ink-faint";
+  return <span className={`tnum ${cls}`} title={`Last quote update: ${abs} UTC`}>upd {rel} ago</span>;
+}
+
 type Col = { key: SortKey; label: string; w: string; render: (s: SecurityRow) => React.ReactNode; cls?: (s: SecurityRow) => string };
 const COLS: Col[] = [
   { key: "price", label: "Last", w: "72px", render: (s) => formatPrice(s.price) },
@@ -42,7 +61,7 @@ const COLS: Col[] = [
   },
 ];
 const STAT_GRID = `${COLS.map((c) => c.w).join(" ")} 128px`; // + POS (highlighted, last)
-const OUTER = "minmax(0,1fr) 340px";
+const OUTER = "minmax(0,1fr) 680px";
 const PAD = "pl-4 pr-2";
 
 function SortArrow({ active, dir }: { active: boolean; dir: SortDir }) {
@@ -85,12 +104,14 @@ function MiniChart({ s, win }: { s: SecurityRow; win: TrendWindowKey }) {
   const lbl = t?.label ?? null;
   const lblCls = lbl === "up" ? "text-positive" : lbl === "down" ? "text-negative" : "text-ink-faint";
   return (
-    <div className="rounded border border-line bg-canvas px-1.5 pb-0.5 pt-1">
+    <div className="flex h-full flex-col rounded border border-line bg-canvas px-1.5 pb-1 pt-1">
       <div className="flex items-baseline justify-between">
         <span className="text-[10px] font-semibold text-ink">{TREND_WINDOW_LABEL[win]}</span>
         <span className={`tnum text-[10px] ${lblCls}`}>{t?.ret != null ? `${t.ret > 0 ? "+" : ""}${t.ret}%` : "—"}</span>
       </div>
-      <Sparkline series={s.spark} window={win} label={lbl} w={150} h={30} />
+      <div className="flex flex-1 items-center justify-center pt-1">
+        <Sparkline series={s.spark} window={win} label={lbl} w={150} h={66} />
+      </div>
     </div>
   );
 }
@@ -112,20 +133,21 @@ type Props = {
   emptyMessage: string;
 };
 
-function Row({ s, showRating, catalog, onToggle, onRate, onSetLabels }: {
+function Row({ s, showRating, catalog, onToggle, onRate, onSetLabels, nowMs }: {
   s: SecurityRow;
   showRating: boolean;
   catalog: string[];
   onToggle: Props["onToggle"];
   onRate: Props["onRate"];
   onSetLabels: Props["onSetLabels"];
+  nowMs: number | null;
 }) {
   const [open, setOpen] = useState(false);
   return (
     <li className="border-b border-line">
       <div className="grid items-stretch gap-x-4 hover:bg-canvas/50" style={{ gridTemplateColumns: OUTER }}>
         {/* Left: basic (row 1) + stats (row 2) */}
-        <div className={`flex min-w-0 flex-col justify-center gap-1.5 py-2 ${PAD}`}>
+        <div className={`flex min-w-0 flex-col justify-center gap-1 py-2 ${PAD}`}>
           {/* Row 1 — basic */}
           <div className="flex min-w-0 items-center gap-2">
             <button type="button" onClick={() => setOpen((o) => !o)} className="shrink-0 text-[11px] text-ink-faint hover:text-ink" title="Expand option / position detail">
@@ -143,19 +165,9 @@ function Row({ s, showRating, catalog, onToggle, onRate, onSetLabels }: {
             {s.held && <span className="rounded-sm bg-emerald-100 px-1 text-[9px] font-semibold uppercase text-emerald-700">held</span>}
             <span className="truncate text-[13px] text-ink-muted">{s.name}</span>
             <span className="shrink-0 text-[11px] text-ink-faint">· {s.sector}</span>
-            <span className="ml-auto flex shrink-0 items-center gap-2 text-[11px] text-ink-faint">
-              {showRating && <RatingCell rating={s.rating} onRate={(n) => onRate(s.ticker, n)} />}
-              <span className="tnum">wk{s.weeklyBuckets ?? "—"}</span>
-              <span className="tnum">{s.ivDte != null ? `${s.ivDte}d` : "—"}</span>
-              {s.atmSpreadPct != null && <span className="tnum">sp{(s.atmSpreadPct * 100).toFixed(0)}%</span>}
-              {s.nextEarnings && <span className="tnum text-[#b45309]">E {formatEarningsDate(s.nextEarnings)}</span>}
-              {(s.autoLabels ?? []).slice(0, 3).map((l) => (
-                <span key={l} className="rounded-sm bg-[#f0efe8] px-1 text-[10px] text-[#7a6f4a]">{l}</span>
-              ))}
-              {(s.labels ?? []).slice(0, 3).map((l) => (
-                <span key={l} className="rounded-sm border border-line px-1 text-[10px] text-ink-muted">{l}</span>
-              ))}
-            </span>
+            {showRating && (
+              <span className="ml-auto shrink-0"><RatingCell rating={s.rating} onRate={(n) => onRate(s.ticker, n)} /></span>
+            )}
           </div>
           {/* Row 2 — stats (aligned to header) */}
           <div className="grid items-center gap-x-2 text-[12px]" style={{ gridTemplateColumns: STAT_GRID }}>
@@ -164,9 +176,23 @@ function Row({ s, showRating, catalog, onToggle, onRate, onSetLabels }: {
             ))}
             <PosCell s={s} />
           </div>
+          {/* Row 3 — option meta + labels, below the stats */}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-ink-faint">
+            <span className="tnum">wk{s.weeklyBuckets ?? "—"}</span>
+            <span className="tnum">{s.ivDte != null ? `${s.ivDte}d` : "—"}</span>
+            {s.atmSpreadPct != null && <span className="tnum">sp{(s.atmSpreadPct * 100).toFixed(0)}%</span>}
+            {s.nextEarnings && <span className="tnum text-[#b45309]">E {formatEarningsDate(s.nextEarnings)}</span>}
+            {(s.autoLabels ?? []).map((l) => (
+              <span key={l} className="rounded-sm bg-[#f0efe8] px-1 text-[10px] text-[#7a6f4a]">{l}</span>
+            ))}
+            {(s.labels ?? []).map((l) => (
+              <span key={l} className="rounded-sm border border-line px-1 text-[10px] text-ink-muted">{l}</span>
+            ))}
+            <span className="ml-auto shrink-0"><Updated iso={s.asOf} nowMs={nowMs} /></span>
+          </div>
         </div>
-        {/* Right: charts spanning both rows */}
-        <div className="grid grid-cols-2 gap-1.5 border-l border-line py-2 pl-3 pr-3">
+        {/* Right: charts — one horizontal line, each tall (spans the block height) */}
+        <div className="grid grid-cols-4 items-stretch gap-1.5 border-l border-line py-2 pl-3 pr-3">
           {WINDOWS.map((w) => <MiniChart key={w} s={s} win={w} />)}
         </div>
       </div>
@@ -182,6 +208,14 @@ function Row({ s, showRating, catalog, onToggle, onRate, onSetLabels }: {
 }
 
 export function WideStockList({ rows, sortKey, sortDir, showRating = false, catalog, onSort, onToggle, onRate, onSetLabels, emptyMessage }: Props) {
+  // Set after mount so per-row "x ago" freshness renders client-side without a
+  // hydration mismatch (server renders the absolute stamp).
+  const [nowMs, setNowMs] = useState<number | null>(null);
+  useEffect(() => {
+    setNowMs(Date.now());
+    const id = setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
   return (
     <div className="w-full">
       {/* Sortable header — stat columns align with each row's stats line */}
@@ -211,7 +245,7 @@ export function WideStockList({ rows, sortKey, sortDir, showRating = false, cata
       ) : (
         <ul>
           {rows.map((s) => (
-            <Row key={s.ticker} s={s} showRating={showRating} catalog={catalog} onToggle={onToggle} onRate={onRate} onSetLabels={onSetLabels} />
+            <Row key={s.ticker} s={s} showRating={showRating} catalog={catalog} onToggle={onToggle} onRate={onRate} onSetLabels={onSetLabels} nowMs={nowMs} />
           ))}
         </ul>
       )}
