@@ -126,6 +126,10 @@ export type PositionGroupLeg = {
   closePrice: number | null;
   marketValue: number | null;
   unrealizedPnl: number | null;
+  conid: string | null;
+  delta: number | null; // per-contract greeks (from option_harvest_option_greeks, by conid)
+  gamma: number | null;
+  theta: number | null;
 };
 
 export type PositionGroup = {
@@ -141,17 +145,28 @@ export type PositionGroup = {
 };
 
 const rawNum = (raw: unknown, key: string): number | null => {
-  const v = (raw as Record<string, string> | null)?.[key];
+  const v = (raw as Record<string, unknown> | null)?.[key];
   if (v == null || v === "") return null;
-  const n = Number(v.replace(/[,$%\s]/g, ""));
+  const n = typeof v === "number" ? v : Number(String(v).replace(/[,$%\s]/g, ""));
   return Number.isFinite(n) ? n : null;
 };
 
+// First non-null numeric value across candidate keys (CSV vs Client-Portal JSON).
+const firstNum = (raw: unknown, keys: string[]): number | null => {
+  for (const k of keys) {
+    const v = rawNum(raw, k);
+    if (v != null) return v;
+  }
+  return null;
+};
+
 export async function getPositionGroups(): Promise<PositionGroup[]> {
-  const [rows, quotes] = await Promise.all([
+  const [rows, quotes, greekRows] = await Promise.all([
     prisma.position.findMany({ orderBy: { symbol: "asc" } }),
     prisma.quote.findMany({ select: { ticker: true, ivPct: true, price: true, nextEarnings: true } }),
+    prisma.optionGreek.findMany(),
   ]);
+  const greeks = new Map(greekRows.map((g) => [g.conid, g]));
   const iv = new Map(quotes.map((q) => [q.ticker.toUpperCase(), q.ivPct != null ? Number(q.ivPct) : null]));
   const px = new Map(quotes.map((q) => [q.ticker.toUpperCase(), q.price != null ? Number(q.price) : null]));
   const earn = new Map(
@@ -167,8 +182,17 @@ export async function getPositionGroups(): Promise<PositionGroup[]> {
 
     const isOpt = r.right != null || /option/i.test(r.secType ?? "");
     const kind: PositionKind = r.right === "C" ? "call" : r.right === "P" ? "put" : isOpt ? "opt" : "spot";
-    const totalCost = rawNum(r.raw, "Cost Basis");
-    const pnl = rawNum(r.raw, "Unrealized P/L");
+    // The book can arrive as an IB CSV upload (space-cased column names) or the
+    // Client-Portal JSON sync (camelCase keys) — read P/L from whichever is present.
+    const mv = r.marketValue != null ? Number(r.marketValue) : firstNum(r.raw, ["marketValue", "mktValue"]);
+    const pnl = firstNum(r.raw, ["Unrealized P/L", "unrealizedPnl"]);
+    // Cost basis: CSV carries it directly; for the JSON sync derive it from
+    // marketValue − unrealizedPnl (IB: unrealizedPnl = marketValue − costBasis).
+    const totalCost = firstNum(r.raw, ["Cost Basis"]) ?? (mv != null && pnl != null ? mv - pnl : null);
+    const closePrice = firstNum(r.raw, ["Close Price", "marketPrice", "mktPrice"]);
+    const conidRaw = (r.raw as { conid?: unknown } | null)?.conid;
+    const conid = conidRaw != null && conidRaw !== "" ? String(conidRaw) : null;
+    const gk = conid ? greeks.get(conid) : null;
 
     g.legs.push({
       kind,
@@ -179,12 +203,16 @@ export async function getPositionGroups(): Promise<PositionGroup[]> {
       expiry: r.expiry,
       unitCost: r.avgCost != null ? Number(r.avgCost) : null,
       totalCost,
-      closePrice: rawNum(r.raw, "Close Price"),
-      marketValue: r.marketValue != null ? Number(r.marketValue) : null,
+      closePrice,
+      marketValue: mv,
       unrealizedPnl: pnl,
+      conid,
+      delta: gk?.delta != null ? Number(gk.delta) : null,
+      gamma: gk?.gamma != null ? Number(gk.gamma) : null,
+      theta: gk?.theta != null ? Number(gk.theta) : null,
     });
     g.totalCost = (g.totalCost ?? 0) + (totalCost ?? 0);
-    g.marketValue = (g.marketValue ?? 0) + (r.marketValue != null ? Number(r.marketValue) : 0);
+    g.marketValue = (g.marketValue ?? 0) + (mv ?? 0);
     g.unrealizedPnl = (g.unrealizedPnl ?? 0) + (pnl ?? 0);
     m.set(key, g);
   }
@@ -198,6 +226,133 @@ export async function getPositionGroups(): Promise<PositionGroup[]> {
     );
   }
   return [...m.values()].sort((a, b) => a.symbol.localeCompare(b.symbol));
+}
+
+// ── Option P/L by expiry (the "P&L Predict" page) ────────────────────────────
+// Group the user's option legs by expiry date (near→far) with per-date unrealized
+// P/L and a running cumulative — a projection of when the open P/L "resolves" if
+// the book is held to expiry and current marks hold. Unrealized P/L is the
+// IB-provided figure (same as the Positions page), summed per expiry.
+export type OptionPnlLeg = {
+  symbol: string;
+  right: "C" | "P" | null;
+  contract: string;
+  quantity: number | null;
+  strike: number | null;
+  expiry: string | null;
+  unitCost: number | null;
+  totalCost: number | null;
+  closePrice: number | null;
+  marketValue: number | null;
+  unrealizedPnl: number | null;
+  credit: number | null; // premium taken in on a short leg: |unitCost|·|qty|·100
+  delta: number | null; // per-contract greeks (by conid)
+  gamma: number | null;
+  theta: number | null;
+};
+
+export type ExpiryPnlGroup = {
+  expiry: string | null; // YYYY-MM-DD (null bucket sorts last)
+  dte: number | null; // calendar days to expiry
+  legs: OptionPnlLeg[];
+  count: number;
+  credit: number; // summed premium taken in (short legs)
+  totalCost: number;
+  marketValue: number;
+  unrealizedPnl: number; // per-date open P/L
+  cumulativePnl: number; // running total from the nearest expiry onward
+  cumulativeCredit: number; // running premium collected from the nearest expiry onward
+  // Net POSITION greeks for this expiry: Σ quantity·100·greek (signed by long/short).
+  // null when no leg on this date has greeks synced yet.
+  netDelta: number | null;
+  netTheta: number | null;
+  netGamma: number | null;
+};
+
+const EXP_DAY = 86_400_000;
+
+export function buildOptionPnlByExpiry(groups: PositionGroup[], asOf: Date = new Date()): ExpiryPnlGroup[] {
+  const today = asOf.toISOString().slice(0, 10);
+  const byExpiry = new Map<string, ExpiryPnlGroup>();
+
+  for (const g of groups)
+    for (const leg of g.legs) {
+      const isOpt = leg.right === "C" || leg.right === "P" || leg.kind === "opt";
+      if (!isOpt) continue;
+      const key = leg.expiry ?? "\u2014";
+      const grp =
+        byExpiry.get(key) ??
+        {
+          expiry: leg.expiry,
+          dte: leg.expiry ? Math.round((Date.parse(leg.expiry) - Date.parse(today)) / EXP_DAY) : null,
+          legs: [],
+          count: 0,
+          credit: 0,
+          totalCost: 0,
+          marketValue: 0,
+          unrealizedPnl: 0,
+          cumulativePnl: 0,
+          cumulativeCredit: 0,
+          netDelta: null,
+          netTheta: null,
+          netGamma: null,
+        };
+      const qty = leg.quantity ?? 0;
+      const credit = leg.unitCost != null && qty < 0 ? Math.abs(leg.unitCost) * Math.abs(qty) * 100 : null;
+      grp.legs.push({
+        symbol: leg.contract.split(" ")[0],
+        right: leg.right,
+        contract: leg.contract,
+        quantity: leg.quantity,
+        strike: leg.strike,
+        expiry: leg.expiry,
+        unitCost: leg.unitCost,
+        totalCost: leg.totalCost,
+        closePrice: leg.closePrice,
+        marketValue: leg.marketValue,
+        unrealizedPnl: leg.unrealizedPnl,
+        credit,
+        delta: leg.delta,
+        gamma: leg.gamma,
+        theta: leg.theta,
+      });
+      grp.count += 1;
+      grp.credit += credit ?? 0;
+      grp.totalCost += leg.totalCost ?? 0;
+      grp.marketValue += leg.marketValue ?? 0;
+      grp.unrealizedPnl += leg.unrealizedPnl ?? 0;
+      byExpiry.set(key, grp);
+    }
+
+  // Near→far by expiry; the null-expiry bucket (shouldn't occur for options) sorts last.
+  const out = [...byExpiry.values()].sort((a, b) => {
+    if (a.expiry == null) return 1;
+    if (b.expiry == null) return -1;
+    return a.expiry.localeCompare(b.expiry);
+  });
+
+  let cum = 0;
+  let cumCredit = 0;
+  for (const grp of out) {
+    grp.legs.sort((a, b) => a.symbol.localeCompare(b.symbol) || (a.strike ?? 0) - (b.strike ?? 0));
+    cum += grp.unrealizedPnl;
+    cumCredit += grp.credit;
+    grp.cumulativePnl = cum;
+    grp.cumulativeCredit = cumCredit;
+    // Net position greeks: Σ quantity·100·greek. null if no leg has that greek synced.
+    let d = 0, t = 0, ga = 0;
+    let hasD = false, hasT = false, hasG = false;
+    for (const l of grp.legs) {
+      const q = l.quantity ?? 0;
+      if (l.delta != null) { d += q * 100 * l.delta; hasD = true; }
+      if (l.theta != null) { t += q * 100 * l.theta; hasT = true; }
+      if (l.gamma != null) { ga += q * 100 * l.gamma; hasG = true; }
+    }
+    grp.netDelta = hasD ? d : null;
+    grp.netTheta = hasT ? t : null;
+    grp.netGamma = hasG ? ga : null;
+  }
+  return out;
 }
 
 // ── Protective-stop coverage ─────────────────────────────────────────────────

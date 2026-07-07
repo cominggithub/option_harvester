@@ -11,7 +11,8 @@ import {
   type Strategy,
   type SymbolPnl,
 } from "@/lib/pnl";
-import { DivergingBar, EquityLine, Histogram, Scatter, VBars } from "@/components/charts";
+import { DivergingBar, Histogram, Scatter } from "@/components/charts";
+import { EquityChart, MonthlyBars } from "@/components/PnlCharts";
 
 // ── formatting ────────────────────────────────────────────────────────────────
 const money = (n: number) => (n < 0 ? "−$" : "$") + Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 0 });
@@ -26,11 +27,11 @@ const STATUS_LABEL: Record<string, string> = { open: "open", closed: "bought bac
 type Section = "overview" | "symbols" | "calls" | "puts" | "rolls" | "contracts";
 
 // ── shared bits ───────────────────────────────────────────────────────────────
-function Stat({ label, value, tone = "text-ink", sub }: { label: string; value: string; tone?: string; sub?: string }) {
+function Stat({ label, value, tone = "text-ink", sub, size = "sm", title }: { label: string; value: string; tone?: string; sub?: string; size?: "sm" | "lg"; title?: string }) {
   return (
     <div className="bg-surface px-4 py-3">
-      <div className="overline text-ink-faint">{label}</div>
-      <div className={`tnum mt-0.5 text-[19px] font-semibold leading-tight ${tone}`}>{value}</div>
+      <div className="overline overflow-hidden text-ellipsis whitespace-nowrap text-ink-faint" title={title ?? label}>{label}</div>
+      <div className={`tnum mt-0.5 font-semibold leading-tight ${size === "lg" ? "text-[24px]" : "text-[18px]"} ${tone}`}>{value}</div>
       {sub && <div className="tnum mt-0.5 text-[10.5px] text-ink-faint">{sub}</div>}
     </div>
   );
@@ -60,36 +61,41 @@ function Overview({ r }: { r: PnlReport }) {
   }, [r.equity]);
 
   return (
-    <div className="space-y-5">
-      <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-4 xl:grid-cols-8">
-        <Stat label={`Realized YTD ${s.ytdStart.slice(0, 4)}`} value={money(s.realizedYtd)} tone={cls(s.realizedYtd)} sub={`${s.closedYtd} closed YTD`} />
-        <Stat label="Realized all-time" value={money(s.realized)} tone={cls(s.realized)} sub={`${s.closedTrades} closed`} />
-        <Stat label="Win rate" value={pct(s.winRate)} sub={`${s.wins}/${s.closedTrades}`} />
-        <Stat label="Avg / trade" value={money(s.avgTrade)} tone={cls(s.avgTrade)} />
-        <Stat label="Open premium" value={moneyK(s.openCredit)} sub={`${s.openContracts} open · at risk`} />
+    <div className="space-y-6">
+      {/* Primary KPIs — 4 hero tiles */}
+      <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-4">
+        <Stat size="lg" label="All-time" title="Realized all-time" value={money(s.realized)} tone={cls(s.realized)} sub={`${s.closedTrades} closed`} />
+        <Stat size="lg" label={`YTD ${s.ytdStart.slice(0, 4)}`} title={`Realized YTD ${s.ytdStart.slice(0, 4)}`} value={money(s.realizedYtd)} tone={cls(s.realizedYtd)} sub={`${s.closedYtd} closed`} />
+        <Stat size="lg" label="Win rate" value={pct(s.winRate)} sub={`${s.wins}/${s.closedTrades}`} />
+        <Stat size="lg" label="Avg / trade" value={money(s.avgTrade)} tone={cls(s.avgTrade)} />
+      </div>
+
+      {/* Secondary KPIs */}
+      <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-4 xl:grid-cols-6">
+        <Stat label="Open premium" title="Open premium" value={moneyK(s.openCredit)} sub={`${s.openContracts} open · at risk`} />
         <Stat label="Premium in" value={moneyK(s.premiumCollected)} tone="text-emerald-700" sub="credits taken" />
         <Stat label="Paid to close" value={moneyK(s.premiumPaid)} tone="text-rose-700" />
         <Stat label="Commissions" value={money(s.tradingCommission)} tone="text-ink-muted" />
-        <Stat label="Acct flows" value={moneyK(s.accountFlowTotal)} tone="text-ink-muted" sub="non-trading" />
-        <Stat label="Expired worthless" value={String(s.expiredCount)} tone="text-emerald-700" sub="kept full credit" />
+        <Stat label="Acct flows" title="Account flows (non-trading)" value={moneyK(s.accountFlowTotal)} tone="text-ink-muted" sub="non-trading" />
+        <Stat label="Expired" title="Expired worthless" value={String(s.expiredCount)} tone="text-emerald-700" sub="kept full credit" />
         <Stat label="Bought back" value={String(s.boughtBackCount)} />
         <Stat label="Assigned" value={String(s.assignedCount)} />
         <Stat label="Rolls" value={String(s.rollCount)} sub="see Rolls tab" />
-        <Stat label="Symbols traded" value={String(s.symbolsTraded)} />
+        <Stat label="Symbols" title="Symbols traded" value={String(s.symbolsTraded)} />
         <Stat label="Best name" value={s.best?.symbol ?? "—"} tone="text-emerald-700" sub={s.best ? money(s.best.pnl) : undefined} />
         <Stat label="Worst name" value={s.worst?.symbol ?? "—"} tone="text-rose-700" sub={s.worst ? money(s.worst.pnl) : undefined} />
       </div>
 
-      <Panel title="Cumulative realized P/L" hint={s.firstDate ? `${s.firstDate} → ${s.lastDate}` : undefined}>
-        <EquityLine points={r.equity} h={240} />
+      <Panel title="Cumulative realized P/L" hint={s.firstDate ? `${s.firstDate} → ${s.lastDate} · hover for detail` : undefined}>
+        <EquityChart points={r.equity} h={280} />
       </Panel>
 
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+      <div className="grid grid-cols-1 items-stretch gap-5 xl:grid-cols-2">
         <Panel title="By strategy" hint="closed contracts only">
           <StrategyTable r={r} />
         </Panel>
-        <Panel title="Realized P/L by month">
-          <div className="overflow-x-auto"><VBars data={months} h={180} /></div>
+        <Panel title="Realized P/L by month" hint="hover for detail">
+          <MonthlyBars data={months} h={200} />
         </Panel>
       </div>
 

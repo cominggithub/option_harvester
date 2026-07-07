@@ -478,3 +478,35 @@ export function parseIbOptionSnapshot(f: IbOptionFetch): MappedIbOption | null {
     ibDelta: pnumIb(opt["7308"]),
   };
 }
+
+// ── Per-position greeks mapper (Client Portal snapshot, from the extension) ───
+// The extension snapshots each HELD option contract by conid requesting the greek
+// fields, and posts one record per conid. 7308=Delta 7309=Gamma 7310=Theta
+// 7311=Vega 7283=Implied Vol %.
+export type IbGreekFetch = {
+  conid?: unknown;
+  optionRaw?: Record<string, unknown> | null; // snapshot object keyed by field id
+};
+
+export type MappedGreek = {
+  conid: string;
+  delta: number | null;
+  gamma: number | null;
+  theta: number | null;
+  vega: number | null;
+  iv: number | null;
+};
+
+export function parseIbPositionGreeks(f: IbGreekFetch): MappedGreek | null {
+  const conid = f?.conid != null && f.conid !== "" ? String(f.conid) : null;
+  if (!conid) return null;
+  const o = (f.optionRaw ?? {}) as Record<string, unknown>;
+  return {
+    conid,
+    delta: pnumIb(o["7308"]),
+    gamma: pnumIb(o["7309"]),
+    theta: pnumIb(o["7310"]),
+    vega: pnumIb(o["7311"]),
+    iv: pnumIb(o["7283"]),
+  };
+}

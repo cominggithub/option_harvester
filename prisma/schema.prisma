@@ -309,3 +309,19 @@ model IngestRun {
 
   @@map("option_harvest_ingest_runs")
 }
+
+/// Per-contract option greeks (delta/gamma/theta/vega + IV), keyed by IB conid.
+/// Synced from the IB Client-Portal market-data snapshot by the Chrome extension
+/// (fields 7308/7309/7310/7311/7283) and joined to held positions by conid at read
+/// time. Kept in its own table so it survives the full-replace positions re-import.
+model OptionGreek {
+  conid String   @id
+  delta Decimal?
+  gamma Decimal?
+  theta Decimal?
+  vega  Decimal?
+  iv    Decimal? // implied vol %, IB-computed (field 7283)
+  at    DateTime @default(now()) // when the snapshot was captured
+
+  @@map("option_harvest_option_greeks")
+}

@@ -84,9 +84,10 @@ manifest v3; **bump `manifest.json` version on every edit**.
 `data.user_lists`) → `GET /iserver/watchlist?id=<id>` per list → `POST /api/watchlist
 { ibWatchlists }`. The endpoint parses (`parseIbPortalWatchlists`) and
 **deleteMany + createMany** — a full replace. Runs alongside positions/orders/trades.
-**Sync now also pushes OH → IB (4b) at the end** — positions are posted first, so
-the OH lists reflect the fresh snapshot. This applies to auto-sync too, so the
-`OH:*` lists in IB are rewritten on every sync cycle.
+**Sync now also fetches per-position greeks (4e) then pushes OH → IB (4b) at the end**
+— positions are posted first, so both reflect the fresh snapshot. The OH push applies
+to auto-sync too; **greeks do NOT** run on auto-sync (heavy: one snapshot per held
+contract) — only on manual **Sync now** (or the standalone **Get greeks (IB)** button).
 
 ### 4b. web → IB  (popup: **Push OH → IB watchlists**, and part of Sync now)
 Publishes the OH lists to IB as **`OH:NC`, `OH:NCcan`, `OH:Cpos`, `OH:Ppos`**.
@@ -128,13 +129,19 @@ Backend (`src/app/api`):
 - `securities/conids` — `GET` missing tickers; `POST { ibStocks | conids }` store.
 - `options` — `GET?tickers=` → ticker→conid; `POST { fetched }` → IB option snapshot
   into the `ib_*` quote columns (see docs/spec.md; drives the `/ib` compare page).
+- `greeks` — `GET` → held option conids `[{conid,ticker,desc}]`; `POST { fetched }` →
+  per-contract greeks into `option_harvest_option_greeks` (upsert by conid, non-null
+  fields only). In-page: for each held conid the extension polls
+  `/iserver/marketdata/snapshot?fields=…,7308,7309,7310,7311` until delta appears
+  (greeks compute server-side after subscribe; best coverage during US market hours).
+  Drives the P&L Predict Δ/Θ/Γ columns.
 
 IB Client Portal API (called in-page by the extension):
 `/iserver/watchlists`, `/iserver/watchlist` (GET/POST/DELETE), `/trsrv/stocks`,
 `/iserver/secdef/search|strikes|info`, `/iserver/marketdata/snapshot`.
 
 Libs: `src/lib/watchlists.ts` (OH definitions + IB reader), `src/lib/ibparse.ts`
-(`parseIbPortalWatchlists`, `parseIbStocks`, `parseIbOptionSnapshot`).
+(`parseIbPortalWatchlists`, `parseIbStocks`, `parseIbOptionSnapshot`, `parseIbPositionGreeks`).
 
 ---
 

@@ -76,7 +76,7 @@ async function findIbTab(preferActive) {
   return tabs[0] || null;
 }
 
-async function runSync(backend, { preferActive } = {}) {
+async function runSync(backend, { preferActive, withGreeks } = {}) {
   const tab = await findIbTab(preferActive);
   if (!tab?.id) return { error: "no IB tab open — log into the IB portal in a tab" };
   const [res] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: fetchAllInPage });
@@ -88,6 +88,9 @@ async function runSync(backend, { preferActive } = {}) {
   if (d.ibOrders != null) out.orders = await post(`${backend}/api/orders`, { ibOrders: d.ibOrders });
   if (d.ibTrades?.length) out.trades = await post(`${backend}/api/trades`, { ibTrades: d.ibTrades });
   if (d.ibWatchlists?.length) out.watchlists = await post(`${backend}/api/watchlist`, { ibWatchlists: d.ibWatchlists });
+  // Greeks for held options — depends on positions just posted above. Skipped on the
+  // light auto-sync (it snapshots every held contract, ~1s each); run on manual Sync.
+  if (withGreeks) out.greeks = await getGreeks(backend).catch((e) => ({ error: String(e) }));
   // Push OH watchlists back to IB. Positions were just posted above, so the OH
   // lists (Cpos/Ppos/NCcan) reflect the fresh snapshot. Failure here doesn't fail
   // the pull.
@@ -222,6 +225,61 @@ async function getOptions(backend, tickers) {
   return { ...out, tried: targets.length };
 }
 
+// Runs IN the IB page: snapshot the greek fields for one HELD option conid.
+// 7308=Delta 7309=Gamma 7310=Theta 7311=Vega 7283=IV%. Returns { conid, optionRaw }.
+async function fetchGreekInPage(conid) {
+  const base = location.origin + "/portal.proxy/v1/portal";
+  const j = async (u) => {
+    try {
+      const r = await fetch(u, { credentials: "include" });
+      return r.ok ? await r.json() : null;
+    } catch {
+      return null;
+    }
+  };
+  const fields = "31,84,86,7283,7308,7309,7310,7311";
+  const url = `${base}/iserver/marketdata/snapshot?conids=${conid}&fields=${fields}`;
+  try {
+    // IB computes greeks server-side only after the contract is subscribed; the
+    // first reads are usually empty. Poll (accumulating fields across reads) until
+    // delta (7308) shows up, or give up after ~4s.
+    let row = {};
+    for (let i = 0; i < 8; i++) {
+      const d = await j(url);
+      const r0 = (Array.isArray(d) ? d : [])[0];
+      if (r0) row = Object.assign(row, r0);
+      if (row["7308"] != null && row["7308"] !== "") break;
+      await new Promise((s) => setTimeout(s, 500));
+    }
+    return { conid: String(conid), optionRaw: row };
+  } catch (e) {
+    return { conid: String(conid), error: String(e) };
+  }
+}
+
+// Fetch per-position greeks: ask the backend which held option conids exist,
+// snapshot each in the logged-in IB page, then post to /api/greeks.
+async function getGreeks(backend) {
+  const targets = await (await fetch(`${backend}/api/greeks`)).json().catch(() => null);
+  if (!Array.isArray(targets) || !targets.length) return { error: "no held option positions (sync positions first?)" };
+
+  const tab = await findIbTab(false);
+  if (!tab?.id) return { error: "no IB tab open — log into the IB portal" };
+
+  const fetched = [];
+  for (const t of targets) {
+    const [res] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      args: [Number(t.conid)],
+      func: fetchGreekInPage,
+    });
+    if (res?.result) fetched.push(res.result);
+    await new Promise((s) => setTimeout(s, 150));
+  }
+  const out = await post(`${backend}/api/greeks`, { fetched });
+  return { ...out, tried: targets.length };
+}
+
 // Push Option Harvester's OH watchlists to IB: create/overwrite "OH:*" lists in
 // the logged-in IB account. IB has no in-place edit, so each list is delete +
 // recreate. Only touches "OH:"-prefixed lists — never the user's own lists.
@@ -293,7 +351,8 @@ function summary(r) {
   const t = r.trades ? `+${r.trades.added}` : "—";
   const w = r.watchlists?.lists != null ? `${r.watchlists.lists}` : "—";
   const oh = r.ohPush?.pushed != null ? `${r.ohPush.pushed}/${r.ohPush.total}` : "—";
-  return `pos ${p} · ord ${o} · trd ${t} · wl ${w} · OH→IB ${oh}`;
+  const g = r.greeks?.updated != null ? ` · greeks ${r.greeks.updated}/${r.greeks.tried ?? "?"}` : "";
+  return `pos ${p} · ord ${o} · trd ${t} · wl ${w} · OH→IB ${oh}${g}`;
 }
 
 function scheduleAuto(minutes) {
@@ -336,7 +395,7 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
     return true;
   }
   if (msg.type === "sync") {
-    runSync(msg.backend, { preferActive: true })
+    runSync(msg.backend, { preferActive: true, withGreeks: true })
       .then((r) => {
         setStatus(r.error ? `manual: ${r.error}` : `manual ✓ ${summary(r)}`);
         reply(r);
@@ -352,6 +411,12 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
   }
   if (msg.type === "getOptions") {
     getOptions(msg.backend, msg.tickers || [])
+      .then(reply)
+      .catch((e) => reply({ error: String(e) }));
+    return true;
+  }
+  if (msg.type === "getGreeks") {
+    getGreeks(msg.backend)
       .then(reply)
       .catch((e) => reply({ error: String(e) }));
     return true;

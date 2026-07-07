@@ -4,7 +4,8 @@ import { computeFinalScore, type FinalScore } from "@/lib/score";
 import { computeIvStats, type IvStats } from "@/lib/ivstats";
 import { getPositionSummaries, type PositionSummary } from "@/lib/positions";
 import { getPnlReport } from "@/lib/transactions";
-import type { TrendWindows } from "@/lib/trend";
+import { type TrendWindows, WINDOW_BARS } from "@/lib/trend";
+import type { TrendWindowKey } from "@/lib/view";
 
 const numOrNull = (v: unknown): number | null => (v != null ? Number(v) : null);
 
@@ -58,6 +59,10 @@ export type SecurityRow = {
   autoLabels: string[]; // data-derived tags (low vol / bad option date / no option / price band)
   trend: TrendWindows | null;
   spark: number[] | null; // downsampled ~1Y daily closes for the inline sparkline
+  sparkRecent: number[] | null; // last ~10 raw daily closes (2wk) for the 1W/2W charts
+  // Net (endpoint-to-endpoint) % move per window, from the raw close series — drives
+  // the chart %/tint and the per-window "sort by trend" (always available, no ingest dep).
+  trendRet: Record<TrendWindowKey, number | null> | null;
   pctFromHigh: number | null;
   downtrend: boolean; // sustained bearish (1Y down, or 3M & 6M both down)
   nextEarnings: string | null; // next earnings date (YYYY-MM-DD); null = ETF / unknown
@@ -206,23 +211,44 @@ function downsample(xs: number[], target: number): number[] {
 
 const SPARK_BARS = 252; // trading days ≈ 1Y; sparkline slices windows off this tail
 const SPARK_POINTS = 96; // downsampled resolution shipped to the client
+const SPARK_RECENT_BARS = 10; // raw (un-downsampled) recent tail ≈ 2wk for the 1W/2W charts
+
+// Net % change first→last over the last `bars` closes (rounded to 0.1). null if too short.
+function netMove(arr: number[]): number | null {
+  if (arr.length < 2 || !arr[0]) return null;
+  return Math.round((arr[arr.length - 1] / arr[0] - 1) * 1000) / 10;
+}
 
 // Pull a compact 1Y close series per ticker for the inline sparkline. One grouped
 // query (array_agg) instead of 542×252 rows; downsampled before it reaches the client.
-async function getSparklines(): Promise<Map<string, number[]>> {
+// Also returns a short raw recent tail so the 1W/2W charts keep daily resolution
+// (the downsampled series would give only ~2 points for a week), plus the net %
+// move per window (from the raw closes) for the chart labels and per-window sort.
+async function getSparklines(): Promise<
+  Map<string, { spark: number[]; recent: number[]; ret: Record<TrendWindowKey, number | null> }>
+> {
   const raw = await prisma.$queryRaw<{ ticker: string; closes: unknown[] }[]>`
     SELECT ticker, array_agg(close ORDER BY date) AS closes
     FROM option_harvest_daily_prices
     WHERE date >= CURRENT_DATE - INTERVAL '380 days'
     GROUP BY ticker
   `;
-  const map = new Map<string, number[]>();
+  const map = new Map<string, { spark: number[]; recent: number[]; ret: Record<TrendWindowKey, number | null> }>();
   for (const r of raw) {
     const closes = (r.closes as (string | number | null)[])
       .map((c) => (c == null ? NaN : Number(c)))
       .filter((c) => Number.isFinite(c))
       .slice(-SPARK_BARS);
-    if (closes.length >= 2) map.set(r.ticker, downsample(closes, SPARK_POINTS));
+    if (closes.length < 2) continue;
+    const ret = {} as Record<TrendWindowKey, number | null>;
+    for (const w of Object.keys(WINDOW_BARS) as TrendWindowKey[]) {
+      ret[w] = netMove(closes.slice(-WINDOW_BARS[w]));
+    }
+    map.set(r.ticker, {
+      spark: downsample(closes, SPARK_POINTS),
+      recent: closes.slice(-SPARK_RECENT_BARS),
+      ret,
+    });
   }
   return map;
 }
@@ -330,7 +356,9 @@ export async function getDashboardData(): Promise<DashboardData> {
       labels: r.mark?.labels ?? [],
       autoLabels: [], // set below
       trend: (r.trend?.windows as TrendWindows | null) ?? null,
-      spark: sparkMap.get(r.ticker) ?? null,
+      spark: sparkMap.get(r.ticker)?.spark ?? null,
+      sparkRecent: sparkMap.get(r.ticker)?.recent ?? null,
+      trendRet: sparkMap.get(r.ticker)?.ret ?? null,
       pctFromHigh: r.trend?.pctFromHigh != null ? Number(r.trend.pctFromHigh) : null,
       downtrend: false, // set below
       nextEarnings: r.quote?.nextEarnings ? r.quote.nextEarnings.toISOString().slice(0, 10) : null,

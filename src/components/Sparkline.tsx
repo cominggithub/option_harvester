@@ -1,8 +1,12 @@
 import type { TrendLabel } from "@/lib/trend";
 import type { TrendWindowKey } from "@/lib/view";
 
-// Fraction of the shipped ~1Y series each window covers (bars / 252).
+// Fraction of the shipped series each window covers. m*/y1 slice the ~1Y `spark`
+// tail (bars / 252); w1/w2 slice the short high-res `sparkRecent` tail (last ~10
+// raw daily closes), so their fractions are relative to that 10-bar series.
 export const WINDOW_FRACTION: Record<TrendWindowKey, number> = {
+  w1: 5 / 10,
+  w2: 1,
   m1: 21 / 252,
   m3: 63 / 252,
   m6: 126 / 252,

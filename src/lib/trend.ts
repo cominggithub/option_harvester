@@ -1,6 +1,6 @@
 // Multi-window trend classification from a daily-close series.
 //
-// For each window (1M/3M/6M/1Y) we fit an OLS regression of close vs. day index
+// For each window (1W/2W/1M/3M/6M/1Y) we fit an OLS regression of close vs. day index
 // and classify from the fit:
 //   • direction  = sign of the slope
 //   • confidence = R² (how cleanly it trends vs. chops sideways)
@@ -12,6 +12,17 @@
 
 export type TrendLabel = "up" | "down" | "sideways";
 
+// Chart tint — color a window by its NET (endpoint-to-endpoint) % move, with a
+// small deadband. This is "what the eye sees" and is used purely for coloring the
+// sparklines/history line. It is deliberately separate from WindowTrend.label
+// (the OLS-regression "clean trend" verdict), which the trading screens
+// (isWeak / isNcTarget in securities.ts) rely on and must keep its stricter meaning.
+export const COLOR_DEADBAND_PCT = 1;
+export function moveLabel(retPct: number | null | undefined): TrendLabel | null {
+  if (retPct == null || !Number.isFinite(retPct)) return null;
+  return retPct > COLOR_DEADBAND_PCT ? "up" : retPct < -COLOR_DEADBAND_PCT ? "down" : "sideways";
+}
+
 export type WindowTrend = {
   ret: number | null; // simple % change first→last close in the window
   slopePct: number | null; // regression-implied % move across the window
@@ -20,6 +31,8 @@ export type WindowTrend = {
 };
 
 export type TrendWindows = {
+  w1: WindowTrend;
+  w2: WindowTrend;
   m1: WindowTrend;
   m3: WindowTrend;
   m6: WindowTrend;
@@ -34,7 +47,7 @@ export type TrendResult = {
   windows: TrendWindows;
 };
 
-const WINDOW_BARS = { m1: 21, m3: 63, m6: 126, y1: 252 } as const;
+export const WINDOW_BARS = { w1: 5, w2: 10, m1: 21, m3: 63, m6: 126, y1: 252 } as const;
 const R2_MIN = 0.25; // below this the move is too choppy to call a trend
 const DEADBAND_PCT = 2; // fitted move smaller than this → sideways
 
@@ -82,6 +95,8 @@ export function computeTrend(
   const closes = bars.map((b) => b.close).filter((c) => Number.isFinite(c));
   const n = closes.length;
   const windows: TrendWindows = {
+    w1: windowTrend(closes, WINDOW_BARS.w1),
+    w2: windowTrend(closes, WINDOW_BARS.w2),
     m1: windowTrend(closes, WINDOW_BARS.m1),
     m3: windowTrend(closes, WINDOW_BARS.m3),
     m6: windowTrend(closes, WINDOW_BARS.m6),

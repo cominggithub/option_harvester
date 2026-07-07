@@ -10,6 +10,7 @@ const LINKS = [
   { href: "/wiki", label: "Wiki" },
   { href: "/upload", label: "IB Upload" },
   { href: "/positions", label: "Positions" },
+  { href: "/pnl-predict", label: "P&L Predict" },
   { href: "/orders", label: "Orders" },
   { href: "/transactions", label: "P/L" },
 ];

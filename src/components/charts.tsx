@@ -100,32 +100,59 @@ export function DivergingBar({
   labelW = 56,
   rowH = 20,
   w = 360,
+  valueW = 46,
 }: {
   items: { label: string; value: number }[];
   labelW?: number;
   rowH?: number;
   w?: number;
+  valueW?: number;
 }) {
   if (!items.length) return null;
   const maxAbs = Math.max(1, ...items.map((d) => Math.abs(d.value)));
-  const zero = labelW + (w - labelW) / 2;
-  const half = (w - labelW) / 2;
   const h = items.length * rowH;
+  const cy = (i: number) => i * rowH + 3 + (rowH - 6) / 2 + 4;
+  // Both real datasets (top earners / biggest drags) are one-sided, so anchor the
+  // baseline at the label edge and use the full width; keep a fixed right gutter so
+  // value labels form an aligned column that never clips or overlaps a bar/symbol.
+  const oneSided = items.every((d) => d.value >= 0) || items.every((d) => d.value <= 0);
+
+  if (oneSided) {
+    const x0 = labelW;
+    const barMax = w - labelW - valueW;
+    return (
+      <svg width="100%" viewBox={`0 0 ${w} ${h}`} className="block" aria-hidden>
+        <line x1={x0} x2={x0} y1={0} y2={h} stroke={GREY} strokeWidth={0.5} />
+        {items.map((d, i) => {
+          const len = (Math.abs(d.value) / maxAbs) * barMax;
+          return (
+            <g key={d.label}>
+              <text x={labelW - 6} y={cy(i)} textAnchor="end" className="fill-ink tnum" fontSize={10.5}>{d.label}</text>
+              <rect x={x0} y={i * rowH + 3} width={Math.max(len, 0.5)} height={rowH - 6} rx={1} fill={sign(d.value)} fillOpacity={0.85} />
+              <text x={w - 2} y={cy(i)} textAnchor="end" className="fill-ink-muted tnum" fontSize={9.5}>{k(d.value)}</text>
+            </g>
+          );
+        })}
+      </svg>
+    );
+  }
+
+  // Two-sided (kept for generality): centered zero-line with value gutters reserved
+  // on both ends so labels stay inside the frame.
+  const half = (w - labelW - 2 * valueW) / 2;
+  const zero = labelW + valueW + half;
   return (
     <svg width="100%" viewBox={`0 0 ${w} ${h}`} className="block" aria-hidden>
       <line x1={zero} x2={zero} y1={0} y2={h} stroke={GREY} strokeWidth={0.5} />
       {items.map((d, i) => {
         const len = (Math.abs(d.value) / maxAbs) * half;
-        const yTop = i * rowH + 3;
         const bx = d.value >= 0 ? zero : zero - len;
-        const textX = d.value >= 0 ? Math.min(zero + len + 3, w - 2) : Math.max(zero - len - 3, labelW);
+        const textX = d.value >= 0 ? Math.min(zero + len + 3, w - 2) : Math.max(zero - len - 3, labelW + 2);
         return (
           <g key={d.label}>
-            <text x={labelW - 4} y={yTop + (rowH - 6) / 2 + 4} textAnchor="end" className="fill-ink tnum" fontSize={10.5}>
-              {d.label}
-            </text>
-            <rect x={bx} y={yTop} width={Math.max(len, 0.5)} height={rowH - 6} rx={1} fill={sign(d.value)} fillOpacity={0.85} />
-            <text x={textX} y={yTop + (rowH - 6) / 2 + 4} textAnchor={d.value >= 0 ? "start" : "end"} className="fill-ink-muted tnum" fontSize={9.5}>
+            <text x={labelW - 6} y={cy(i)} textAnchor="end" className="fill-ink tnum" fontSize={10.5}>{d.label}</text>
+            <rect x={bx} y={i * rowH + 3} width={Math.max(len, 0.5)} height={rowH - 6} rx={1} fill={sign(d.value)} fillOpacity={0.85} />
+            <text x={textX} y={cy(i)} textAnchor={d.value >= 0 ? "start" : "end"} className="fill-ink-muted tnum" fontSize={9.5}>
               {k(d.value)}
             </text>
           </g>

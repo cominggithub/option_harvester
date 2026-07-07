@@ -69,6 +69,12 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   suggested-action board**: every short option leg gets one action — close/harvest,
   let-expire, roll, buy-spot-to-defend, watch, hold. Summary band shows
   harvestable-$ / at-risk-$.
+- **P&L Predict** (`/pnl-predict`) — the open option book grouped by **expiry
+  (nearest first)** with each date's unrealized P/L + premium, a running **cumulative**,
+  an **Earned %** (unrealized P/L ÷ credit) and per-position **greeks** (Δ/Θ/Γ per leg +
+  net Σ qty·100·greek per expiry). Two interactive combo charts (cumulative line + per-
+  expiry bars, x = expiry date) with hover tooltips, plus a sticky section nav. Data:
+  `buildOptionPnlByExpiry` (`positions.ts`); greeks from `option_harvest_option_greeks`.
 - **IB Upload** (`/upload`) — one CSV box; `/api/upload` auto-detects positions vs
   transaction-history (`uploadkind.ts`). Uploading positions auto-pulls any newly-held
   off-index ticker into the universe immediately (`addNewHoldings`, via `enrich.ts`).
@@ -142,6 +148,11 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   description, sec_type, quantity, avg_cost, market_value, currency, right (C/P),
   strike, expiry, raw, upload_id. Parser extracts right/strike/expiry from the OCC
   symbol. **position_uploads** keeps every raw CSV (re-importable).
+- **option_greeks** — per-contract greeks keyed by **conid** (PK): delta, gamma, theta,
+  vega, iv, at. Synced from the IB Client-Portal market-data snapshot by the extension
+  (fields 7308/7309/7310/7311/7283) and joined to held positions by conid at read time.
+  Separate table so greeks survive the full-replace positions re-import; the POST only
+  writes fields IB actually returns (won't null out a prior good value). Feeds P&L Predict.
 - **transactions** — parsed trade rows from an IB **Transaction History** export
   (`src/lib/txparse.ts`). **Important:** that export has **no realized-P/L column** —
   only signed cash flows (`Net Amount`, mapped to `proceeds`, already net of

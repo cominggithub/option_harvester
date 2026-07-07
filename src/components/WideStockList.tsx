@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import type { SecurityRow } from "@/lib/securities";
 import { Sparkline } from "@/components/Sparkline";
+import { moveLabel } from "@/lib/trend";
 import { StarIcon, TargetIcon } from "@/components/icons";
 import { OptionDetail, PositionDetail, LabelEditor, RatingCell } from "@/components/DataTable";
 import { TREND_WINDOW_LABEL, type SortDir, type SortKey, type TrendWindowKey } from "@/lib/view";
@@ -17,39 +18,27 @@ import {
 } from "@/lib/format";
 
 // Wide-screen stock view — two rows per name (basic + sortable stats) on the left,
-// 1M/3M/6M/1Y charts spanning both rows on the right, highlighted Position column.
+// 1W/2W/1M/3M/6M/1Y charts spanning both rows on the right, highlighted Position column.
 // Drop-in replacement for <DataTable> (same props): controlled sort + live marks,
 // and a click-to-expand row reusing OptionDetail / PositionDetail / LabelEditor.
 
-const WINDOWS: TrendWindowKey[] = ["m1", "m3", "m6", "y1"];
+const WINDOWS: TrendWindowKey[] = ["w1", "w2", "m1", "m3", "m6", "y1"];
+// Each chart header sorts the list by that window's net-move trend.
+const WIN_SORT: Record<TrendWindowKey, SortKey> = {
+  w1: "trendW1",
+  w2: "trendW2",
+  m1: "trendM1",
+  m3: "trendM3",
+  m6: "trendM6",
+  y1: "trendY1",
+};
 const sign = (v: number | null | undefined) => (v != null && v < 0 ? "text-negative" : v != null && v > 0 ? "text-positive" : "text-ink");
-
-const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-// Stable UTC stamp from the ISO string (no Date object → no SSR/CSR drift).
-function fmtIsoShort(iso: string): string {
-  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
-  return m ? `${MON[+m[2] - 1]} ${+m[3]} ${m[4]}:${m[5]}` : iso.slice(0, 16);
-}
-// Per-instrument freshness: absolute stamp on the server, relative "x ago" once
-// mounted (nowMs set client-side), colored amber >30h / red >72h so a stale name
-// (e.g. one the daily ingest missed) stands out.
-function Updated({ iso, nowMs }: { iso: string | null; nowMs: number | null }) {
-  if (!iso) return <span className="text-ink-faint/50">upd —</span>;
-  const abs = fmtIsoShort(iso);
-  if (nowMs == null) return <span className="tnum text-ink-faint">upd {abs}</span>;
-  const h = (nowMs - Date.parse(iso)) / 3.6e6;
-  const rel = h < 1 ? `${Math.max(1, Math.round(h * 60))}m` : h < 48 ? `${Math.round(h)}h` : `${Math.round(h / 24)}d`;
-  const cls = h > 72 ? "font-semibold text-negative" : h > 30 ? "text-[#b45309]" : "text-ink-faint";
-  return <span className={`tnum ${cls}`} title={`Last quote update: ${abs} UTC`}>upd {rel} ago</span>;
-}
 
 type Col = { key: SortKey; label: string; w: string; render: (s: SecurityRow) => React.ReactNode; cls?: (s: SecurityRow) => string };
 const COLS: Col[] = [
   { key: "price", label: "Last", w: "72px", render: (s) => formatPrice(s.price) },
   { key: "changePct", label: "Chg%", w: "62px", render: (s) => formatChangePct(s.changePct), cls: (s) => sign(s.changePct) },
   { key: "ivPct", label: "IV", w: "52px", render: (s) => formatIv(s.ivPct) },
-  { key: "ivRank", label: "Rank", w: "50px", render: (s) => (s.ivStats?.rank != null ? String(s.ivStats.rank) : "—") },
-  { key: "harvesterScore", label: "Harv", w: "50px", render: (s) => s.harvesterScore ?? "—" },
   { key: "volume", label: "Vol", w: "64px", render: (s) => formatVolume(s.volume) },
   { key: "marketCap", label: "Cap", w: "64px", render: (s) => formatMarketCap(s.marketCap) },
   {
@@ -60,8 +49,11 @@ const COLS: Col[] = [
     cls: (s) => (s.record?.trades ? sign(s.record.realized) : "text-ink-faint"),
   },
 ];
-const STAT_GRID = `${COLS.map((c) => c.w).join(" ")} 128px`; // + POS (highlighted, last)
-const OUTER = "minmax(0,1fr) 680px";
+const STAT_GRID = `${COLS.map((c) => c.w).join(" ")} 88px`; // + POS (highlighted, last)
+// Left track never shrinks below its stats+POS content (min-content), so the
+// highlighted Position column can't be clipped under the charts; charts take the
+// rest. On a narrow viewport the page scrolls horizontally instead of overlapping.
+const OUTER = "minmax(min-content,1fr) 760px";
 const PAD = "pl-4 pr-2";
 
 function SortArrow({ active, dir }: { active: boolean; dir: SortDir }) {
@@ -100,17 +92,23 @@ function PosCell({ s }: { s: SecurityRow }) {
 }
 
 function MiniChart({ s, win }: { s: SecurityRow; win: TrendWindowKey }) {
-  const t = s.trend?.[win] ?? null;
-  const lbl = t?.label ?? null;
+  // 1W/2W read the short high-res raw tail (daily resolution); the longer windows
+  // slice the downsampled ~1Y series.
+  const short = win === "w1" || win === "w2";
+  const series = short ? s.sparkRecent : s.spark;
+  // Net % move for this window (precomputed on the row). Tint by the net move — not
+  // the regression label — so a visibly big up/down move is never shown grey.
+  const ret = s.trendRet?.[win] ?? null;
+  const lbl = moveLabel(ret);
   const lblCls = lbl === "up" ? "text-positive" : lbl === "down" ? "text-negative" : "text-ink-faint";
   return (
     <div className="flex h-full flex-col rounded border border-line bg-canvas px-1.5 pb-1 pt-1">
       <div className="flex items-baseline justify-between">
         <span className="text-[10px] font-semibold text-ink">{TREND_WINDOW_LABEL[win]}</span>
-        <span className={`tnum text-[10px] ${lblCls}`}>{t?.ret != null ? `${t.ret > 0 ? "+" : ""}${t.ret}%` : "—"}</span>
+        <span className={`tnum text-[10px] ${lblCls}`}>{ret != null ? `${ret > 0 ? "+" : ""}${ret}%` : "—"}</span>
       </div>
       <div className="flex flex-1 items-center justify-center pt-1">
-        <Sparkline series={s.spark} window={win} label={lbl} w={150} h={66} />
+        <Sparkline series={series} window={win} label={lbl} w={100} h={66} />
       </div>
     </div>
   );
@@ -133,14 +131,13 @@ type Props = {
   emptyMessage: string;
 };
 
-function Row({ s, showRating, catalog, onToggle, onRate, onSetLabels, nowMs }: {
+function Row({ s, showRating, catalog, onToggle, onRate, onSetLabels }: {
   s: SecurityRow;
   showRating: boolean;
   catalog: string[];
   onToggle: Props["onToggle"];
   onRate: Props["onRate"];
   onSetLabels: Props["onSetLabels"];
-  nowMs: number | null;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -188,11 +185,10 @@ function Row({ s, showRating, catalog, onToggle, onRate, onSetLabels, nowMs }: {
             {(s.labels ?? []).map((l) => (
               <span key={l} className="rounded-sm border border-line px-1 text-[10px] text-ink-muted">{l}</span>
             ))}
-            <span className="ml-auto shrink-0"><Updated iso={s.asOf} nowMs={nowMs} /></span>
           </div>
         </div>
         {/* Right: charts — one horizontal line, each tall (spans the block height) */}
-        <div className="grid grid-cols-4 items-stretch gap-1.5 border-l border-line py-2 pl-3 pr-3">
+        <div className="grid grid-cols-6 items-stretch gap-1.5 border-l border-line py-2 pl-3 pr-3">
           {WINDOWS.map((w) => <MiniChart key={w} s={s} win={w} />)}
         </div>
       </div>
@@ -208,14 +204,6 @@ function Row({ s, showRating, catalog, onToggle, onRate, onSetLabels, nowMs }: {
 }
 
 export function WideStockList({ rows, sortKey, sortDir, showRating = false, catalog, onSort, onToggle, onRate, onSetLabels, emptyMessage }: Props) {
-  // Set after mount so per-row "x ago" freshness renders client-side without a
-  // hydration mismatch (server renders the absolute stamp).
-  const [nowMs, setNowMs] = useState<number | null>(null);
-  useEffect(() => {
-    setNowMs(Date.now());
-    const id = setInterval(() => setNowMs(Date.now()), 60_000);
-    return () => clearInterval(id);
-  }, []);
   return (
     <div className="w-full">
       {/* Sortable header — stat columns align with each row's stats line */}
@@ -235,8 +223,23 @@ export function WideStockList({ rows, sortKey, sortDir, showRating = false, cata
             </button>
           </div>
         </div>
-        <div className="flex items-center border-l border-line py-2 pl-3 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
-          Trend · 1M / 3M / 6M / 1Y
+        <div className="grid grid-cols-6 items-center gap-1.5 border-l border-line py-2 pl-3 pr-3">
+          {WINDOWS.map((w) => {
+            const key = WIN_SORT[w];
+            const active = sortKey === key;
+            return (
+              <button
+                key={w}
+                type="button"
+                onClick={() => onSort(key)}
+                title={`Sort by ${TREND_WINDOW_LABEL[w]} trend`}
+                className={`flex items-center justify-center gap-0.5 text-[10px] font-semibold uppercase tracking-wider hover:text-ink ${active ? "text-ink" : "text-ink-faint"}`}
+              >
+                {TREND_WINDOW_LABEL[w]}
+                <SortArrow active={active} dir={sortDir} />
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -245,7 +248,7 @@ export function WideStockList({ rows, sortKey, sortDir, showRating = false, cata
       ) : (
         <ul>
           {rows.map((s) => (
-            <Row key={s.ticker} s={s} showRating={showRating} catalog={catalog} onToggle={onToggle} onRate={onRate} onSetLabels={onSetLabels} nowMs={nowMs} />
+            <Row key={s.ticker} s={s} showRating={showRating} catalog={catalog} onToggle={onToggle} onRate={onRate} onSetLabels={onSetLabels} />
           ))}
         </ul>
       )}

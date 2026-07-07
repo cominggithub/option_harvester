@@ -5,7 +5,7 @@ const show = (r) => {
   if (!r) return;
   $("log").textContent = r.error
     ? `✕ ${r.error}`
-    : `✓ acct ${r.acct ?? "?"} · pos ${r.positions?.count ?? "—"} · ord ${r.orders?.count ?? "—"} · trades +${r.trades?.added ?? 0} · wl ${r.watchlists?.lists ?? 0} · OH→IB ${r.ohPush?.pushed ?? 0}/${r.ohPush?.total ?? 0}`;
+    : `✓ acct ${r.acct ?? "?"} · pos ${r.positions?.count ?? "—"} · ord ${r.orders?.count ?? "—"} · trades +${r.trades?.added ?? 0} · wl ${r.watchlists?.lists ?? 0} · OH→IB ${r.ohPush?.pushed ?? 0}/${r.ohPush?.total ?? 0}${r.greeks?.updated != null ? ` · greeks ${r.greeks.updated}/${r.greeks.tried ?? "?"}` : ""}`;
 };
 const backend = () => ($("backend").value.trim() || DEFAULT).replace(/\/$/, "");
 
@@ -50,6 +50,16 @@ $("getopts").onclick = () => {
     ($("log").textContent = r?.error
       ? `✕ ${r.error}`
       : `✓ options updated ${r?.updated ?? 0}/${r?.tried ?? 0}${r?.errors?.length ? ` · ${r.errors.length} err` : ""}`),
+  );
+};
+
+// Fetch per-position greeks (delta/theta/gamma) for held option contracts.
+$("getgreeks").onclick = () => {
+  $("log").textContent = "Fetching greeks for held options…";
+  chrome.runtime.sendMessage({ type: "getGreeks", backend: backend() }, (r) =>
+    ($("log").textContent = r?.error
+      ? `✕ ${r.error}`
+      : `✓ greeks updated ${r?.updated ?? 0}/${r?.tried ?? 0}${r?.errors?.length ? ` · ${r.errors.length} err` : ""}`),
   );
 };
 

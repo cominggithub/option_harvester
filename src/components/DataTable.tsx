@@ -16,6 +16,7 @@ import {
 } from "@/lib/format";
 import { StarIcon, TargetIcon, SortArrow, SproutIcon } from "@/components/icons";
 import { Sparkline } from "@/components/Sparkline";
+import { moveLabel } from "@/lib/trend";
 import { HistoryChart } from "@/components/HistoryChart";
 
 // Row-1 column widths as an inline gridTemplateColumns string (header + every row
@@ -685,7 +686,7 @@ function Row({
         </div>
         <div className="flex shrink-0 items-center gap-3">
           {(["m1", "m3", "m6", "y1"] as const).map((w) => (
-            <Sparkline key={w} series={s.spark} window={w} label={s.trend?.[w]?.label ?? null} w={104} h={26} />
+            <Sparkline key={w} series={s.spark} window={w} label={moveLabel(s.trend?.[w]?.ret)} w={104} h={26} />
           ))}
         </div>
       </div>

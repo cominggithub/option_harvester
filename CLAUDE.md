@@ -123,7 +123,12 @@ Pages (all `force-dynamic`):
 - `src/app/ib/page.tsx` — IB-vs-Yahoo option-data comparison (`ib_*` quote columns).
 - `src/app/positions/page.tsx` — positions + action board (sticky TOC nav).
 - `src/app/orders/page.tsx` — pending orders + which short call each GTC stop protects.
-- `src/app/transactions/page.tsx` — P/L (`<PnlDashboard>`).
+- `src/app/transactions/page.tsx` — P/L (`<PnlDashboard>`). Overview has interactive
+  (hover) cumulative-equity + monthly-P/L charts (`PnlCharts.tsx`).
+- `src/app/pnl-predict/page.tsx` — **P&L Predict**: open option book grouped by expiry
+  (near→far) with per-date + cumulative unrealized P/L and premium, per-position
+  greeks (Δ/Θ/Γ), sticky section nav, and two interactive combo charts
+  (`CumulativePnlChart.tsx`). Built by `buildOptionPnlByExpiry` in `positions.ts`.
 - `src/app/upload/page.tsx` — IB CSV upload; `src/app/wiki/page.tsx`.
 
 API (`src/app/api/…`, mutations + on-demand data):
@@ -135,28 +140,38 @@ API (`src/app/api/…`, mutations + on-demand data):
 - `watchlist` — IB watchlists sync-in (full replace; `OH:*` excluded); `oh-watchlists`
   — OH lists with conid rows for the OH→IB push; `securities/conids` — conid backfill
   (GET missing / POST `/trsrv/stocks`); `options` — GET ticker→conid, POST IB option
-  snapshot into `ib_*`. All extension-driven; see docs/watchlists.md.
+  snapshot into `ib_*`; `greeks` — GET held option conids, POST per-contract greek
+  snapshots (7308/09/10/11) into `option_harvest_option_greeks` (keyed by conid).
+  All extension-driven; see docs/watchlists.md.
 
 Components: `Dashboard.tsx` (client shell), `LeftNav.tsx`, `TopNav.tsx`,
-`WideStockList.tsx` (the wide table body — per name a 3-line left block [basic /
-sortable stats + highlighted Pos / option-meta + per-row "last updated" freshness]
-and a single row of four tall 1M/3M/6M/1Y charts; used by the Analyzer **and**
-Watchlists), `DataTable.tsx`
+`WideStockList.tsx` (the wide table body — per name a left block [basic / sortable
+stats (Last/Chg%/IV/Vol/Cap/Record) + highlighted Pos / option-meta] and a single row
+of six tall **1W/2W/1M/3M/6M/1Y** charts; each chart header sorts by that window's
+net-move trend; charts are tinted by net move via `moveLabel` (green/red/grey), not the
+regression label; used by the Analyzer **and** Watchlists), `DataTable.tsx`
 (now the shared row sub-components: `OptionDetail`/`PositionDetail`/`LabelEditor`/`RatingCell`),
 `WatchlistBrowser.tsx` (watchlists page: left-nav tabs + `WideStockList`), `PnlDashboard.tsx`,
-`charts.tsx` (SVG charts), `Sparkline.tsx`, `HistoryChart.tsx`, `UploadControl.tsx`,
+`charts.tsx` (server SVG charts: `EquityLine`/`VBars`/`DivergingBar`/`Histogram`/`Scatter`),
+`PnlCharts.tsx` (**client**, interactive: `EquityChart` + `MonthlyBars` for the P/L overview),
+`CumulativePnlChart.tsx` (**client**, interactive `CumulativePnlByExpiry` combo chart for P&L Predict),
+`Sparkline.tsx`, `HistoryChart.tsx`, `UploadControl.tsx`,
 `UploadHistory.tsx`, `icons.tsx`.
 
 Libs (`src/lib`): `securities.ts` (`getDashboardData`, `getIvSeries`, screens),
 `pnl.ts` (cash-flow P/L engine), `transactions.ts` (`getPnlReport`), `posanalysis.ts`
-(action suggestions), `positions.ts` (positions/orders/trades views + `analyzeOrders`),
+(action suggestions), `positions.ts` (positions/orders/trades views + `analyzeOrders`;
+`getPositionGroups` joins per-contract greeks by conid; `buildOptionPnlByExpiry` groups
+the option book by expiry with cumulative P/L/credit + net greeks for P&L Predict),
 `news.ts` (headlines + lexicon), `score.ts` (Signal), `ccscore.ts` (Δ0.30 Call-Edge
 `E`, read from `option_harvest_cc_scores`), `harvester.ts`, `ivstats.ts` (IV rank),
-`trend.ts`, `view.ts` (sort), `labels.ts` (derived stock-label catalog),
+`trend.ts` (windows incl. `w1`/`w2`; `moveLabel` = net-move tint; `WINDOW_BARS`),
+`view.ts` (sort; per-window `trendW1..trendY1` keys, `TrendWindowKey` w1/w2),
+`labels.ts` (derived stock-label catalog),
 `watchlists.ts` (OH watchlist definitions + IB reader — see docs/watchlists.md),
 `enrich.ts` (shared ingest pipeline), `ibparse.ts`/`txparse.ts` (IB CSV +
 Client-Portal JSON parsers: `parseIbPortal{Positions,Orders,Watchlists}`,
-`parseIbStocks`, `parseIbOptionSnapshot`),
+`parseIbStocks`, `parseIbOptionSnapshot`, `parseIbPositionGreeks`),
 `uploadkind.ts` (positions-vs-transactions CSV detection), `format.ts`, `sectors.ts`,
 `db.ts`.
 
@@ -172,13 +187,15 @@ Scripts (`scripts/`):
   see test plan.
 
 Chrome extension (`extension/`): runs in the logged-in IB portal tab. **Sync now**
-pulls positions/orders/trades/watchlists → the write APIs (IB→web, full replace) and
-then pushes OH watchlists → IB (`OH:*`); auto-sync does the same on a timer. Other
+pulls positions/orders/trades/watchlists → the write APIs (IB→web, full replace),
+then fetches per-position greeks (Δ/Θ/Γ) for held options → `greeks`, and pushes OH
+watchlists → IB (`OH:*`); auto-sync does the light pull only (no greeks). Other
 popup actions: **Resolve conids** (backfill `securities.conid` via `/trsrv/stocks`),
-**Get options (IB)** (per-ticker option snapshot → `ib_*`), **Push OH → IB**, and
+**Get options (IB)** (per-ticker ATM option snapshot → `ib_*`), **Get greeks (IB)**
+(per held-contract snapshot → `option_harvest_option_greeks`), **Push OH → IB**, and
 **Send page (dev)** capture → `ib-capture`. Full flows in **docs/watchlists.md**.
 **Bump `manifest.json` `version` on every edit** (see
-`[[bump-extension-version]]`; currently 0.7.2).
+`[[bump-extension-version]]`; currently 0.7.5).
 
 ## Local dev gotchas (WSL on `/mnt/d`)
 

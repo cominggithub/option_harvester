@@ -17,6 +17,12 @@ export type SortKey =
   | "slope3m"
   | "slope6m"
   | "slope1y"
+  | "trendW1"
+  | "trendW2"
+  | "trendM1"
+  | "trendM3"
+  | "trendM6"
+  | "trendY1"
   | "position"
   | "record"
   | "rating"
@@ -25,10 +31,12 @@ export type SortKey =
 
 export type SortDir = "asc" | "desc";
 
-export type TrendWindowKey = "m1" | "m3" | "m6" | "y1";
+export type TrendWindowKey = "w1" | "w2" | "m1" | "m3" | "m6" | "y1";
 export type TrendDir = "all" | "up" | "down" | "sideways";
 
 export const TREND_WINDOW_LABEL: Record<TrendWindowKey, string> = {
+  w1: "1W",
+  w2: "2W",
   m1: "1M",
   m3: "3M",
   m6: "6M",
@@ -56,11 +64,27 @@ export const SORT_LABELS: Record<SortKey, string> = {
   slope3m: "3M trend",
   slope6m: "6M trend",
   slope1y: "1Y trend",
+  trendW1: "1W move",
+  trendW2: "2W move",
+  trendM1: "1M move",
+  trendM3: "3M move",
+  trendM6: "6M move",
+  trendY1: "1Y move",
   position: "Position",
   record: "Record",
   rating: "Rating",
   ratingCall: "Call ★",
   ratingPut: "Put ★",
+};
+
+// Maps the per-window trend sort keys to their window.
+const TREND_SORT_WIN: Partial<Record<SortKey, TrendWindowKey>> = {
+  trendW1: "w1",
+  trendW2: "w2",
+  trendM1: "m1",
+  trendM3: "m3",
+  trendM6: "m6",
+  trendY1: "y1",
 };
 
 function sortValue(
@@ -75,6 +99,9 @@ function sortValue(
   if (key === "slope3m") return r.trend?.m3?.slopePct ?? null;
   if (key === "slope6m") return r.trend?.m6?.slopePct ?? null;
   if (key === "slope1y") return r.trend?.y1?.slopePct ?? null;
+  // Per-window "sort by trend" — net % move shown on each chart (from trendRet).
+  const trendWin = TREND_SORT_WIN[key];
+  if (trendWin) return r.trendRet?.[trendWin] ?? null;
   if (key === "position") return r.position?.net ?? null;
   if (key === "record") return r.record?.realized ?? null;
   if (key === "rating") return r.rating || null; // 0 = unrated → sorts last
@@ -82,7 +109,8 @@ function sortValue(
   if (key === "ratingPut") return r.rating < 0 ? -r.rating : null; // put view: only NP ratings rank
   if (key === "final") return r.final?.score ?? null;
   if (key === "ivRank") return r.ivStats?.rank ?? null;
-  return r[key];
+  // Remaining keys are direct numeric SecurityRow fields (trend/slope/rating/… handled above).
+  return r[key as keyof SecurityRow] as number | string | null;
 }
 
 export function sortRows(

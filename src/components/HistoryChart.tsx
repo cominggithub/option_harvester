@@ -3,13 +3,14 @@
 import { useEffect, useMemo, useState } from "react";
 import type { SecurityRow } from "@/lib/securities";
 import type { TrendLabel } from "@/lib/trend";
+import { moveLabel } from "@/lib/trend";
 import { TREND_WINDOW_LABEL, type TrendWindowKey } from "@/lib/view";
 import { formatPrice } from "@/lib/format";
 
 type Point = { date: string; close: number };
 
-const WINDOWS: TrendWindowKey[] = ["m1", "m3", "m6", "y1"];
-const WINDOW_BARS: Record<TrendWindowKey, number> = { m1: 21, m3: 63, m6: 126, y1: 252 };
+const WINDOWS: TrendWindowKey[] = ["w1", "w2", "m1", "m3", "m6", "y1"];
+const WINDOW_BARS: Record<TrendWindowKey, number> = { w1: 5, w2: 10, m1: 21, m3: 63, m6: 126, y1: 252 };
 const STROKE: Record<TrendLabel, string> = { up: "#1f7a44", down: "#c0392b", sideways: "#8a929c" };
 const LABEL_TEXT: Record<TrendLabel, string> = { up: "text-positive", down: "text-negative", sideways: "text-ink-muted" };
 
@@ -75,7 +76,11 @@ export function HistoryChart({
   }, [slice]);
 
   const t = s.trend?.[win] ?? null;
-  const label = t?.label ?? null;
+  // Net move over the visible slice → chart tint + up/down/sideways word. slope & R²
+  // below stay as regression diagnostics. See moveLabel() in trend.ts.
+  const moveRet = geo ? (geo.last.close / geo.first.close - 1) * 100 : t?.ret ?? null;
+  const retShown = moveRet != null ? Math.round(moveRet * 10) / 10 : null;
+  const label = moveLabel(moveRet);
   const color = label ? STROKE[label] : "#9aa1ab";
 
   return (
@@ -103,8 +108,8 @@ export function HistoryChart({
           )}
           <span className="tnum">
             Return{" "}
-            <span className={t?.ret != null && t.ret < 0 ? "text-negative" : t?.ret != null && t.ret > 0 ? "text-positive" : ""}>
-              {t?.ret != null ? `${t.ret > 0 ? "+" : ""}${t.ret}%` : "—"}
+            <span className={retShown != null && retShown < 0 ? "text-negative" : retShown != null && retShown > 0 ? "text-positive" : ""}>
+              {retShown != null ? `${retShown > 0 ? "+" : ""}${retShown}%` : "—"}
             </span>
           </span>
           <span className="tnum">slope {t?.slopePct != null ? `${t.slopePct}%` : "—"}</span>

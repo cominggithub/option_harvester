@@ -141,7 +141,8 @@ export function _selfCheck(): void {
   const asOf = new Date("2026-06-29");
   const mk = (o: Partial<PositionGroupLeg>): PositionGroupLeg => ({
     kind: "call", right: "C", contract: "X 18JUL26 100 C", quantity: -1, strike: 100, expiry: "2026-08-21",
-    unitCost: 2, totalCost: -200, closePrice: null, marketValue: -50, unrealizedPnl: 150, ...o,
+    unitCost: 2, totalCost: -200, closePrice: null, marketValue: -50, unrealizedPnl: 150,
+    conid: null, delta: null, gamma: null, theta: null, ...o,
   });
   const assert = (c: boolean, m: string) => { if (!c) throw new Error("posanalysis self-check: " + m); };
 
