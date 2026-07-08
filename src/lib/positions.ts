@@ -445,23 +445,44 @@ export function analyzeCallProtection(groups: PositionGroup[], orders: OrderRow[
 // stop = BUY-STOP whose trigger equals a held short call's strike on the same
 // underlying. Stops that match no current short call are flagged orphan (the call
 // was probably closed — the stop should likely be cancelled).
+export type ProtectedCall = {
+  strike: number | null;
+  expiry: string | null;
+  qty: number; // signed contracts (short → negative)
+  contract: string;
+  delta: number | null; // per-contract delta (IB greek)
+  dte: number | null; // days to expiry
+};
 export type OrderView = {
   order: OrderRow;
   isStop: boolean; // a BUY-STOP (the protective shape)
-  protects: { strike: number | null; expiry: string | null; qty: number; contract: string }[];
+  protects: ProtectedCall[];
   orphan: boolean; // a buy-stop with no matching short call
+  spot: number | null; // underlying spot (for room-to-trigger)
 };
 
 export function analyzeOrders(orders: OrderRow[], groups: PositionGroup[]): OrderView[] {
-  // Index short calls by symbol for quick trigger→strike matching.
-  const shortCallsBySym = new Map<string, { strike: number | null; expiry: string | null; qty: number; contract: string }[]>();
-  for (const g of groups)
+  const today = new Date().toISOString().slice(0, 10);
+  const ORD_DAY = 86_400_000;
+  // Index short calls by symbol for quick trigger→strike matching; capture spot too.
+  const shortCallsBySym = new Map<string, ProtectedCall[]>();
+  const spotBySym = new Map<string, number | null>();
+  for (const g of groups) {
+    spotBySym.set(g.symbol, g.price);
     for (const leg of g.legs)
       if (leg.right === "C" && (leg.quantity ?? 0) < 0) {
         const arr = shortCallsBySym.get(g.symbol) ?? [];
-        arr.push({ strike: leg.strike, expiry: leg.expiry, qty: leg.quantity ?? 0, contract: leg.contract });
+        arr.push({
+          strike: leg.strike,
+          expiry: leg.expiry,
+          qty: leg.quantity ?? 0,
+          contract: leg.contract,
+          delta: leg.delta,
+          dte: leg.expiry ? Math.round((Date.parse(leg.expiry) - Date.parse(today)) / ORD_DAY) : null,
+        });
         shortCallsBySym.set(g.symbol, arr);
       }
+  }
 
   return orders.map((order) => {
     const isStop = /buy/i.test(order.action ?? "") && /stop|stp/i.test(order.orderType ?? "");
@@ -471,7 +492,7 @@ export function analyzeOrders(orders: OrderRow[], groups: PositionGroup[]): Orde
             (c) => c.strike != null && Math.abs((order.auxPrice as number) - c.strike) < STRIKE_EPS,
           )
         : [];
-    return { order, isStop, protects, orphan: isStop && protects.length === 0 };
+    return { order, isStop, protects, orphan: isStop && protects.length === 0, spot: spotBySym.get(order.symbol) ?? null };
   });
 }
 

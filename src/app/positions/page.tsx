@@ -19,6 +19,8 @@ function num(n: number | null, opts?: Intl.NumberFormatOptions): string {
 const money = (n: number | null) => num(n, { maximumFractionDigits: 0 });
 const price = (n: number | null) => num(n, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const mny = (n: number | null) => (n == null ? "—" : `${n >= 0 ? "+" : "−"}${Math.abs(n * 100).toFixed(1)}%`);
+// Signed $ distance from spot to strike (the OTM cushion / distance-to-strike).
+const otmUsd = (n: number | null) => (n == null ? "—" : `${n >= 0 ? "+" : "−"}$${Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const cap = (n: number | null) => (n == null ? "—" : `${Math.round(n * 100)}%`);
 function pnlClass(n: number | null): string {
   if (n == null || n === 0) return "text-ink-muted";
@@ -383,12 +385,15 @@ export default async function PositionsPage() {
                   </div>
                 </div>
 
-                <table className="w-full text-[13px]">
+                <div className="overflow-x-auto">
+                <table className="w-full min-w-[1040px] text-[13px]">
                   <thead className="text-left text-[10.5px] uppercase tracking-wider text-ink-faint">
                     <tr className="border-y border-line">
                       <th className="px-4 py-1.5 font-medium">Leg</th>
                       <th className="px-3 py-1.5 text-right font-medium">Strike</th>
                       <th className="px-3 py-1.5 font-medium">Expiry</th>
+                      <th className="px-3 py-1.5 text-right font-medium" title="Distance from spot to strike in $ — call: strike−spot, put: spot−strike. Positive = out-of-the-money cushion; negative = in-the-money.">OTM $</th>
+                      <th className="px-3 py-1.5 text-right font-medium" title="Moneyness — the OTM $ as a % of spot. Positive = out of the money.">OTM %</th>
                       <th className="px-3 py-1.5 text-right font-medium">Qty</th>
                       <th className="px-3 py-1.5 text-right font-medium">Unit Cost</th>
                       <th className="px-3 py-1.5 text-right font-medium">Total Cost</th>
@@ -403,11 +408,18 @@ export default async function PositionsPage() {
                     {g.legs.map((leg, i) => {
                       const { tag, cls } = legLabel(leg);
                       const sug = sugByLeg.get(leg);
+                      const isOpt = leg.right === "C" || leg.right === "P";
+                      const cushion = isOpt && leg.strike != null && g.price != null
+                        ? (leg.right === "C" ? leg.strike - g.price : g.price - leg.strike)
+                        : null;
+                      const otmPct = cushion != null && g.price ? cushion / g.price : null;
                       return (
                         <tr key={i} className="border-b border-line align-top last:border-0">
                           <td className="px-4 py-2"><span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${cls}`}>{tag}</span></td>
                           <td className="tnum px-3 py-2 text-right">{leg.strike == null ? "—" : price(leg.strike)}</td>
                           <td className="tnum px-3 py-2">{leg.expiry ?? "—"}</td>
+                          <td className={`tnum px-3 py-2 text-right ${cushion == null ? "text-ink-faint" : cushion < 0 ? "text-rose-700" : "text-ink-muted"}`} title={cushion != null && cushion < 0 ? "In the money" : undefined}>{cushion == null ? "—" : otmUsd(cushion)}</td>
+                          <td className={`tnum px-3 py-2 text-right ${otmPct == null ? "text-ink-faint" : otmPct < 0 ? "text-rose-700" : "text-ink-muted"}`}>{otmPct == null ? "—" : mny(otmPct)}</td>
                           <td className="tnum px-3 py-2 text-right">{num(leg.quantity)}</td>
                           <td className="tnum px-3 py-2 text-right">{price(leg.unitCost)}</td>
                           <td className="tnum px-3 py-2 text-right">{money(leg.totalCost)}</td>
@@ -431,6 +443,7 @@ export default async function PositionsPage() {
                     })}
                   </tbody>
                 </table>
+                </div>
               </div>
             ))}
           </div>

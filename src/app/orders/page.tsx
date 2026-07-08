@@ -6,6 +6,12 @@ export const metadata = { title: "Orders — Option Harvester" };
 
 const price = (n: number | null) =>
   n == null ? "—" : n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const pctFmt = (n: number | null) => (n == null ? "—" : `${Math.round(n * 100)}%`);
+const usdSigned = (n: number | null) =>
+  n == null ? "—" : `${n >= 0 ? "+" : "−"}$${Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+// Short-call delta = assignment risk: warn as it climbs.
+const deltaTone = (d: number | null) =>
+  d == null ? "text-ink-faint" : Math.abs(d) > 0.4 ? "text-red-600" : Math.abs(d) > 0.35 ? "text-orange-500" : "text-ink-muted";
 
 function ProtectsCell({ v }: { v: OrderView }) {
   if (!v.isStop) return <span className="text-ink-faint">—</span>;
@@ -18,18 +24,36 @@ function ProtectsCell({ v }: { v: OrderView }) {
         ⚠ no matching call
       </span>
     );
+  // Coverage: shares the stop buys vs shares the short call(s) need (100 × |qty|).
+  const neededShares = v.protects.reduce((s, c) => s + Math.abs(c.qty) * 100, 0);
+  const stopShares = v.order.quantity ?? 0;
+  const coverPct = neededShares ? stopShares / neededShares : null;
+  const under = coverPct != null && coverPct < 0.999;
+  // Room to trigger: how far spot must still rise to hit the buy-stop.
+  const room = v.order.auxPrice != null && v.spot != null ? v.order.auxPrice - v.spot : null;
+  const roomPct = room != null && v.spot ? room / v.spot : null;
+  const roomTone = room == null ? "text-ink-faint" : room <= 0 ? "text-red-600" : roomPct != null && roomPct < 0.03 ? "text-orange-500" : "text-emerald-700";
+
   return (
-    <span className="flex flex-wrap gap-1">
+    <div className="flex flex-col gap-1 text-[11px]">
       {v.protects.map((c, i) => (
-        <span
-          key={i}
-          className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700"
-          title={`Covers short call ${c.contract} (${c.qty} × ${c.expiry ?? "?"})`}
-        >
-          🛡 {v.order.symbol} {c.strike}C · {c.expiry?.slice(5) ?? "?"}
+        <span key={i} className="inline-flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 font-semibold text-emerald-700" title={`Covers short call ${c.contract}`}>
+            🛡 {v.order.symbol} {c.strike}C
+          </span>
+          <span className="tnum text-ink-muted">{Math.abs(c.qty)}× · {c.expiry?.slice(5) ?? "?"}{c.dte != null ? ` · ${c.dte}d` : ""}</span>
+          <span className={`tnum ${deltaTone(c.delta)}`}>Δ{c.delta != null ? c.delta.toFixed(2) : "—"}</span>
         </span>
       ))}
-    </span>
+      <span className="tnum text-ink-faint">
+        size <span className={under ? "font-semibold text-amber-700" : "text-ink-muted"}>{stopShares}/{neededShares} sh ({pctFmt(coverPct)})</span>
+        {under && <span className="ml-1 text-amber-700">partial hedge</span>}
+      </span>
+      <span className="tnum text-ink-faint">
+        room to {price(v.order.auxPrice)} <span className={roomTone}>{usdSigned(room)} ({pctFmt(roomPct)})</span>
+        {v.spot != null && <span className="text-ink-faint"> · spot {price(v.spot)}</span>}
+      </span>
+    </div>
   );
 }
 
@@ -59,9 +83,11 @@ export default async function OrdersPage() {
       </div>
 
       <p className="mt-2 max-w-3xl text-[13.5px] leading-relaxed text-ink-muted">
-        Live working orders synced from IB. Protective buy-stops are matched to the short call they cover (same
-        underlying, trigger = strike); see <Link href="/positions" className="text-accent hover:underline">Positions</Link>{" "}
-        for the inverse — calls still missing a stop.
+        Live working orders synced from IB. Each protective buy-stop is matched to the short call it covers (same
+        underlying, trigger = strike) and shows the <strong className="text-ink">target call</strong> (strike · DTE · Δ),
+        the <strong className="text-ink">hedge size</strong> (shares bought vs the 100×contracts needed — a partial
+        hedge like 50/100 is flagged), and the <strong className="text-ink">room to trigger</strong> (spot → stop, in $ and %).
+        See <Link href="/positions" className="text-accent hover:underline">Positions</Link> for the inverse — calls still missing a stop.
       </p>
 
       {orders.length === 0 ? (
