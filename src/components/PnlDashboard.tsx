@@ -441,9 +441,10 @@ function ByPeriod({ r }: { r: PnlReport }) {
                                       <th className="py-1 font-medium">Instrument</th>
                                       <th className="py-1 font-medium">Type</th>
                                       <th className="py-1 text-right font-medium">Qty</th>
-                                      <th className="py-1 text-right font-medium">Price</th>
-                                      <th className="py-1 text-right font-medium">Cash</th>
-                                      <th className="py-1 text-right font-medium">P/L</th>
+                                      <th className="py-1 text-right font-medium" title="Price the position was opened at (shown on the closing fill)">Entry @</th>
+                                      <th className="py-1 text-right font-medium" title="This fill's price">Price</th>
+                                      <th className="py-1 text-right font-medium" title="Net cash of this fill — credit taken in (+) or paid to close (−)">Cash</th>
+                                      <th className="py-1 text-right font-medium" title="Realized P/L of the round trip, booked on the closing fill (entry − close)">P/L</th>
                                     </tr>
                                   </thead>
                                   <tbody>
@@ -456,9 +457,10 @@ function ByPeriod({ r }: { r: PnlReport }) {
                                         </td>
                                         <td className="py-1 pr-3"><span className={`rounded px-1.5 py-0.5 text-[10px] ${typeTone(t.type)}`}>{t.type}</span></td>
                                         <td className={`tnum py-1 pr-3 text-right ${t.qty < 0 ? "text-rose-700" : t.qty > 0 ? "text-emerald-700" : "text-ink-faint"}`}>{t.qty ? signedQty(t.qty) : "—"}</td>
+                                        <td className="tnum py-1 pr-3 text-right text-ink-muted">{t.entryPrice != null ? px(t.entryPrice) : "·"}</td>
                                         <td className="tnum py-1 pr-3 text-right text-ink-muted">{px(t.price)}</td>
                                         <td className={`tnum py-1 pr-3 text-right ${t.cash ? cls(t.cash) : "text-ink-faint"}`}>{t.cash ? money(t.cash) : "—"}</td>
-                                        <td className={`tnum py-1 text-right ${t.pnl ? cls(t.pnl) : "text-ink-faint"}`}>{t.pnl ? money(t.pnl) : "0"}</td>
+                                        <td className={`tnum py-1 text-right ${t.pnl ? cls(t.pnl) : "text-ink-faint"}`}>{t.pnl ? money(t.pnl) : "·"}</td>
                                       </tr>
                                     ))}
                                   </tbody>
@@ -479,8 +481,11 @@ function ByPeriod({ r }: { r: PnlReport }) {
           <span className="text-ink-muted">Credit</span> is the premium collected on the short options that closed/expired in the period;
           <span className="text-ink-muted"> Earned %</span> is the share of that premium kept (realized P/L ÷ credit) and
           <span className="text-ink-muted"> Unearned</span> is the rest — premium paid back to buy them closed (credit − earned).
-          <span className="text-ink-muted"> P/L</span> is the full realized result (books on the closing fill; an opening Sell/Buy shows 0, and on a short&apos;s expiry).
-          Expand a week to see each fill&apos;s qty, price and cash. Weeks run Mon–Sun, filed under the calendar month their Monday falls in; quiet weeks show $0.
+          <span className="text-ink-muted"> P/L</span> is realized only when a contract fully closes and equals the cash difference of its fills
+          (sell credit − buy debit), summed by the date it closed. Expand a week to see its fills: a <span className="text-ink-muted">Sell</span> takes
+          premium in, a <span className="text-ink-muted">Buy</span> pays to close, and the closing fill shows <span className="text-ink-muted">Entry @</span>
+          (the price it was opened at) → <span className="text-ink-muted">Price</span> (the close) → the round-trip <span className="text-ink-muted">P/L</span>.
+          Weeks run Mon–Sun, filed under the calendar month their Monday falls in; quiet weeks show $0.
         </p>
       </Panel>
     </div>

@@ -121,8 +121,11 @@ Pages (all `force-dynamic`):
 - `src/app/watchlists/page.tsx` — watchlists browser (`<WatchlistBrowser>`): OH
   (computed) + IB (synced) lists in the Analyzer table view. See docs/watchlists.md.
 - `src/app/ib/page.tsx` — IB-vs-Yahoo option-data comparison (`ib_*` quote columns).
-- `src/app/positions/page.tsx` — positions + action board (sticky TOC nav).
-- `src/app/orders/page.tsx` — pending orders + which short call each GTC stop protects.
+- `src/app/positions/page.tsx` — positions + action board (sticky TOC nav); holdings
+  detail shows per option leg its OTM $ (distance to strike) + OTM % (moneyness).
+- `src/app/orders/page.tsx` — pending orders; each protective GTC buy-stop shows its
+  target short call (strike · DTE · Δ), hedge size/coverage (a partial hedge is flagged),
+  and room-to-trigger (spot → stop, $/%). Matching via `analyzeOrders` (`positions.ts`).
 - `src/app/transactions/page.tsx` — **Trans** (`<PnlDashboard>`; top-nav "Trans").
   Overview (equity + monthly-P/L charts, `PnlCharts.tsx`, + option win-rate matrix),
   **Weekly · Monthly** (transaction ledger bucketed by trade date → Mon–Sun weeks

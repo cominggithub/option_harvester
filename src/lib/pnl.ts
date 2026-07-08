@@ -97,6 +97,8 @@ export type LedgerTxn = {
   cash: number; // net cash of the fill (credit + / debit −)
   pnl: number; // realized P/L booked to this fill (0 for opening fills)
   credit: number; // premium basis of a SHORT, attached to its realizing fill only (else 0)
+  entryPrice: number | null; // avg opening fill price of the contract — set on the
+  // realizing (closing/expiry) fill so it can show "opened @ X → closed @ Y → P/L"
 };
 
 // Time-bucketed realized P/L. A week is Mon–Sun (ISO); weeks roll up into the
@@ -322,6 +324,12 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
     if (c.status === "open" || !c.closeDate) continue;
     const isShort = c.strategy === "short_call" || c.strategy === "short_put";
     const lastIdx = c.legDetail.length - 1;
+    // Average opening fill price (|qty|-weighted over the legs opened first) — the
+    // price the position was entered at, e.g. the premium a short was sold for.
+    const sign0 = Math.sign(c.legDetail[0]?.qty ?? 0) || -1;
+    const openLegs = c.legDetail.filter((l) => Math.sign(l.qty) === sign0 && l.price != null);
+    const openQ = openLegs.reduce((s, l) => s + Math.abs(l.qty), 0);
+    const entryPrice = openQ ? openLegs.reduce((s, l) => s + Math.abs(l.qty) * (l.price as number), 0) / openQ : null;
     c.legDetail.forEach((l, i) => {
       const realizing = c.status === "closed" && i === lastIdx;
       ledger.push({
@@ -341,6 +349,7 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
         pnl: realizing ? c.proceeds : 0,
         // The short's premium basis rides on the same realizing fill.
         credit: realizing && isShort ? c.credit : 0,
+        entryPrice: realizing ? entryPrice : null,
       });
     });
     // A lapsed short has no closing fill — book the kept credit on a synthetic
@@ -350,7 +359,7 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
         date: c.closeDate!, symbol: c.underlying, kind: "option",
         strategy: c.strategy, right: c.right, strike: c.strike, expiry: c.expiry,
         type: "Expired", qty: 0, price: null, cash: 0, pnl: c.proceeds,
-        credit: isShort ? c.credit : 0,
+        credit: isShort ? c.credit : 0, entryPrice,
       });
     }
   }
@@ -359,7 +368,7 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
       date: l.tradeDate ?? today, symbol: l.symbol, kind: "stock",
       strategy: null, right: null, strike: l.strike, expiry: null,
       type: l.txType ?? "Trade", qty: l.quantity ?? 0, price: l.price,
-      cash: l.proceeds ?? 0, pnl: l.proceeds ?? 0, credit: 0,
+      cash: l.proceeds ?? 0, pnl: l.proceeds ?? 0, credit: 0, entryPrice: null,
     });
   }
   ledger.sort((a, b) => a.date.localeCompare(b.date) || a.symbol.localeCompare(b.symbol));
@@ -638,8 +647,8 @@ export function _selfCheck(): void {
     // open short call (expiry in future, not closed): excluded from realized
     mk({ symbol: "CCC", right: "C", strike: 200, expiry: "2026-12-18", tradeDate: "2026-06-01", quantity: -1, proceeds: 400, txType: "Sell" }),
     // a ROLL: short call closed, then re-opened the same day at a new strike
-    mk({ symbol: "DDD", right: "C", strike: 60, expiry: "2026-06-20", tradeDate: "2026-05-01", quantity: -1, proceeds: 200, txType: "Sell" }),
-    mk({ symbol: "DDD", right: "C", strike: 60, expiry: "2026-06-20", tradeDate: "2026-05-20", quantity: 1, proceeds: -50, txType: "Buy" }),
+    mk({ symbol: "DDD", right: "C", strike: 60, expiry: "2026-06-20", tradeDate: "2026-05-01", quantity: -1, price: 2, proceeds: 200, txType: "Sell" }),
+    mk({ symbol: "DDD", right: "C", strike: 60, expiry: "2026-06-20", tradeDate: "2026-05-20", quantity: 1, price: 0.5, proceeds: -50, txType: "Buy" }),
     mk({ symbol: "DDD", right: "C", strike: 65, expiry: "2026-12-18", tradeDate: "2026-05-20", quantity: -1, proceeds: 180, txType: "Sell" }),
     // account flow: ignored from trading P/L
     mk({ symbol: "-", tradeDate: "2026-06-01", proceeds: -5000, txType: "Withdrawal" }),
@@ -690,6 +699,10 @@ export function _selfCheck(): void {
   const openWeek = allWeeks.find((w) => w.weekStart === "2026-04-27")!;
   assert(openWeek && openWeek.txns.length === 3 && openWeek.txns.every((t) => t.type === "Sell" && t.pnl === 0), "opening Sell week wrong");
   assert(openWeek.cash === 650, `opening week cash should be 650, got ${openWeek.cash}`);
+  assert(openWeek.txns.every((t) => t.entryPrice == null), "opening fills should carry no entryPrice");
+  // the DDD close shows the entry price it was opened at (sold @ 2.00)
+  const ddClose = r.ledger.find((t) => t.symbol === "DDD" && t.pnl !== 0)!;
+  assert(ddClose && ddClose.entryPrice === 2, `DDD close entryPrice should be 2, got ${ddClose?.entryPrice}`);
   // an expired short surfaces an explicit Expired fill carrying the kept credit
   const expiredTxn = r.ledger.find((t) => t.type === "Expired")!;
   assert(expiredTxn && expiredTxn.symbol === "BBB" && expiredTxn.pnl === 150, "expired fill wrong");

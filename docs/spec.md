@@ -67,14 +67,24 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   fill bucketed by **trade date** into Mon–Sun weeks grouped by month; per period columns:
   credit, **earned %**, **unearned $/%**, **wins/losses $**, P/L, cumulative; expand a
   month → week to its itemised fills with a **transaction-type** column (Sell/Buy/
-  Assignment/Expired), qty, price, cash, P/L; plus a monthly **earned-vs-unearned** bar
+  Assignment/Expired), qty, price, cash, and — on a closing fill — the **Entry @** (price
+  the position was opened at) and the round-trip **P/L** (books once, on close); plus a
+  monthly **earned-vs-unearned** bar
   chart), **By Symbol**, **Short Calls / Short Puts** deep-dive (DTE-vs-P/L scatter + 30–40
   DTE target band, histogram, in/out-band verdict), **Rolls**, **All Contracts** (filter/
   sort, expand to leg fills).
 - **Positions** (`/positions`) — holdings grouped by instrument **plus a
   suggested-action board**: every short option leg gets one action — close/harvest,
   let-expire, roll, buy-spot-to-defend, watch, hold. Summary band shows
-  harvestable-$ / at-risk-$.
+  harvestable-$ / at-risk-$. The holdings detail lists per option leg its **OTM $**
+  (distance to strike — call: strike−spot, put: spot−strike; + = OTM cushion, − = ITM,
+  red) and **OTM %** (that as a share of spot = moneyness), plus a protective-stop chip.
+- **Orders** (`/orders`) — live IB working orders. Each protective **buy-stop** is
+  matched to the short call it covers (same underlying, trigger = strike) and shows the
+  **target call** (strike · DTE · Δ, delta colour-coded by assignment risk), the **hedge
+  size** (shares the stop buys vs the 100×contracts needed — a partial hedge like 50/100
+  is flagged), and the **room to trigger** (spot → stop, in $ and %). Orphan stops (no
+  matching call) are flagged for cancelling. Built by `analyzeOrders` (`positions.ts`).
 - **P&L Predict** (`/pnl-predict`) — the open option book grouped by **expiry
   (nearest first)** with each date's unrealized P/L + premium, a running **cumulative**,
   **Earned %** (unrealized P/L ÷ credit) + **Unearned $/%** (credit − unrealized P/L =
@@ -203,8 +213,9 @@ trade's realization date. `getPnlReport()` (`transactions.ts`) enriches moneynes
 `LedgerTxn` — every fill (opening + closing legs, stock, and a synthetic **Expired**
 row for lapsed shorts), bucketed by its own **trade date**. Realized P/L books on the
 **closing** fill; opening Sell/Buy fills carry P/L = 0, exactly like IB, so an opening
-week shows the trade with $0 P/L. Each short's premium basis (`credit`) rides on its
-realizing fill. **`weeklyByMonth(ledger)`** buckets fills into Mon–Sun ISO weeks
+week shows the trade with $0 P/L. Each short's premium basis (`credit`) and the
+contract's average opening price (`entryPrice`) ride on its realizing fill, so a closing
+fill reads *opened @ entry → closed @ fill → round-trip P/L*. **`weeklyByMonth(ledger)`** buckets fills into Mon–Sun ISO weeks
 (gap-filled so quiet weeks show $0), rolls weeks up by the calendar month their Monday
 falls in, and per period computes: `pnl` (Σ realized), `cash` (Σ fill cash),
 `credit` + `earned` (premium collected on shorts realized in the period and the P/L
