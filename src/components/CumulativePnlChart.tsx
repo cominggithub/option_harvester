@@ -243,3 +243,214 @@ export function CumulativePnlByExpiry({
     </div>
   );
 }
+
+
+// Earned vs unearned premium by expiry. mode="amount": per-expiry grouped bars
+// (earned green, unearned amber) PLUS cumulative running-total lines on their
+// own top panel. mode="pct": each as a share of credit (100% reference line);
+// cumulative doesn't apply to a ratio, so the % view is bars only.
+const AMBER = "#c98a1a";
+export function EarnUnearnByExpiry({
+  points,
+  mode = "amount",
+  w = 1180,
+  h = 340,
+}: {
+  points: { date: string; earned: number; unearned: number; credit: number }[];
+  mode?: "amount" | "pct";
+  w?: number;
+  h?: number;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  if (points.length < 1) return <div className="text-[12px] text-ink-faint">No option expiries to chart.</div>;
+
+  const isPct = mode === "pct";
+  const showLines = !isPct;
+  const eVal = (p: { earned: number; credit: number }) => (isPct ? (p.credit ? p.earned / p.credit : 0) : p.earned);
+  const uVal = (p: { unearned: number; credit: number }) => (isPct ? (p.credit ? p.unearned / p.credit : 0) : p.unearned);
+  const fmtV = (v: number) => (isPct ? `${Math.round(v * 100)}%` : k(v));
+  const fmtValSigned = (v: number) => (isPct ? `${v >= 0 ? "+" : "−"}${Math.abs(Math.round(v * 100))}%` : fmtSigned(v));
+
+  const n = points.length;
+  const eV = points.map(eVal);
+  const uV = points.map(uVal);
+  // cumulative running totals (amount mode only)
+  let ce = 0, cu = 0;
+  const cumE = eV.map((v) => (ce += v));
+  const cumU = uV.map((v) => (cu += v));
+
+  const pad = { l: 54, r: 20, t: 18 };
+  const AXIS = 52;
+  const GAP = 18;
+  const innerW = w - pad.l - pad.r;
+  const plotTop = pad.t;
+  const plotBottom = h - AXIS;
+  const lineH = showLines ? Math.round((plotBottom - plotTop) * 0.5) : 0;
+  const barTop = showLines ? plotTop + lineH + GAP : plotTop;
+  const barBottom = plotBottom;
+  const barPanelH = barBottom - barTop;
+  const band = innerW / n;
+  const X = (i: number) => pad.l + (i + 0.5) * band;
+  const BAR_W = Math.min(band * 0.3, 20);
+
+  // bar-panel scale (own range; include 0, and 1 for the % reference)
+  const bLo = Math.min(0, ...eV, ...uV);
+  const bHi = Math.max(0, ...eV, ...uV, isPct ? 1 : 0);
+  const bRange = bHi - bLo || 1;
+  const YB = (v: number) => barTop + barPanelH * (1 - (v - bLo) / bRange);
+  // line-panel scale (cumulative)
+  const cLo = Math.min(0, ...cumE, ...cumU);
+  const cHi = Math.max(0, ...cumE, ...cumU);
+  const cRange = cHi - cLo || 1;
+  const YL = (v: number) => plotTop + lineH * (1 - (v - cLo) / cRange);
+
+  const mkGrid = (loV: number, hiV: number) => {
+    const step = niceStep(hiV - loV || 1);
+    const out: number[] = [];
+    for (let v = Math.ceil(loV / step) * step; v <= hiV + 1e-6; v += step) out.push(v);
+    return out;
+  };
+  const barGrid = mkGrid(bLo, bHi);
+  const lineGrid = showLines ? mkGrid(cLo, cHi) : [];
+  const prevYear = (i: number) => (i > 0 ? points[i - 1].date.slice(0, 4) : "");
+  const path = (arr: number[], Y: (v: number) => number) => arr.map((v, i) => `${i === 0 ? "M" : "L"}${X(i).toFixed(1)} ${Y(v).toFixed(1)}`).join(" ");
+
+  const tip = (() => {
+    if (hover == null) return null;
+    const p = points[hover];
+    const x = X(hover);
+    const boxW = 196;
+    const boxH = showLines ? 96 : 78;
+    const bx = Math.min(Math.max(x - boxW / 2, pad.l), w - pad.r - boxW);
+    const by = plotTop + 4;
+    return { p, i: hover, x, boxW, boxH, bx, by };
+  })();
+
+  return (
+    <div>
+      <div className="mb-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] text-ink-muted">
+        <span className="inline-flex items-center gap-1.5">
+          <svg width="14" height="12" aria-hidden><rect x="4" y="1" width="6" height="11" rx="1" fill={GREEN} fillOpacity={0.75} /></svg>
+          Earned (captured)
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <svg width="14" height="12" aria-hidden><rect x="4" y="1" width="6" height="11" rx="1" fill={AMBER} fillOpacity={0.75} /></svg>
+          Unearned (at risk)
+        </span>
+        {showLines && (
+          <span className="inline-flex items-center gap-1.5">
+            <svg width="20" height="10" aria-hidden><line x1="0" y1="5" x2="20" y2="5" stroke={GREEN} strokeWidth="2.2" /></svg>
+            cumulative (lines)
+          </span>
+        )}
+        <span className="text-ink-faint">x: expiry date · {isPct ? "share of credit" : "USD"} · hover for detail</span>
+      </div>
+
+      <svg width="100%" viewBox={`0 0 ${w} ${h}`} className="block" role="img" onMouseLeave={() => setHover(null)}>
+        <title>Earned vs unearned premium by expiry {isPct ? "(%)" : "(amount + cumulative)"}</title>
+
+        {/* ── top line panel: cumulative earned / unearned ── */}
+        {showLines && (
+          <>
+            {lineGrid.map((v) => (
+              <g key={`lg-${v}`}>
+                <line x1={pad.l} x2={w - pad.r} y1={YL(v)} y2={YL(v)} stroke={GREY} strokeWidth={0.4} strokeOpacity={v === 0 ? 0.6 : 0.3} />
+                <text x={pad.l - 6} y={YL(v) + 4} textAnchor="end" className="fill-ink-faint tnum" fontSize={12}>{k(v)}</text>
+              </g>
+            ))}
+            <path d={path(cumU, YL)} fill="none" stroke={AMBER} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+            <path d={path(cumE, YL)} fill="none" stroke={GREEN} strokeWidth={2.2} strokeLinejoin="round" strokeLinecap="round" />
+            {points.map((p, i) => (
+              <g key={`ld-${i}`}>
+                <circle cx={X(i)} cy={YL(cumU[i])} r={hover === i ? 3.6 : 1.8} fill={AMBER} stroke={hover === i ? "#fff" : "none"} strokeWidth={hover === i ? 1 : 0} />
+                <circle cx={X(i)} cy={YL(cumE[i])} r={hover === i ? 3.6 : 1.8} fill={GREEN} stroke={hover === i ? "#fff" : "none"} strokeWidth={hover === i ? 1 : 0} />
+              </g>
+            ))}
+            <text x={X(n - 1)} y={YL(cumE[n - 1]) - 7} textAnchor="end" className="tnum" fontSize={13} fill={GREEN} fontWeight={600}>{fmtSigned(cumE[n - 1])}</text>
+            <text x={X(n - 1)} y={YL(cumU[n - 1]) + 14} textAnchor="end" className="tnum" fontSize={13} fill={AMBER} fontWeight={600}>{fmtSigned(cumU[n - 1])}</text>
+          </>
+        )}
+
+        {/* ── bar panel: per-expiry earned / unearned ── */}
+        {barGrid.map((v) => (
+          <g key={`bg-${v}`}>
+            <line x1={pad.l} x2={w - pad.r} y1={YB(v)} y2={YB(v)} stroke={GREY} strokeWidth={0.4} strokeOpacity={v === 0 ? 0.6 : 0.3} />
+            <text x={pad.l - 6} y={YB(v) + 4} textAnchor="end" className="fill-ink-faint tnum" fontSize={12}>{fmtV(v)}</text>
+          </g>
+        ))}
+        {isPct && bHi >= 1 && (
+          <line x1={pad.l} x2={w - pad.r} y1={YB(1)} y2={YB(1)} stroke={GREEN} strokeWidth={0.7} strokeDasharray="4 3" opacity={0.5} />
+        )}
+        {points.map((p, i) => {
+          const x = X(i);
+          const y0 = YB(0);
+          const bar = (val: number, dx: number, color: string) => {
+            const yv = YB(val);
+            const top = Math.min(y0, yv);
+            const bh = Math.max(1, Math.abs(yv - y0));
+            return <rect x={x + dx} y={top} width={BAR_W} height={bh} rx={1} fill={color} fillOpacity={hover === i ? 1 : 0.72} />;
+          };
+          return (
+            <g key={`b-${i}`}>
+              {bar(eVal(p), -BAR_W - 1, GREEN)}
+              {bar(uVal(p), 1, AMBER)}
+            </g>
+          );
+        })}
+
+        {/* x date axis */}
+        {points.map((p, i) => {
+          const x = X(i);
+          const showYear = i === 0 || p.date.slice(0, 4) !== prevYear(i);
+          return (
+            <g key={`x-${i}`}>
+              <line x1={x} x2={x} y1={plotBottom} y2={plotBottom + 3} stroke={GREY} strokeWidth={0.5} />
+              <text
+                x={x}
+                y={plotBottom + 7}
+                textAnchor="end"
+                transform={`rotate(-45 ${x} ${plotBottom + 7})`}
+                className={`tnum ${hover === i ? "fill-ink" : "fill-ink-faint"}`}
+                fontSize={12}
+              >
+                {tickLabel(p.date, showYear)}
+              </text>
+            </g>
+          );
+        })}
+
+        {tip && (
+          <g pointerEvents="none">
+            <line x1={tip.x} x2={tip.x} y1={plotTop} y2={plotBottom} stroke={GREY} strokeWidth={1} strokeDasharray="3 3" opacity={0.6} />
+            <rect x={tip.bx} y={tip.by} width={tip.boxW} height={tip.boxH} rx={5} fill="#1a1d21" opacity={0.94} />
+            <text x={tip.bx + 11} y={tip.by + 19} fill="#ffffff" fontSize={12.5} fontWeight={600}>{fmtFull(tip.p.date)}</text>
+            <text x={tip.bx + 11} y={tip.by + 37} fill="#cbd2da" fontSize={11.5}>
+              Earned <tspan className="tnum" fill="#6ee7a8" fontWeight={600}>{fmtValSigned(eVal(tip.p))}</tspan>
+            </text>
+            <text x={tip.bx + 11} y={tip.by + 53} fill="#cbd2da" fontSize={11.5}>
+              Unearned <tspan className="tnum" fill="#f6c667" fontWeight={600}>{fmtValSigned(uVal(tip.p))}</tspan>
+            </text>
+            {showLines ? (
+              <>
+                <text x={tip.bx + 11} y={tip.by + 71} fill="#cbd2da" fontSize={11.5}>
+                  Σ earned <tspan className="tnum" fill="#6ee7a8" fontWeight={600}>{fmtSigned(cumE[tip.i])}</tspan>
+                </text>
+                <text x={tip.bx + 11} y={tip.by + 87} fill="#cbd2da" fontSize={11.5}>
+                  Σ unearned <tspan className="tnum" fill="#f6c667" fontWeight={600}>{fmtSigned(cumU[tip.i])}</tspan>
+                </text>
+              </>
+            ) : (
+              <text x={tip.bx + 11} y={tip.by + 69} fill="#cbd2da" fontSize={11.5}>
+                Credit <tspan className="tnum" fill="#e5e9ee" fontWeight={600}>{Math.round(tip.p.credit).toLocaleString("en-US")}</tspan>
+              </text>
+            )}
+          </g>
+        )}
+
+        {points.map((p, i) => (
+          <rect key={`hit-${i}`} x={pad.l + i * band} y={plotTop} width={band} height={plotBottom - plotTop} fill="transparent" onMouseEnter={() => setHover(i)} />
+        ))}
+      </svg>
+    </div>
+  );
+}

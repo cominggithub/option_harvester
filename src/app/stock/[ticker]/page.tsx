@@ -240,7 +240,7 @@ export default async function StockPage({ params }: { params: Promise<{ ticker: 
                       <td className="tnum py-1 text-right text-ink">{c.strike ?? "—"}</td>
                       <td className="tnum py-1 text-ink-muted">{c.expiry ?? "—"}</td>
                       <td className="tnum py-1 text-right text-ink-faint">{c.dteEntry ?? "—"}</td>
-                      <td className="py-1 text-ink-muted">{c.status === "closed" ? "bought back" : c.status}</td>
+                      <td className="py-1 text-ink-muted">{c.status === "closed" ? (c.strategy === "long_call" || c.strategy === "long_put" ? "sold to close" : "bought back") : c.status}</td>
                       <td className={`tnum py-1 text-right ${c.status === "open" ? "text-ink-faint" : pnlCls(c.proceeds)}`}>{c.status === "open" ? "open" : money(c.proceeds)}</td>
                     </tr>
                   ))}

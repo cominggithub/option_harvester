@@ -12,7 +12,7 @@ const LINKS = [
   { href: "/positions", label: "Positions" },
   { href: "/pnl-predict", label: "P&L Predict" },
   { href: "/orders", label: "Orders" },
-  { href: "/transactions", label: "P/L" },
+  { href: "/transactions", label: "Trans" },
 ];
 
 export function TopNav() {

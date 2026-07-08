@@ -123,12 +123,18 @@ Pages (all `force-dynamic`):
 - `src/app/ib/page.tsx` — IB-vs-Yahoo option-data comparison (`ib_*` quote columns).
 - `src/app/positions/page.tsx` — positions + action board (sticky TOC nav).
 - `src/app/orders/page.tsx` — pending orders + which short call each GTC stop protects.
-- `src/app/transactions/page.tsx` — P/L (`<PnlDashboard>`). Overview has interactive
-  (hover) cumulative-equity + monthly-P/L charts (`PnlCharts.tsx`).
+- `src/app/transactions/page.tsx` — **Trans** (`<PnlDashboard>`; top-nav "Trans").
+  Overview (equity + monthly-P/L charts, `PnlCharts.tsx`, + option win-rate matrix),
+  **Weekly · Monthly** (transaction ledger bucketed by trade date → Mon–Sun weeks
+  grouped by month: credit/earned%/unearned/wins/losses/P/L + earned-vs-unearned chart;
+  expand to per-fill detail with a transaction-type column), By Symbol, Short/​Puts,
+  Rolls, All Contracts.
 - `src/app/pnl-predict/page.tsx` — **P&L Predict**: open option book grouped by expiry
-  (near→far) with per-date + cumulative unrealized P/L and premium, per-position
-  greeks (Δ/Θ/Γ), sticky section nav, and two interactive combo charts
-  (`CumulativePnlChart.tsx`). Built by `buildOptionPnlByExpiry` in `positions.ts`.
+  (near→far) with per-date + cumulative unrealized P/L, premium, **earned%/unearned$/%**,
+  per-position greeks (Δ/Θ/Γ; per-leg delta colour-coded by risk), sticky section nav,
+  interactive charts (cumulative P/L/credit + earned-vs-unearned amount & %,
+  `CumulativePnlChart.tsx`), and an open-book win/loss matrix (inferred from unrealized
+  P/L). Built by `buildOptionPnlByExpiry` in `positions.ts`.
 - `src/app/upload/page.tsx` — IB CSV upload; `src/app/wiki/page.tsx`.
 
 API (`src/app/api/…`, mutations + on-demand data):
@@ -153,13 +159,15 @@ regression label; used by the Analyzer **and** Watchlists), `DataTable.tsx`
 (now the shared row sub-components: `OptionDetail`/`PositionDetail`/`LabelEditor`/`RatingCell`),
 `WatchlistBrowser.tsx` (watchlists page: left-nav tabs + `WideStockList`), `PnlDashboard.tsx`,
 `charts.tsx` (server SVG charts: `EquityLine`/`VBars`/`DivergingBar`/`Histogram`/`Scatter`),
-`PnlCharts.tsx` (**client**, interactive: `EquityChart` + `MonthlyBars` for the P/L overview),
-`CumulativePnlChart.tsx` (**client**, interactive `CumulativePnlByExpiry` combo chart for P&L Predict),
+`PnlCharts.tsx` (**client**, interactive: `EquityChart` + `MonthlyBars` for the P/L overview,
+`WeeklyBars` + `EarnUnearnBars` for the Weekly·Monthly section),
+`CumulativePnlChart.tsx` (**client**: `CumulativePnlByExpiry` combo chart + `EarnUnearnByExpiry`
+earned/unearned by expiry — amount with cumulative lines, or % — for P&L Predict),
 `Sparkline.tsx`, `HistoryChart.tsx`, `UploadControl.tsx`,
 `UploadHistory.tsx`, `icons.tsx`.
 
 Libs (`src/lib`): `securities.ts` (`getDashboardData`, `getIvSeries`, screens),
-`pnl.ts` (cash-flow P/L engine), `transactions.ts` (`getPnlReport`), `posanalysis.ts`
+`pnl.ts` (cash-flow P/L engine + `ledger`/`weeklyByMonth` time analysis with earned/unearned), `transactions.ts` (`getPnlReport`), `posanalysis.ts`
 (action suggestions), `positions.ts` (positions/orders/trades views + `analyzeOrders`;
 `getPositionGroups` joins per-contract greeks by conid; `buildOptionPnlByExpiry` groups
 the option book by expiry with cumulative P/L/credit + net greeks for P&L Predict),

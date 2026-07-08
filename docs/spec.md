@@ -59,21 +59,33 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   long-term fundamentals, recent **news** (lexicon-flagged), the user's position (with
   per-leg action suggestions), and trade-history record (**YTD + all-time** realized,
   win rate, premium, rolls). Dynamic route — every active security has one.
-- **P/L** (`/transactions`, `PnlDashboard.tsx`) — realized P/L **reconstructed from
-  cash flows**. Left-nav sub-sections (deep-linkable `?s=`): Overview (stat band
-  leading with **Realized YTD + all-time**, equity curve, by-strategy, monthly bars),
-  By Symbol, Short Calls / Short Puts deep-dive (DTE-vs-P/L scatter + 30–40 DTE target
-  band, histogram, in/out-band verdict), Rolls (roll campaigns), All Contracts
-  (filter/sort, expand to leg fills).
+- **Trans** (`/transactions`, `PnlDashboard.tsx`; top-nav label **"Trans"**) — realized
+  P/L **reconstructed from cash flows**, plus a transaction ledger. Left-nav sections
+  (deep-linkable `?s=`): **Overview** (stat band leading with **Realized YTD + all-time**,
+  equity curve, by-strategy, monthly bars, and an **option win-rate matrix** — call/put ×
+  tenor 1M/2M/3M+, win = positive realized P/L), **Weekly · Monthly** (`periods` — every
+  fill bucketed by **trade date** into Mon–Sun weeks grouped by month; per period columns:
+  credit, **earned %**, **unearned $/%**, **wins/losses $**, P/L, cumulative; expand a
+  month → week to its itemised fills with a **transaction-type** column (Sell/Buy/
+  Assignment/Expired), qty, price, cash, P/L; plus a monthly **earned-vs-unearned** bar
+  chart), **By Symbol**, **Short Calls / Short Puts** deep-dive (DTE-vs-P/L scatter + 30–40
+  DTE target band, histogram, in/out-band verdict), **Rolls**, **All Contracts** (filter/
+  sort, expand to leg fills).
 - **Positions** (`/positions`) — holdings grouped by instrument **plus a
   suggested-action board**: every short option leg gets one action — close/harvest,
   let-expire, roll, buy-spot-to-defend, watch, hold. Summary band shows
   harvestable-$ / at-risk-$.
 - **P&L Predict** (`/pnl-predict`) — the open option book grouped by **expiry
   (nearest first)** with each date's unrealized P/L + premium, a running **cumulative**,
-  an **Earned %** (unrealized P/L ÷ credit) and per-position **greeks** (Δ/Θ/Γ per leg +
-  net Σ qty·100·greek per expiry). Two interactive combo charts (cumulative line + per-
-  expiry bars, x = expiry date) with hover tooltips, plus a sticky section nav. Data:
+  **Earned %** (unrealized P/L ÷ credit) + **Unearned $/%** (credit − unrealized P/L =
+  premium still at risk), and per-position **greeks** (Δ/Θ/Γ per leg + net Σ qty·100·greek
+  per expiry). Per-leg **delta is colour-coded** by assignment risk (|Δ| > 0.40 red,
+  > 0.35 orange, < 0.05 green). A stat band leads with total unrealized P/L, premium
+  collected, and **premium unearned** (% still at risk). Interactive charts (x = expiry
+  date): cumulative P/L, cumulative credit, and **earned-vs-unearned** — amount (grouped
+  bars + cumulative earned/unearned lines) and % of credit. An **open-book win/loss** matrix
+  (call/put × tenor 1M/2M/3M+) infers win/loss from **unrealized P/L** (winning = mark in
+  your favour) with gross winning/losing/net columns. Sticky section nav throughout. Data:
   `buildOptionPnlByExpiry` (`positions.ts`); greeks from `option_harvest_option_greeks`.
 - **IB Upload** (`/upload`) — one CSV box; `/api/upload` auto-detects positions vs
   transaction-history (`uploadkind.ts`). Uploading positions auto-pulls any newly-held
@@ -153,11 +165,16 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   (fields 7308/7309/7310/7311/7283) and joined to held positions by conid at read time.
   Separate table so greeks survive the full-replace positions re-import; the POST only
   writes fields IB actually returns (won't null out a prior good value). Feeds P&L Predict.
-- **transactions** — parsed trade rows from an IB **Transaction History** export
-  (`src/lib/txparse.ts`). **Important:** that export has **no realized-P/L column** —
-  only signed cash flows (`Net Amount`, mapped to `proceeds`, already net of
-  commission). So P/L is *reconstructed* (§ P/L engine). **transaction_uploads** keeps
-  every raw file.
+- **transactions** — parsed trade rows. **Two sources merged into one table:** the IB
+  **Transaction History** export (`txparse.ts`; carries a `"Transaction Type"` field —
+  Buy/Sell/Assignment/Withdrawal/…), replaced wholesale on CSV upload; and the **Chrome-
+  extension portal capture** (`parseIbPortalTrades`, `/api/trades`; carries `side` = B/S,
+  **no** `"Transaction Type"`), which *adds* recent executions (7-day window, deduped by
+  natural key) to fill the gap after the last CSV. `getTransactions().resolveTxType()`
+  reads `"Transaction Type"` and **falls back to `side`** (B→Buy, S→Sell) so portal-only
+  rows classify correctly. **Important:** neither carries a realized-P/L column — only
+  signed cash flows (`Net Amount` → `proceeds`, net of commission), so P/L is
+  *reconstructed* (§ P/L engine). **transaction_uploads** keeps every raw CSV file.
 - **marks** — favorite + target booleans per ticker (survives re-ingest).
 - **watchlist** — user's IB watchlists synced by the extension (one row per
   list+instrument); replaced wholesale each sync, `OH:*` lists excluded. Read via
@@ -181,6 +198,19 @@ up per symbol; account flows (withdrawal/interest/tax/FX) excluded from trading 
 sessions into one roll campaign. Realized rolls up **all-time and YTD**
 (`realizedYtd`/`closedYtd`/`ytdStart`; `realizedYtd` per SymbolPnl) attributed by each
 trade's realization date. `getPnlReport()` (`transactions.ts`) enriches moneyness.
+
+**Transaction ledger + time analysis.** `computePnl` also emits a `ledger` of
+`LedgerTxn` — every fill (opening + closing legs, stock, and a synthetic **Expired**
+row for lapsed shorts), bucketed by its own **trade date**. Realized P/L books on the
+**closing** fill; opening Sell/Buy fills carry P/L = 0, exactly like IB, so an opening
+week shows the trade with $0 P/L. Each short's premium basis (`credit`) rides on its
+realizing fill. **`weeklyByMonth(ledger)`** buckets fills into Mon–Sun ISO weeks
+(gap-filled so quiet weeks show $0), rolls weeks up by the calendar month their Monday
+falls in, and per period computes: `pnl` (Σ realized), `cash` (Σ fill cash),
+`credit` + `earned` (premium collected on shorts realized in the period and the P/L
+kept), so **unearned = credit − earned** and **earned % = earned ÷ credit**. The
+weekly view's win/loss $ sums option realizing fills (each closed/expired contract once).
+The equity curve is the running Σ of realized P/L, unchanged by the P/L-neutral opens.
 
 ### Position analysis (`src/lib/posanalysis.ts`, pure + `_selfCheck`)
 `analyzeShortOption()` scores each short leg vs spot/DTE → one action:
