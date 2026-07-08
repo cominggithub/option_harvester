@@ -78,12 +78,60 @@ export type StrategyStat = {
 
 export type AccountFlow = { type: string; count: number; amount: number };
 
+// One trading transaction (fill), bucketed by its own trade date — the ledger
+// behind the equity curve. Mirrors IB: an opening Sell/Buy carries realized
+// P/L = 0 (it only takes in/pays cash); realized P/L books on the closing fill
+// (or a synthetic Expired row when a short lapses). Account flows
+// (withdrawals/interest/tax/…) are NOT trading transactions and never appear.
+export type LedgerTxn = {
+  date: string; // trade date (bucketing key)
+  symbol: string;
+  kind: "option" | "stock";
+  strategy: Strategy | null; // options only
+  right: "C" | "P" | null; // options only
+  strike: number | null;
+  expiry: string | null; // options only
+  type: string; // IB Transaction Type: Sell / Buy / Assignment / Expired (synthetic)
+  qty: number; // signed contracts/shares (− = sold, + = bought)
+  price: number | null; // fill price (premium/share for options, share price for stock)
+  cash: number; // net cash of the fill (credit + / debit −)
+  pnl: number; // realized P/L booked to this fill (0 for opening fills)
+  credit: number; // premium basis of a SHORT, attached to its realizing fill only (else 0)
+};
+
+// Time-bucketed realized P/L. A week is Mon–Sun (ISO); weeks roll up into the
+// calendar month their Monday falls in. Built purely from trading transactions,
+// so cash withdrawals and every other account flow are excluded by construction.
+// Earned/unearned is a premium-harvesting lens over the SHORT contracts that
+// realized (closed/expired) in the period: earned = kept realized P/L,
+// credit = premium originally collected, unearned = credit − earned (given back).
+export type WeekBucket = {
+  weekStart: string; // Monday, YYYY-MM-DD
+  weekEnd: string; // Sunday, YYYY-MM-DD
+  pnl: number; // realized trading P/L booked in the week (Σ txn.pnl)
+  cash: number; // net trading cash flow in the week (Σ txn.cash)
+  credit: number; // premium collected on shorts realized this week (Σ realizing-fill credit)
+  earned: number; // realized P/L kept on those shorts (Σ realizing-fill pnl)
+  cum: number; // cumulative realized P/L through end of this week
+  txns: LedgerTxn[]; // the transactions that traded in this week
+};
+export type MonthGroup = {
+  month: string; // YYYY-MM
+  pnl: number; // Σ of the month's weeks (realized P/L)
+  cash: number; // Σ net trading cash flow
+  credit: number; // Σ premium collected on shorts realized this month
+  earned: number; // Σ realized P/L kept on those shorts
+  txnCount: number; // # transactions in the month
+  weeks: WeekBucket[]; // ascending by weekStart
+};
+
 export type PnlReport = {
   contracts: ContractPnl[];
   rolls: RollChain[];
   bySymbol: SymbolPnl[]; // realized, descending
   byStrategy: StrategyStat[];
   equity: { date: string; cum: number; pnl: number }[]; // cumulative realized over time
+  ledger: LedgerTxn[]; // every trading transaction behind the equity curve (ascending)
   accountFlows: AccountFlow[];
   summary: {
     realized: number; // total realized trading P/L (all history)
@@ -263,14 +311,62 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
     };
   });
 
-  // ── 5. Equity curve: cumulative realized over realization date ──────────────
-  const events = contracts
-    .filter((c) => c.status !== "open" && c.closeDate)
-    .map((c) => ({ date: c.closeDate!, pnl: c.proceeds }))
-    .concat([...stockBySym.values()].flat().map((l) => ({ date: l.tradeDate ?? today, pnl: l.proceeds ?? 0 })))
-    .sort((a, b) => a.date.localeCompare(b.date));
+  // ── 5. Transaction ledger + equity curve ────────────────────────────────────
+  // Every trading fill, bucketed by its own trade date. Realized P/L books on
+  // the CLOSING fill (or a synthetic Expired row); opening fills carry P/L = 0,
+  // exactly like IB. Cash is the raw fill amount (credit +/debit −). The equity
+  // curve is the running Σ of realized P/L, so it is unchanged by adding the
+  // P/L-neutral opening fills to the ledger.
+  const ledger: LedgerTxn[] = [];
+  for (const c of contracts) {
+    if (c.status === "open" || !c.closeDate) continue;
+    const isShort = c.strategy === "short_call" || c.strategy === "short_put";
+    const lastIdx = c.legDetail.length - 1;
+    c.legDetail.forEach((l, i) => {
+      const realizing = c.status === "closed" && i === lastIdx;
+      ledger.push({
+        date: l.date ?? c.closeDate!,
+        symbol: c.underlying,
+        kind: "option",
+        strategy: c.strategy,
+        right: c.right,
+        strike: c.strike,
+        expiry: c.expiry,
+        type: l.action,
+        qty: l.qty,
+        price: l.price,
+        cash: l.proceeds,
+        // A bought-back contract books its whole realized P/L on the final
+        // (closing) fill; opening fills are P/L-neutral.
+        pnl: realizing ? c.proceeds : 0,
+        // The short's premium basis rides on the same realizing fill.
+        credit: realizing && isShort ? c.credit : 0,
+      });
+    });
+    // A lapsed short has no closing fill — book the kept credit on a synthetic
+    // Expired row (zero cash) so the opening Sell doesn't look unresolved.
+    if (c.status === "expired") {
+      ledger.push({
+        date: c.closeDate!, symbol: c.underlying, kind: "option",
+        strategy: c.strategy, right: c.right, strike: c.strike, expiry: c.expiry,
+        type: "Expired", qty: 0, price: null, cash: 0, pnl: c.proceeds,
+        credit: isShort ? c.credit : 0,
+      });
+    }
+  }
+  for (const l of [...stockBySym.values()].flat()) {
+    ledger.push({
+      date: l.tradeDate ?? today, symbol: l.symbol, kind: "stock",
+      strategy: null, right: null, strike: l.strike, expiry: null,
+      type: l.txType ?? "Trade", qty: l.quantity ?? 0, price: l.price,
+      cash: l.proceeds ?? 0, pnl: l.proceeds ?? 0, credit: 0,
+    });
+  }
+  ledger.sort((a, b) => a.date.localeCompare(b.date) || a.symbol.localeCompare(b.symbol));
   let cum = 0;
-  const equity = events.map((e) => ({ date: e.date, pnl: e.pnl, cum: (cum += e.pnl) }));
+  const equity = ledger
+    .filter((t) => t.pnl !== 0)
+    .map((t) => ({ date: t.date, pnl: t.pnl, cum: (cum += t.pnl) }));
 
   // ── 6. Summary ───────────────────────────────────────────────────────────────
   const bySymbol = [...symMap.values()].sort((a, b) => b.realized - a.realized);
@@ -287,6 +383,7 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
     bySymbol,
     byStrategy,
     equity,
+    ledger,
     accountFlows: [...flowByType.values()].sort((a, b) => a.amount - b.amount),
     summary: {
       realized,
@@ -462,6 +559,68 @@ export function earnDriver(s: SymbolPnl): "directional" | "premium" | "frequency
   return "premium";
 }
 
+// ── Time analysis: week-by-week P/L, grouped by month ────────────────────────
+// Pure. Input is the equity event stream ({date, pnl}) — which already excludes
+// account flows (withdrawals/interest/tax/…), so this is pure trading P/L. Weeks
+// are Mon–Sun (ISO); each week is filed under the calendar month its Monday
+// falls in, and the running cumulative is carried across weeks. Newest month
+// first; weeks within a month ascending.
+const isoMonday = (iso: string): string => {
+  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  const t = Date.UTC(y, m - 1, d);
+  const dow = new Date(t).getUTCDay(); // 0=Sun … 6=Sat
+  const monday = t - (((dow + 6) % 7) * DAY);
+  return new Date(monday).toISOString().slice(0, 10);
+};
+const addDays = (iso: string, n: number): string =>
+  new Date(Date.parse(iso) + n * DAY).toISOString().slice(0, 10);
+
+export function weeklyByMonth(ledger: LedgerTxn[]): MonthGroup[] {
+  // 1. bucket transactions into ISO weeks (by their own trade date)
+  const weekMap = new Map<string, WeekBucket>();
+  for (const t of ledger) {
+    const start = isoMonday(t.date);
+    const b = weekMap.get(start) ?? { weekStart: start, weekEnd: addDays(start, 6), pnl: 0, cash: 0, credit: 0, earned: 0, cum: 0, txns: [] };
+    b.pnl += t.pnl;
+    b.cash += t.cash;
+    b.credit += t.credit;
+    if (t.credit) b.earned += t.pnl; // short realizing fills carry both credit + realized P/L
+    b.txns.push(t);
+    weekMap.set(start, b);
+  }
+  if (weekMap.size === 0) return [];
+  // 2. fill the gaps: emit every Mon–Sun week from the first to the last active
+  //    week (quiet weeks get pnl/cash 0) so the timeline is continuous and
+  //    "weeks tracked" is honest rather than only weeks that happened to trade.
+  const active = [...weekMap.keys()].sort();
+  const firstMon = active[0];
+  const lastMon = active[active.length - 1];
+  const weeks: WeekBucket[] = [];
+  for (let mon = firstMon; mon <= lastMon; mon = addDays(mon, 7)) {
+    weeks.push(weekMap.get(mon) ?? { weekStart: mon, weekEnd: addDays(mon, 6), pnl: 0, cash: 0, credit: 0, earned: 0, cum: 0, txns: [] });
+  }
+  // 3. running cumulative realized P/L across weeks (chronological)
+  let cum = 0;
+  for (const w of weeks) {
+    w.txns.sort((a, b) => a.date.localeCompare(b.date) || a.symbol.localeCompare(b.symbol));
+    w.cum = cum += w.pnl;
+  }
+  // 4. group weeks by the month of their Monday
+  const monthMap = new Map<string, MonthGroup>();
+  for (const w of weeks) {
+    const month = w.weekStart.slice(0, 7);
+    const g = monthMap.get(month) ?? { month, pnl: 0, cash: 0, credit: 0, earned: 0, txnCount: 0, weeks: [] };
+    g.pnl += w.pnl;
+    g.cash += w.cash;
+    g.credit += w.credit;
+    g.earned += w.earned;
+    g.txnCount += w.txns.length;
+    g.weeks.push(w);
+    monthMap.set(month, g);
+  }
+  return [...monthMap.values()].sort((a, b) => b.month.localeCompare(a.month));
+}
+
 // ponytail: minimal round-trip check. Run: npx tsx scripts/pnl-check.ts
 export function _selfCheck(): void {
   const mk = (o: Partial<TransactionRow>): TransactionRow => ({
@@ -504,6 +663,53 @@ export function _selfCheck(): void {
   enrichMoneyness(r.contracts, () => 90);
   const aaa = r.contracts.find((c) => c.underlying === "AAA")!;
   assert(Math.abs((aaa.moneyness ?? 0) - 0.1111) < 0.01, "moneyness calc wrong");
+
+  // weekly→monthly transaction ledger, bucketed by TRADE date. Fills:
+  //   AAA Sell 05-01 (pnl 0) / Buy 06-01 (pnl +200)
+  //   BBB Sell 05-01 (pnl 0) / Expired 06-20 (pnl +150)
+  //   DDD Sell 05-01 (pnl 0) / Buy 05-20 (pnl +150)
+  // Opening sells sit in the week of 04-27 with P/L 0 (visible, like IB). The
+  // −5000 withdrawal is an account flow → must NOT appear.
+  assert(r.ledger.length === 6, `ledger should be 6 txns, got ${r.ledger.length}`);
+  assert(r.ledger.every((t) => t.symbol !== "-"), "ledger must exclude the withdrawal");
+  assert(r.ledger.filter((t) => t.pnl === 0).length === 3, "the 3 opening fills must carry P/L 0");
+  const wm = weeklyByMonth(r.ledger);
+  assert(wm.length === 3, `weeklyByMonth month count wrong: ${wm.length}`);
+  assert(wm[0].month === "2026-06" && wm[0].pnl === 350 && wm[0].weeks.length === 3, "June group wrong");
+  assert(wm[1].month === "2026-05" && wm[1].pnl === 150 && wm[1].weeks.length === 4, "May group wrong");
+  assert(wm[2].month === "2026-04" && wm[2].pnl === 0, "April (opening sells) group wrong");
+  const totalWk = wm.reduce((s, g) => s + g.pnl, 0);
+  assert(totalWk === r.summary.realized, `weekly total ${totalWk} must equal realized ${r.summary.realized} (withdrawal excluded)`);
+  // every week reconciles: Σ txn.pnl === week.pnl, Σ txn.cash === week.cash
+  const allWeeks = wm.flatMap((g) => g.weeks);
+  for (const w of allWeeks) {
+    assert(Math.abs(w.txns.reduce((s, t) => s + t.pnl, 0) - w.pnl) < 1e-9, "week pnl must reconcile to its txns");
+    assert(Math.abs(w.txns.reduce((s, t) => s + t.cash, 0) - w.cash) < 1e-9, "week cash must reconcile to its txns");
+  }
+  // the opening week (04-27) shows the three Sell fills with P/L 0
+  const openWeek = allWeeks.find((w) => w.weekStart === "2026-04-27")!;
+  assert(openWeek && openWeek.txns.length === 3 && openWeek.txns.every((t) => t.type === "Sell" && t.pnl === 0), "opening Sell week wrong");
+  assert(openWeek.cash === 650, `opening week cash should be 650, got ${openWeek.cash}`);
+  // an expired short surfaces an explicit Expired fill carrying the kept credit
+  const expiredTxn = r.ledger.find((t) => t.type === "Expired")!;
+  assert(expiredTxn && expiredTxn.symbol === "BBB" && expiredTxn.pnl === 150, "expired fill wrong");
+  assert(expiredTxn.credit === 150, `expired fill credit should be 150, got ${expiredTxn.credit}`);
+  assert(wm[0].weeks[wm[0].weeks.length - 1].cum === 500, "weekly cumulative wrong");
+
+  // earned/unearned premium accounting (shorts realized in the period):
+  //   June: AAA credit 300 earned 200, BBB credit 150 earned 150 → credit 450 earned 350
+  //   May:  DDD credit 200 earned 150                             → credit 200 earned 150
+  //   April: opening sells only → no realizing fills → credit 0 earned 0
+  assert(wm[0].credit === 450 && wm[0].earned === 350, `June credit/earned wrong: ${wm[0].credit}/${wm[0].earned}`);
+  assert(wm[1].credit === 200 && wm[1].earned === 150, `May credit/earned wrong: ${wm[1].credit}/${wm[1].earned}`);
+  assert(wm[2].credit === 0 && wm[2].earned === 0, "April credit/earned should be 0");
+  const totCredit = wm.reduce((s, g) => s + g.credit, 0);
+  const totEarned = wm.reduce((s, g) => s + g.earned, 0);
+  assert(totCredit === 650, `total credit should be 650, got ${totCredit}`);
+  assert(totEarned === 500, `total earned should equal realized 500, got ${totEarned}`);
+  // unearned = credit − earned (premium given back); opening fills carry no credit
+  assert(wm[0].credit - wm[0].earned === 100, "June unearned should be 100");
+  assert(r.ledger.filter((t) => t.type === "Sell").every((t) => t.credit === 0), "opening Sell fills must carry no credit basis");
   // eslint-disable-next-line no-console
   console.log("pnl self-check OK");
 }

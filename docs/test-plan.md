@@ -32,8 +32,12 @@ What they cover:
 - **pnl-check** — realized = Σ net cash on closed/expired contracts; expired-worthless
   short keeps full credit; open contracts excluded from realized but counted as open
   premium; win rate; top-symbol rollup; account flows excluded; short_call strategy
-  stat; **roll-chain** detection (close + same-day re-open); moneyness sign; and
-  **YTD == all-time** when every realization is in-year.
+  stat; **roll-chain** detection (close + same-day re-open); moneyness sign;
+  **YTD == all-time** when every realization is in-year; the **transaction ledger**
+  (6 fills, opening fills carry P/L 0, withdrawal excluded, an **Expired** fill carries
+  the kept credit); **`weeklyByMonth`** month/week bucketing + gap-fill + reconciliation
+  (Σ txn.pnl == week.pnl, Σ txn.cash == week.cash); and **earned/unearned** per period
+  (credit/earned totals, opening Sells carry no credit basis).
 - **posanalysis-check** — OTM-with-most-premium → harvest; ITM call → defend;
   tested call → defend; far-OTM loser → watch; ITM put → roll; long/stock legs ignored.
 - **news-check** — bearish headlines flagged, positive ones not.

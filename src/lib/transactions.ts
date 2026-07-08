@@ -21,6 +21,19 @@ export type TransactionRow = {
 
 const n = (v: unknown) => (v != null ? Number(v) : null);
 
+// The transactions table mixes two sources: the IB CSV (has "Transaction Type":
+// Buy/Sell/Assignment/Withdrawal/…) and the Chrome-portal capture (has `side`:
+// B/S, no "Transaction Type"). Resolve a single transaction type so portal
+// fills aren't left blank (and so stock trades classify correctly downstream).
+const SIDE: Record<string, string> = { B: "Buy", S: "Sell", BUY: "Buy", SELL: "Sell" };
+function resolveTxType(raw: Record<string, unknown> | null): string | null {
+  const t = raw?.["Transaction Type"];
+  if (t != null && String(t).trim() !== "") return String(t);
+  const side = raw?.["side"];
+  if (side != null && String(side).trim() !== "") return SIDE[String(side).toUpperCase()] ?? String(side);
+  return null;
+}
+
 export async function getTransactions(): Promise<TransactionRow[]> {
   const rows = await prisma.transaction.findMany({ orderBy: [{ tradeDate: "desc" }, { id: "desc" }] });
   return rows.map((r) => ({
@@ -38,7 +51,7 @@ export async function getTransactions(): Promise<TransactionRow[]> {
     commission: n(r.commission),
     realizedPnl: n(r.realizedPnl),
     currency: r.currency,
-    txType: (r.raw as Record<string, unknown> | null)?.["Transaction Type"]?.toString() ?? null,
+    txType: resolveTxType(r.raw as Record<string, unknown> | null),
   }));
 }
 
