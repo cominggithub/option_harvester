@@ -325,3 +325,73 @@ model OptionGreek {
 
   @@map("option_harvest_option_greeks")
 }
+
+/// Exact per-position margin from IB, computed by the Chrome extension via the
+/// Client-Portal what-if order endpoint (POST /iserver/account/{acct}/orders/whatif
+/// on a CLOSING order for the held contract): the position's requirement =
+/// maintenance.current − maintenance.after. Keyed by conid so it survives the
+/// full-replace positions re-import; joined to held legs at read time.
+model PositionMargin {
+  conid       String   @id
+  maintMargin Decimal? @map("maint_margin") // maintenance margin the position ties up
+  initMargin  Decimal? @map("init_margin") // initial margin the position ties up
+  currency    String? // account base currency of the figures
+  at          DateTime @default(now()) // when the what-if was captured
+
+  @@map("option_harvest_position_margin")
+}
+
+/// Audit log for each IB→web sync run (Chrome extension). One row per Sync (manual
+/// or auto); the extension posts its run summary to POST /api/sync-log at the end.
+/// Powers the /sync page's run history. `raw` keeps the full summary object.
+model SyncRun {
+  id         Int      @id @default(autoincrement())
+  at         DateTime @default(now())
+  source     String   @default("manual") // "manual" | "auto"
+  acct       String? // IB account the sync ran against
+  positions  Int? // positions upserted
+  orders     Int? // working orders replaced
+  trades     Int? // executions added to transactions
+  watchlists Int? // IB lists pulled
+  greeks     Int? // contracts that returned greeks
+  margin     Int? // contracts that returned a what-if margin
+  ohPush     Int?     @map("oh_push") // OH lists pushed back to IB
+  error      String? // top-level error, if the run failed
+  raw        Json? // full summary object from the extension
+
+  @@index([at])
+  @@map("option_harvest_sync_runs")
+}
+
+/// Daily IB account-balance snapshot, pulled by the Chrome extension from the
+/// Client-Portal `/portfolio/{acct}/summary` endpoint. One row per calendar day
+/// (upserted — the last sync of the day wins), so the series accumulates a daily
+/// history of cash / NLV / margin. Stock vs option market value is computed from
+/// our synced positions (the summary doesn't split by asset class). `raw` keeps
+/// the full summary object.
+model AccountBalance {
+  date               DateTime @id @db.Date // one snapshot per day (base currency)
+  netLiquidation     Decimal? @map("net_liquidation")
+  totalCash          Decimal? @map("total_cash")
+  settledCash        Decimal? @map("settled_cash")
+  availableFunds     Decimal? @map("available_funds")
+  excessLiquidity    Decimal? @map("excess_liquidity")
+  buyingPower        Decimal? @map("buying_power")
+  grossPositionValue Decimal? @map("gross_position_value")
+  equityWithLoan     Decimal? @map("equity_with_loan")
+  regtEquity         Decimal? @map("regt_equity")
+  regtMargin         Decimal? @map("regt_margin")
+  initMargin         Decimal? @map("init_margin") // current initial margin requirement
+  maintMargin        Decimal? @map("maint_margin") // current maintenance margin requirement
+  fullInitMargin     Decimal? @map("full_init_margin")
+  fullMaintMargin    Decimal? @map("full_maint_margin")
+  cushion            Decimal? // excess liquidity / NLV, 0-1
+  stockValue         Decimal? @map("stock_value") // Σ market value of stock legs (from positions)
+  optionValue        Decimal? @map("option_value") // Σ market value of option legs (from positions)
+  currency           String? // account base currency
+  acct               String? // IB account id
+  raw                Json? // full /portfolio/{acct}/summary object
+  at                 DateTime @updatedAt // last update for the day
+
+  @@map("option_harvest_account_balances")
+}

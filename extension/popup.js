@@ -5,7 +5,7 @@ const show = (r) => {
   if (!r) return;
   $("log").textContent = r.error
     ? `✕ ${r.error}`
-    : `✓ acct ${r.acct ?? "?"} · pos ${r.positions?.count ?? "—"} · ord ${r.orders?.count ?? "—"} · trades +${r.trades?.added ?? 0} · wl ${r.watchlists?.lists ?? 0} · OH→IB ${r.ohPush?.pushed ?? 0}/${r.ohPush?.total ?? 0}${r.greeks?.updated != null ? ` · greeks ${r.greeks.updated}/${r.greeks.tried ?? "?"}` : ""}`;
+    : `✓ acct ${r.acct ?? "?"} · pos ${r.positions?.count ?? "—"} · ord ${r.orders?.count ?? "—"} · trades +${r.trades?.added ?? 0} · wl ${r.watchlists?.lists ?? 0} · OH→IB ${r.ohPush?.pushed ?? 0}/${r.ohPush?.total ?? 0}${r.greeks?.updated != null ? ` · greeks ${r.greeks.updated}/${r.greeks.tried ?? "?"}` : ""}${r.margins?.updated != null ? ` · margin ${r.margins.updated}/${r.margins.tried ?? "?"}` : ""}${r.balances?.ok ? " · bal ✓" : ""}${r.conids?.updated != null ? ` · conid ${r.conids.updated}` : ""}`;
 };
 const backend = () => ($("backend").value.trim() || DEFAULT).replace(/\/$/, "");
 
@@ -60,6 +60,16 @@ $("getgreeks").onclick = () => {
     ($("log").textContent = r?.error
       ? `✕ ${r.error}`
       : `✓ greeks updated ${r?.updated ?? 0}/${r?.tried ?? 0}${r?.errors?.length ? ` · ${r.errors.length} err` : ""}`),
+  );
+};
+
+// Fetch exact per-position maintenance margin (IB what-if) for held option contracts.
+$("getmargin").onclick = () => {
+  $("log").textContent = "Fetching margin (what-if) for held options…";
+  chrome.runtime.sendMessage({ type: "getMargins", backend: backend() }, (r) =>
+    ($("log").textContent = r?.error
+      ? `✕ ${r.error}`
+      : `✓ margin updated ${r?.updated ?? 0}/${r?.tried ?? 0}${r?.errors?.length ? ` · ${r.errors.length} err` : ""}`),
   );
 };
 

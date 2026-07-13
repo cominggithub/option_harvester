@@ -230,3 +230,67 @@ export function Scatter({
     </svg>
   );
 }
+
+// ── Multi-series balance lines (NAV / Cash / RegT / Position over time) ───────
+// One shared $ axis. Each series is a labelled colour; the last point gets a dot.
+// Server-rendered, no client JS (matches the rest of this file).
+export type BalanceSeriesSpec = { key: string; label: string; color: string; values: (number | null)[] };
+export function BalanceLines({
+  dates,
+  series,
+  w = 720,
+  h = 200,
+}: {
+  dates: string[];
+  series: BalanceSeriesSpec[];
+  w?: number;
+  h?: number;
+}) {
+  const nPts = dates.length;
+  if (nPts < 2)
+    return <div className="text-[12px] text-ink-faint">Chart builds as daily snapshots accumulate (needs ≥ 2 days).</div>;
+  const all = series.flatMap((s) => s.values).filter((v): v is number => v != null);
+  if (!all.length) return <div className="text-[12px] text-ink-faint">No balance values to chart yet.</div>;
+  let lo = Math.min(...all);
+  let hi = Math.max(...all);
+  const padV = (hi - lo || Math.abs(hi) || 1) * 0.08;
+  lo -= padV;
+  hi += padV;
+  const range = hi - lo || 1;
+  const pad = { l: 6, r: 40, t: 10, b: 18 };
+  const x = (i: number) => pad.l + (i * (w - pad.l - pad.r)) / (nPts - 1);
+  const y = (v: number) => pad.t + (h - pad.t - pad.b) * (1 - (v - lo) / range);
+  const pathOf = (vals: (number | null)[]) => {
+    let d = "";
+    let started = false;
+    vals.forEach((v, i) => {
+      if (v == null) return;
+      d += `${started ? "L" : "M"}${x(i).toFixed(1)} ${y(v).toFixed(1)} `;
+      started = true;
+    });
+    return d.trim();
+  };
+  const lastIdxOf = (vals: (number | null)[]) => {
+    for (let i = vals.length - 1; i >= 0; i--) if (vals[i] != null) return i;
+    return -1;
+  };
+  return (
+    <svg width="100%" viewBox={`0 0 ${w} ${h}`} className="block" preserveAspectRatio="none" aria-hidden>
+      <line x1={pad.l} x2={w - pad.r} y1={y(hi)} y2={y(hi)} stroke={GREY} strokeWidth={0.5} strokeDasharray="2 2" />
+      <line x1={pad.l} x2={w - pad.r} y1={y(lo)} y2={y(lo)} stroke={GREY} strokeWidth={0.5} strokeDasharray="2 2" />
+      <text x={w - pad.r + 3} y={y(hi) + 3} className="fill-ink-faint tnum" fontSize={9}>{k(hi)}</text>
+      <text x={w - pad.r + 3} y={y(lo) + 3} className="fill-ink-faint tnum" fontSize={9}>{k(lo)}</text>
+      {series.map((s) => {
+        const li = lastIdxOf(s.values);
+        return (
+          <g key={s.key}>
+            <path d={pathOf(s.values)} fill="none" stroke={s.color} strokeWidth={1.5} strokeLinejoin="round" />
+            {li >= 0 && <circle cx={x(li)} cy={y(s.values[li] as number)} r={2.4} fill={s.color} />}
+          </g>
+        );
+      })}
+      <text x={pad.l} y={h - 5} className="fill-ink-faint tnum" fontSize={9}>{dates[0]}</text>
+      <text x={w - pad.r} y={h - 5} textAnchor="end" className="fill-ink-faint tnum" fontSize={9}>{dates[nPts - 1]}</text>
+    </svg>
+  );
+}

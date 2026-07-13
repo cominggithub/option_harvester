@@ -122,7 +122,8 @@ Pages (all `force-dynamic`):
   (computed) + IB (synced) lists in the Analyzer table view. See docs/watchlists.md.
 - `src/app/ib/page.tsx` — IB-vs-Yahoo option-data comparison (`ib_*` quote columns).
 - `src/app/positions/page.tsx` — positions + action board (sticky TOC nav); holdings
-  detail shows per option leg its OTM $ (distance to strike) + OTM % (moneyness).
+  detail shows per option leg its OTM $ (distance to strike) + OTM % (moneyness) and
+  the exact IB maintenance margin the position ties up (what-if, synced by the extension).
 - `src/app/orders/page.tsx` — pending orders; each protective GTC buy-stop shows its
   target short call (strike · DTE · Δ), hedge size/coverage (a partial hedge is flagged),
   and room-to-trigger (spot → stop, $/%). Matching via `analyzeOrders` (`positions.ts`).
@@ -139,6 +140,11 @@ Pages (all `force-dynamic`):
   `CumulativePnlChart.tsx`), and an open-book win/loss matrix (inferred from unrealized
   P/L). Built by `buildOptionPnlByExpiry` in `positions.ts`.
 - `src/app/upload/page.tsx` — IB CSV upload; `src/app/wiki/page.tsx`.
+- `src/app/sync/page.tsx` — **Sync** status: latest IB account balances (cash / NLV /
+  RegT / init+maint margin / stock+option value), per-dataset synced-row counts + freshness
+  (positions/orders/transactions/watchlists/greeks/margin/IB-options) and the extension's
+  per-run history (`option_harvest_sync_runs`). Built by `getSyncSummary` (`lib/synclog.ts`)
+  + `getLatestBalance` (`lib/balances.ts`).
 
 API (`src/app/api/…`, mutations + on-demand data):
 - `marks`, `upload`, `history/[ticker]`.
@@ -146,11 +152,19 @@ API (`src/app/api/…`, mutations + on-demand data):
   `orders`, `trades` — write endpoints; `positions` POST auto-pulls newly-held
   off-index tickers.
 - `ib-capture` — receives positions/orders/trades pushed by the Chrome extension.
+- `sync-log` — POST a sync-run summary from the extension → `option_harvest_sync_runs`
+  (powers the `/sync` run history).
+- `balances` — POST the IB `/portfolio/{acct}/summary` from the extension → daily
+  snapshot in `option_harvest_account_balances` (cash / NLV / RegT / init+maint margin;
+  stock-vs-option value computed from positions). Powers the `/sync` balances panel.
 - `watchlist` — IB watchlists sync-in (full replace; `OH:*` excluded); `oh-watchlists`
   — OH lists with conid rows for the OH→IB push; `securities/conids` — conid backfill
   (GET missing / POST `/trsrv/stocks`); `options` — GET ticker→conid, POST IB option
   snapshot into `ib_*`; `greeks` — GET held option conids, POST per-contract greek
   snapshots (7308/09/10/11) into `option_harvest_option_greeks` (keyed by conid).
+  `margin` — GET held option conids + closing side/qty; POST per-contract IB
+  what-if results into `option_harvest_position_margin` (keyed by conid) — exact
+  per-position maintenance/initial margin.
   All extension-driven; see docs/watchlists.md.
 
 Components: `Dashboard.tsx` (client shell), `LeftNav.tsx`, `TopNav.tsx`,
@@ -172,7 +186,8 @@ earned/unearned by expiry — amount with cumulative lines, or % — for P&L Pre
 Libs (`src/lib`): `securities.ts` (`getDashboardData`, `getIvSeries`, screens),
 `pnl.ts` (cash-flow P/L engine + `ledger`/`weeklyByMonth` time analysis with earned/unearned), `transactions.ts` (`getPnlReport`), `posanalysis.ts`
 (action suggestions), `positions.ts` (positions/orders/trades views + `analyzeOrders`;
-`getPositionGroups` joins per-contract greeks by conid; `buildOptionPnlByExpiry` groups
+`getPositionGroups` joins per-contract greeks + exact IB margin by conid;
+`buildOptionPnlByExpiry` groups
 the option book by expiry with cumulative P/L/credit + net greeks for P&L Predict),
 `news.ts` (headlines + lexicon), `score.ts` (Signal), `ccscore.ts` (Δ0.30 Call-Edge
 `E`, read from `option_harvest_cc_scores`), `harvester.ts`, `ivstats.ts` (IV rank),
@@ -180,9 +195,11 @@ the option book by expiry with cumulative P/L/credit + net greeks for P&L Predic
 `view.ts` (sort; per-window `trendW1..trendY1` keys, `TrendWindowKey` w1/w2),
 `labels.ts` (derived stock-label catalog),
 `watchlists.ts` (OH watchlist definitions + IB reader — see docs/watchlists.md),
+`synclog.ts` (`getSyncSummary` — /sync dataset freshness + run history),
+`balances.ts` (`getLatestBalance`/`getBalanceHistory` — daily IB account balances),
 `enrich.ts` (shared ingest pipeline), `ibparse.ts`/`txparse.ts` (IB CSV +
 Client-Portal JSON parsers: `parseIbPortal{Positions,Orders,Watchlists}`,
-`parseIbStocks`, `parseIbOptionSnapshot`, `parseIbPositionGreeks`),
+`parseIbStocks`, `parseIbOptionSnapshot`, `parseIbPositionGreeks`, `parseIbPositionMargin`),
 `uploadkind.ts` (positions-vs-transactions CSV detection), `format.ts`, `sectors.ts`,
 `db.ts`.
 
@@ -198,15 +215,24 @@ Scripts (`scripts/`):
   see test plan.
 
 Chrome extension (`extension/`): runs in the logged-in IB portal tab. **Sync now**
-pulls positions/orders/trades/watchlists → the write APIs (IB→web, full replace),
-then fetches per-position greeks (Δ/Θ/Γ) for held options → `greeks`, and pushes OH
-watchlists → IB (`OH:*`); auto-sync does the light pull only (no greeks). Other
+pulls positions/orders/trades/watchlists + the daily account-balance summary
+(`/portfolio/{acct}/summary` → `balances`) → the write APIs (IB→web, full replace),
+then fetches per-position greeks (Δ/Θ/Γ) for held options → `greeks`, exact
+maintenance margin per held contract (what-if) → `margin`, **re-resolves all conids**
+(IB `/trsrv/stocks` → `securities/conids?all=1`, overwrites stale ones so renames/
+spinoffs like an old DOW/FISV listing self-correct), and pushes OH
+watchlists → IB (`OH:*`); auto-sync does the light pull only (positions/orders/trades/
+watchlists/balances, no greeks/margin/conid-refresh). Other
 popup actions: **Resolve conids** (backfill `securities.conid` via `/trsrv/stocks`),
 **Get options (IB)** (per-ticker ATM option snapshot → `ib_*`), **Get greeks (IB)**
-(per held-contract snapshot → `option_harvest_option_greeks`), **Push OH → IB**, and
-**Send page (dev)** capture → `ib-capture`. Full flows in **docs/watchlists.md**.
+(per held-contract snapshot → `option_harvest_option_greeks`), **Get margin (IB)**
+(per held-contract what-if close order → `option_harvest_position_margin`),
+**Push OH → IB**, and
+**Send page (dev)** capture → `ib-capture`. Every Sync (manual + auto) posts a daily
+account-balance snapshot to `balances` and its run summary to `sync-log` (the `/sync`
+page). Full flows in **docs/watchlists.md**.
 **Bump `manifest.json` `version` on every edit** (see
-`[[bump-extension-version]]`; currently 0.7.5).
+`[[bump-extension-version]]`; currently 0.8.5).
 
 ## Local dev gotchas (WSL on `/mnt/d`)
 

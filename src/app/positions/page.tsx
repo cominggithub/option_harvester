@@ -22,6 +22,36 @@ const mny = (n: number | null) => (n == null ? "—" : `${n >= 0 ? "+" : "−"}$
 // Signed $ distance from spot to strike (the OTM cushion / distance-to-strike).
 const otmUsd = (n: number | null) => (n == null ? "—" : `${n >= 0 ? "+" : "−"}$${Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const cap = (n: number | null) => (n == null ? "—" : `${Math.round(n * 100)}%`);
+// Per-contract greek formatting (Δ/Θ small signed decimals; Γ finer).
+const g2 = (n: number | null) => (n == null ? "—" : n.toFixed(2));
+const g3 = (n: number | null) => (n == null ? "—" : n.toFixed(3));
+// Assignment-risk tier by per-contract |Δ| — SAME rule/thresholds as the P&L
+// Predict page's deltaClass: |Δ| > 0.40 = deep ITM-risk (red), > 0.35 = warning
+// (orange), < 0.05 = all-but-dead / safe (green), else neutral.
+function deltaTier(d: number | null): "hot" | "warn" | "safe" | null {
+  if (d == null) return null;
+  const a = Math.abs(d);
+  if (a > 0.4) return "hot";
+  if (a > 0.35) return "warn";
+  if (a < 0.05) return "safe";
+  return null;
+}
+// Δ-value text colour (mirrors the predict page).
+const deltaText = (d: number | null) => {
+  const t = deltaTier(d);
+  return t === "hot" ? "font-semibold text-red-600"
+    : t === "warn" ? "font-semibold text-orange-500"
+    : t === "safe" ? "text-emerald-600"
+    : "text-ink-muted";
+};
+// Whole-row tint carrying the same delta risk tier (the requested highlight).
+const deltaRow = (d: number | null) => {
+  const t = deltaTier(d);
+  return t === "hot" ? "bg-rose-50 hover:bg-rose-100"
+    : t === "warn" ? "bg-amber-50 hover:bg-amber-100"
+    : t === "safe" ? "bg-emerald-50 hover:bg-emerald-100"
+    : "hover:bg-canvas";
+};
 function pnlClass(n: number | null): string {
   if (n == null || n === 0) return "text-ink-muted";
   return n > 0 ? "text-emerald-700" : "text-rose-700";
@@ -111,7 +141,7 @@ const ACTION_BLURB: Record<ActionKind, string> = {
   hold: "OTM and on track — nothing to do.",
 };
 
-function ActionTable({ rows }: { rows: LegSuggestion[] }) {
+function ActionTable({ rows, protByContract }: { rows: LegSuggestion[]; protByContract: Map<string, CallProtection> }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-[12px]">
@@ -125,16 +155,21 @@ function ActionTable({ rows }: { rows: LegSuggestion[] }) {
             <th className="py-1.5 pr-2 text-right font-medium">Qty</th>
             <th className="py-1.5 pr-2 text-right font-medium">Spot</th>
             <th className="py-1.5 pr-2 text-right font-medium">OTM%</th>
+            <th className="py-1.5 pr-2 text-right font-medium" title="Per-contract delta (assignment risk)">Δ</th>
+            <th className="py-1.5 pr-2 text-right font-medium" title="Per-contract theta (daily time decay)">Θ</th>
+            <th className="py-1.5 pr-2 text-right font-medium" title="Per-contract gamma">Γ</th>
             <th className="py-1.5 pr-2 text-right font-medium">Credit</th>
             <th className="py-1.5 pr-2 text-right font-medium">To close</th>
             <th className="py-1.5 pr-2 text-right font-medium">P/L</th>
             <th className="py-1.5 pr-3 text-right font-medium">Captured</th>
+            <th className="py-1.5 pr-3 text-right font-medium" title="Exact IB maintenance margin this position ties up (Client-Portal what-if).">Maint $</th>
+            <th className="py-1.5 pr-2 font-medium">Stop</th>
             <th className="py-1.5 font-medium">Why</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((s, i) => (
-            <tr key={i} className="border-b border-line/50 align-top last:border-0 hover:bg-canvas">
+            <tr key={i} className={`border-b border-line/50 align-top last:border-0 ${deltaRow(s.delta)}`}>
               <td className="py-1.5 pr-3 font-medium text-ink">
                 <span className="flex flex-wrap items-center gap-1.5">{s.symbol}<EarningsWarn s={s} /></span>
               </td>
@@ -145,10 +180,17 @@ function ActionTable({ rows }: { rows: LegSuggestion[] }) {
               <td className="tnum py-1.5 pr-2 text-right text-ink-muted">{s.qty}</td>
               <td className="tnum py-1.5 pr-2 text-right text-ink-muted">{price(s.spot)}</td>
               <td className={`tnum py-1.5 pr-2 text-right ${s.itm ? "text-rose-700" : "text-ink-muted"}`}>{mny(s.moneyness)}</td>
+              <td className={`tnum py-1.5 pr-2 text-right ${deltaText(s.delta)}`}>{g2(s.delta)}</td>
+              <td className="tnum py-1.5 pr-2 text-right text-ink-muted">{g2(s.theta)}</td>
+              <td className="tnum py-1.5 pr-2 text-right text-ink-muted">{g3(s.gamma)}</td>
               <td className="tnum py-1.5 pr-2 text-right text-emerald-700">{money(s.credit)}</td>
               <td className="tnum py-1.5 pr-2 text-right text-ink-muted">{money(s.costToClose)}</td>
               <td className={`tnum py-1.5 pr-2 text-right ${pnlClass(s.unrealizedPnl)}`}>{money(s.unrealizedPnl)}</td>
               <td className={`tnum py-1.5 pr-3 text-right ${(s.capturedPct ?? 0) >= 0 ? "text-ink" : "text-rose-700"}`}>{cap(s.capturedPct)}</td>
+              <td className="tnum py-1.5 pr-3 text-right text-ink-muted">{money(s.maintMargin)}</td>
+              <td className="py-1.5 pr-2">
+                {s.right === "C" ? <StopChip p={protByContract.get(s.contract)} /> : <span className="text-ink-faint">—</span>}
+              </td>
               <td className="py-1.5 text-[11.5px] leading-snug text-ink-muted">{s.why}</td>
             </tr>
           ))}
@@ -171,6 +213,8 @@ export default async function PositionsPage() {
   const protKey = (p: { symbol: string; contract: string; strike: number | null; expiry: string | null }) =>
     `${p.symbol}|${p.contract}|${p.strike}|${p.expiry}`;
   const protByLeg = new Map(protections.map((p) => [protKey(p), p]));
+  // Contract-keyed lookup for the action board (LegSuggestion carries `contract`).
+  const protByContract = new Map(protections.map((p) => [p.contract, p]));
   const unprotected = protections
     .filter((p) => p.status !== "covered")
     .sort((a, b) => a.status.localeCompare(b.status) || a.symbol.localeCompare(b.symbol));
@@ -199,6 +243,9 @@ export default async function PositionsPage() {
     (a, g) => ({ cost: a.cost + (g.totalCost ?? 0), value: a.value + (g.marketValue ?? 0), pnl: a.pnl + (g.unrealizedPnl ?? 0) }),
     { cost: 0, value: 0, pnl: 0 },
   );
+  // Exact IB maintenance margin (what-if), summed across legs that have it synced.
+  const hasMargin = groups.some((g) => g.maintMargin != null);
+  const totalMaint = groups.reduce((a, g) => a + (g.maintMargin ?? 0), 0);
 
   // Left-nav table of contents — only the sections actually rendered.
   const toc = [
@@ -239,11 +286,17 @@ export default async function PositionsPage() {
       ) : (
         <>
           {/* Summary band */}
-          <div id="summary" className="mt-6 scroll-mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-3 lg:grid-cols-8">
+          <div id="summary" className="mt-6 scroll-mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-3 lg:grid-cols-9">
             {[
               { label: "Total Cost", value: money(total.cost), cls: "text-ink" },
               { label: "Market Value", value: money(total.value), cls: "text-ink" },
               { label: "Unrealized P/L", value: money(total.pnl), cls: pnlClass(total.pnl) },
+              {
+                label: "Maint. margin",
+                value: hasMargin ? money(totalMaint) : "—",
+                cls: hasMargin ? "text-ink" : "text-ink-faint",
+                sub: hasMargin ? "IB what-if" : "sync margin",
+              },
               { label: "Harvestable now", value: money(harvestable), cls: "text-emerald-700", sub: `${counts.harvest + counts.let_expire} to close/expire` },
               { label: "P/L at risk", value: money(atRisk), cls: pnlClass(atRisk), sub: `${counts.defend} defend · ${counts.roll} roll` },
               {
@@ -267,11 +320,12 @@ export default async function PositionsPage() {
           {unprotected.length > 0 && (
             <div id="coverage" className="mt-5 scroll-mt-6 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3">
               <div className="flex items-center gap-2 text-[13px] font-semibold text-rose-800">
-                ✕ {unprotected.length} short call{unprotected.length === 1 ? "" : "s"} without a full protective stop
+                ✕ {unprotected.length} short call{unprotected.length === 1 ? "" : "s"} without a protective stop
               </div>
               <p className="mt-1 text-[12px] leading-snug text-rose-700">
                 Each short call should be backed by a GTC buy-stop on the underlying triggered at the call&rsquo;s
-                strike, so a breakout auto-covers it. These are missing one (or it&rsquo;s too small):
+                strike, sized to a <strong>half hedge — 50 shares per contract</strong> — so a breakout auto-buys
+                stock against the assignment. These are missing one (or it&rsquo;s too small):
               </p>
               <div className="mt-2 overflow-x-auto">
                 <table className="w-full text-[12px]">
@@ -282,18 +336,28 @@ export default async function PositionsPage() {
                       <th className="py-1 pr-2 font-medium">Expiry</th>
                       <th className="py-1 pr-2 text-right font-medium">Qty</th>
                       <th className="py-1 pr-2 text-right font-medium">Spot</th>
+                      <th className="py-1 pr-2 text-right font-medium" title="Current GTC buy-stop trigger price, if any">Stop</th>
+                      <th className="py-1 pr-2 text-right font-medium" title="Distance from spot to strike in $ — strike − spot. Positive = OTM cushion.">OTM $</th>
+                      <th className="py-1 pr-2 text-right font-medium" title="OTM $ as a % of spot">OTM %</th>
                       <th className="py-1 pr-2 text-right font-medium">Shares</th>
                       <th className="py-1 font-medium">Stop status</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {unprotected.map((p, i) => (
+                    {unprotected.map((p, i) => {
+                      // Short call → cushion = strike − spot; % of spot. Negative = ITM.
+                      const cushion = p.strike != null && p.spot != null ? p.strike - p.spot : null;
+                      const otmPct = cushion != null && p.spot ? cushion / p.spot : null;
+                      return (
                       <tr key={i} className="border-b border-rose-100 last:border-0">
                         <td className="py-1 pr-3 font-medium text-rose-900">{p.symbol}</td>
                         <td className="tnum py-1 pr-2 text-right text-rose-900">{p.strike ?? "—"}</td>
                         <td className="tnum py-1 pr-2 text-rose-700">{p.expiry ?? "—"}</td>
                         <td className="tnum py-1 pr-2 text-right text-rose-700">{p.qty}</td>
                         <td className="tnum py-1 pr-2 text-right text-rose-700">{price(p.spot)}</td>
+                        <td className={`tnum py-1 pr-2 text-right ${p.trigger == null ? "text-rose-300" : "text-rose-700"}`}>{p.trigger == null ? "—" : price(p.trigger)}</td>
+                        <td className={`tnum py-1 pr-2 text-right ${cushion != null && cushion < 0 ? "font-semibold text-rose-900" : "text-rose-700"}`}>{cushion == null ? "—" : otmUsd(cushion)}</td>
+                        <td className={`tnum py-1 pr-2 text-right ${otmPct != null && otmPct < 0 ? "font-semibold text-rose-900" : "text-rose-700"}`}>{otmPct == null ? "—" : mny(otmPct)}</td>
                         <td className="tnum py-1 pr-2 text-right text-rose-700">
                           {p.sharesCovered}/{p.sharesNeeded}
                         </td>
@@ -305,7 +369,8 @@ export default async function PositionsPage() {
                           )}
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -361,7 +426,7 @@ export default async function PositionsPage() {
                   <span className="tnum text-[12px] text-ink-faint">{counts[a]}</span>
                   <span className="text-[11.5px] text-ink-muted">{ACTION_BLURB[a]}</span>
                 </div>
-                <div className="px-4 py-3"><ActionTable rows={bucket(a)} /></div>
+                <div className="px-4 py-3"><ActionTable rows={bucket(a)} protByContract={protByContract} /></div>
               </section>
             ))}
           </div>
@@ -400,6 +465,7 @@ export default async function PositionsPage() {
                       <th className="px-3 py-1.5 text-right font-medium">Last</th>
                       <th className="px-3 py-1.5 text-right font-medium">Value</th>
                       <th className="px-3 py-1.5 text-right font-medium">P/L</th>
+                      <th className="px-3 py-1.5 text-right font-medium" title="Exact IB maintenance margin this position ties up — from the Client-Portal what-if order endpoint, synced by the extension.">Maint $</th>
                       <th className="px-3 py-1.5 font-medium">Stop</th>
                       <th className="px-4 py-1.5 font-medium">Suggestion</th>
                     </tr>
@@ -414,7 +480,7 @@ export default async function PositionsPage() {
                         : null;
                       const otmPct = cushion != null && g.price ? cushion / g.price : null;
                       return (
-                        <tr key={i} className="border-b border-line align-top last:border-0">
+                        <tr key={i} className={`border-b border-line align-top last:border-0 ${deltaRow(leg.delta)}`}>
                           <td className="px-4 py-2"><span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${cls}`}>{tag}</span></td>
                           <td className="tnum px-3 py-2 text-right">{leg.strike == null ? "—" : price(leg.strike)}</td>
                           <td className="tnum px-3 py-2">{leg.expiry ?? "—"}</td>
@@ -426,6 +492,7 @@ export default async function PositionsPage() {
                           <td className="tnum px-3 py-2 text-right">{price(leg.closePrice)}</td>
                           <td className="tnum px-3 py-2 text-right">{money(leg.marketValue)}</td>
                           <td className={`tnum px-3 py-2 text-right ${pnlClass(leg.unrealizedPnl)}`}>{money(leg.unrealizedPnl)}</td>
+                          <td className="tnum px-3 py-2 text-right text-ink-muted">{money(leg.maintMargin)}</td>
                           <td className="px-3 py-2">
                             <StopChip p={protByLeg.get(`${g.symbol}|${leg.contract}|${leg.strike}|${leg.expiry}`)} />
                           </td>
