@@ -28,10 +28,11 @@ async function fetchAllInPage() {
   const accts = await j(base + "/iserver/accounts");
   const acct = accts?.accounts?.[0];
   if (!acct) return { error: "not logged in (no account)" };
-  const [pos, ord, trd] = await Promise.all([
+  const [pos, ord, trd, sum] = await Promise.all([
     j(`${base}/portfolio/${acct}/positions/all`),
     j(`${base}/iserver/account/orders?force=false&accountId=${acct}`),
     j(`${base}/iserver/account/trades`),
+    j(`${base}/portfolio/${acct}/summary`),
   ]);
   // Watchlists: the index lists the user's own lists (user_lists, skip the
   // read-only system_lists); then pull each list's instruments.
@@ -53,6 +54,7 @@ async function fetchAllInPage() {
     ibPositions: pos?.positions ?? null,
     ibOrders: ord?.orders ?? null,
     ibTrades: Array.isArray(trd) ? trd : null,
+    ibSummary: sum && typeof sum === "object" ? sum : null,
     ibWatchlists,
   };
 }
@@ -76,7 +78,7 @@ async function findIbTab(preferActive) {
   return tabs[0] || null;
 }
 
-async function runSync(backend, { preferActive, withGreeks } = {}) {
+async function runSync(backend, { preferActive, withGreeks, source } = {}) {
   const tab = await findIbTab(preferActive);
   if (!tab?.id) return { error: "no IB tab open — log into the IB portal in a tab" };
   const [res] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: fetchAllInPage });
@@ -85,16 +87,28 @@ async function runSync(backend, { preferActive, withGreeks } = {}) {
 
   const out = { acct: d.acct };
   if (d.ibPositions?.length) out.positions = await post(`${backend}/api/positions`, { ibPositions: d.ibPositions, source: "ib-extension" });
+  // Daily account-balance snapshot (cash / NLV / margin). Posted after positions so
+  // the stock-vs-option value split reflects the fresh book. Light (one summary).
+  if (d.ibSummary) out.balances = await post(`${backend}/api/balances`, { summary: d.ibSummary, acct: d.acct }).catch((e) => ({ error: String(e) }));
   if (d.ibOrders != null) out.orders = await post(`${backend}/api/orders`, { ibOrders: d.ibOrders });
   if (d.ibTrades?.length) out.trades = await post(`${backend}/api/trades`, { ibTrades: d.ibTrades });
   if (d.ibWatchlists?.length) out.watchlists = await post(`${backend}/api/watchlist`, { ibWatchlists: d.ibWatchlists });
   // Greeks for held options — depends on positions just posted above. Skipped on the
   // light auto-sync (it snapshots every held contract, ~1s each); run on manual Sync.
   if (withGreeks) out.greeks = await getGreeks(backend).catch((e) => ({ error: String(e) }));
+  // Exact per-position maintenance margin via what-if — also heavy (one what-if
+  // per held contract), so manual Sync only, right after greeks.
+  if (withGreeks) out.margins = await getMargins(backend).catch((e) => ({ error: String(e) }));
+  // Re-resolve conids from IB before pushing OH lists, so corporate actions
+  // (spinoffs/renames — e.g. an old DOW/FISV listing) self-correct in one click.
+  // Full re-resolve is heavy (~600 names), so manual Sync only; overwrites stale.
+  if (withGreeks) out.conids = await resolveConids(backend, { all: true }).catch((e) => ({ error: String(e) }));
   // Push OH watchlists back to IB. Positions were just posted above, so the OH
   // lists (Cpos/Ppos/NCcan) reflect the fresh snapshot. Failure here doesn't fail
   // the pull.
   out.ohPush = await pushOhWatchlists(backend).catch((e) => ({ error: String(e) }));
+  // Record this run in the sync-log history (non-fatal).
+  await post(`${backend}/api/sync-log`, { summary: out, source: source || (withGreeks ? "manual" : "auto") }).catch(() => {});
   return out;
 }
 
@@ -105,8 +119,8 @@ async function setStatus(text) {
 // Backfill IB conids for the securities universe. Asks the backend which tickers
 // still lack a conid, resolves them in the logged-in IB page via /trsrv/stocks
 // (batched + throttled), and posts the raw response back for server-side parsing.
-async function resolveConids(backend) {
-  const info = await (await fetch(`${backend}/api/securities/conids`)).json().catch(() => null);
+async function resolveConids(backend, { all } = {}) {
+  const info = await (await fetch(`${backend}/api/securities/conids${all ? "?all=1" : ""}`)).json().catch(() => null);
   const missing = info?.tickers ?? [];
   if (!missing.length) return { updated: 0, have: info?.have, remaining: 0 };
 
@@ -118,14 +132,23 @@ async function resolveConids(backend) {
     args: [missing],
     func: async (syms) => {
       const base = location.origin + "/portal.proxy/v1/portal";
+      // IB /trsrv/stocks wants dot class-shares in space form ("BRK.B" → "BRK B").
+      // Query the space form but map the result key back to our dot ticker so the
+      // backend stores it under the symbol we actually track.
+      const q = syms.map((s) => (s.includes(".") ? s.replace(/\./g, " ") : s));
+      const back = {};
+      for (let i = 0; i < syms.length; i++) back[q[i].toUpperCase()] = syms[i];
       const out = {};
-      for (let i = 0; i < syms.length; i += 50) {
-        const batch = syms.slice(i, i + 50);
+      for (let i = 0; i < q.length; i += 50) {
+        const batch = q.slice(i, i + 50);
         try {
           const r = await fetch(`${base}/trsrv/stocks?symbols=${encodeURIComponent(batch.join(","))}`, {
             credentials: "include",
           });
-          if (r.ok) Object.assign(out, await r.json());
+          if (r.ok) {
+            const j = await r.json();
+            for (const [k, v] of Object.entries(j)) out[back[k.toUpperCase()] ?? k] = v;
+          }
         } catch {}
         await new Promise((s) => setTimeout(s, 300)); // throttle IB
       }
@@ -280,6 +303,72 @@ async function getGreeks(backend) {
   return { ...out, tried: targets.length };
 }
 
+// Runs IN the IB page: what-if a CLOSING order for one held contract to read the
+// margin the position ties up. The Client-Portal what-if returns maintenance/initial
+// sections { current, change, after } — the backend derives current − after.
+async function fetchMarginInPage(acct, conid, side, quantity) {
+  const base = location.origin + "/portal.proxy/v1/portal";
+  try {
+    const body = {
+      orders: [{ acctId: acct, conid: Number(conid), orderType: "MKT", side, quantity: Number(quantity), tif: "DAY" }],
+    };
+    const r = await fetch(`${base}/iserver/account/${acct}/orders/whatif`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => null);
+    const whatif = Array.isArray(j) ? j[0] : j;
+    if (!r.ok) return { conid: String(conid), error: (whatif && whatif.error) || `HTTP ${r.status}` };
+    if (whatif && whatif.error && whatif.maintenance == null && whatif.maintMarginChange == null)
+      return { conid: String(conid), error: String(whatif.error) };
+    return { conid: String(conid), whatif };
+  } catch (e) {
+    return { conid: String(conid), error: String(e) };
+  }
+}
+
+// Fetch exact per-position margin: ask the backend which held option conids exist
+// (with the closing side/qty), what-if each in the logged-in IB page, then post to
+// /api/margin.
+async function getMargins(backend) {
+  const targets = await (await fetch(`${backend}/api/margin`)).json().catch(() => null);
+  if (!Array.isArray(targets) || !targets.length) return { error: "no held option positions (sync positions first?)" };
+
+  const tab = await findIbTab(false);
+  if (!tab?.id) return { error: "no IB tab open — log into the IB portal" };
+
+  // Resolve the account once, in-page.
+  const [acctRes] = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: async () => {
+      try {
+        const base = location.origin + "/portal.proxy/v1/portal";
+        const a = await (await fetch(base + "/iserver/accounts", { credentials: "include" })).json();
+        return a?.accounts?.[0] ?? null;
+      } catch {
+        return null;
+      }
+    },
+  });
+  const acct = acctRes?.result;
+  if (!acct) return { error: "not logged in (no account)" };
+
+  const fetched = [];
+  for (const t of targets) {
+    const [res] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      args: [acct, Number(t.conid), t.side, t.quantity],
+      func: fetchMarginInPage,
+    });
+    if (res?.result) fetched.push(res.result);
+    await new Promise((s) => setTimeout(s, 250));
+  }
+  const out = await post(`${backend}/api/margin`, { fetched });
+  return { ...out, tried: targets.length };
+}
+
 // Push Option Harvester's OH watchlists to IB: create/overwrite "OH:*" lists in
 // the logged-in IB account. IB has no in-place edit, so each list is delete +
 // recreate. Only touches "OH:"-prefixed lists — never the user's own lists.
@@ -296,36 +385,49 @@ async function pushOhWatchlists(backend) {
     args: [lists],
     func: async (lists) => {
       const base = location.origin + "/portal.proxy/v1/portal";
+      const sleep = (ms) => new Promise((s) => setTimeout(s, ms));
       const del = async (id) => {
         try {
           await fetch(`${base}/iserver/watchlist?id=${encodeURIComponent(id)}`, { method: "DELETE", credentials: "include" });
         } catch {}
       };
-      // Existing user lists — used to delete any stale "OH:*" by name.
       let existing = [];
       try {
         const w = await (await fetch(`${base}/iserver/watchlists?SC=USER_WATCHLIST`, { credentials: "include" })).json();
         existing = w?.data?.user_lists || [];
       } catch {}
+      const isOh = (nm) => String(nm || "").startsWith("OH:");
+      // SAFETY: only ever delete our OWN "OH:*" lists — never one of the user's.
+      // (IB assigns user-list ids in the same numeric range as our fixed OH ids, so
+      // deleting/creating by a bare id can clobber a user list — do NOT do that.)
+      for (const e of existing) {
+        if (e && isOh(e.name)) {
+          await del(e.id);
+          await sleep(200);
+        }
+      }
+      // Ids used by the user's own (non-OH) lists — never reuse/overwrite them.
+      const taken = new Set(existing.filter((e) => e && !isOh(e.name)).map((e) => String(e.id)));
 
       const results = [];
       for (const l of lists) {
-        await del(l.id); // stale copy at our fixed id
-        for (const e of existing) if (e && e.name === l.name && String(e.id) !== String(l.id)) await del(e.id);
-        await new Promise((s) => setTimeout(s, 350));
+        // Pick a create id that can't collide with a user list's id.
+        let id = String(l.id);
+        while (taken.has(id)) id = String(Number(id) + 10000);
+        taken.add(id);
         try {
           const r = await fetch(`${base}/iserver/watchlist`, {
             method: "POST",
             credentials: "include",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: l.id, name: l.name, rows: l.rows }),
+            body: JSON.stringify({ id, name: l.name, rows: l.rows }),
           });
           const j = await r.json().catch(() => null);
           results.push({ name: l.name, ok: r.ok && !!j && !j.error, rows: l.rows.length, error: j?.error || (r.ok ? null : `HTTP ${r.status}`) });
         } catch (e) {
           results.push({ name: l.name, ok: false, rows: l.rows.length, error: String(e) });
         }
-        await new Promise((s) => setTimeout(s, 450));
+        await sleep(450);
       }
       return results;
     },
@@ -341,7 +443,7 @@ chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name !== ALARM) return;
   const { backend, autoOn } = await chrome.storage.local.get(["backend", "autoOn"]);
   if (!autoOn) return;
-  const r = await runSync(backend || DEFAULT_BACKEND, { preferActive: false }).catch((e) => ({ error: String(e) }));
+  const r = await runSync(backend || DEFAULT_BACKEND, { preferActive: false, source: "auto" }).catch((e) => ({ error: String(e) }));
   await setStatus(r.error ? `auto: ${r.error}` : `auto ✓ ${summary(r)}`);
 });
 
@@ -352,7 +454,10 @@ function summary(r) {
   const w = r.watchlists?.lists != null ? `${r.watchlists.lists}` : "—";
   const oh = r.ohPush?.pushed != null ? `${r.ohPush.pushed}/${r.ohPush.total}` : "—";
   const g = r.greeks?.updated != null ? ` · greeks ${r.greeks.updated}/${r.greeks.tried ?? "?"}` : "";
-  return `pos ${p} · ord ${o} · trd ${t} · wl ${w} · OH→IB ${oh}${g}`;
+  const mg = r.margins?.updated != null ? ` · margin ${r.margins.updated}/${r.margins.tried ?? "?"}` : "";
+  const bal = r.balances?.ok ? " · bal ✓" : "";
+  const cd = r.conids?.updated != null ? ` · conid ${r.conids.updated}` : "";
+  return `pos ${p} · ord ${o} · trd ${t} · wl ${w} · OH→IB ${oh}${g}${mg}${bal}${cd}`;
 }
 
 function scheduleAuto(minutes) {
@@ -395,7 +500,7 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
     return true;
   }
   if (msg.type === "sync") {
-    runSync(msg.backend, { preferActive: true, withGreeks: true })
+    runSync(msg.backend, { preferActive: true, withGreeks: true, source: "manual" })
       .then((r) => {
         setStatus(r.error ? `manual: ${r.error}` : `manual ✓ ${summary(r)}`);
         reply(r);
@@ -417,6 +522,12 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
   }
   if (msg.type === "getGreeks") {
     getGreeks(msg.backend)
+      .then(reply)
+      .catch((e) => reply({ error: String(e) }));
+    return true;
+  }
+  if (msg.type === "getMargins") {
+    getMargins(msg.backend)
       .then(reply)
       .catch((e) => reply({ error: String(e) }));
     return true;

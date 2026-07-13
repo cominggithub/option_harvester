@@ -76,15 +76,29 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
 - **Positions** (`/positions`) — holdings grouped by instrument **plus a
   suggested-action board**: every short option leg gets one action — close/harvest,
   let-expire, roll, buy-spot-to-defend, watch, hold. Summary band shows
-  harvestable-$ / at-risk-$. The holdings detail lists per option leg its **OTM $**
-  (distance to strike — call: strike−spot, put: spot−strike; + = OTM cushion, − = ITM,
-  red) and **OTM %** (that as a share of spot = moneyness), plus a protective-stop chip.
+  harvestable-$ / at-risk-$, calls-with-stop, and **maintenance margin** (exact IB
+  what-if total). The action board and holdings tables show per leg its **Δ/Θ/Γ**, a
+  **Stop** chip, and **Maint $** (per-position IB margin), and each row is tinted by
+  its **delta-risk tier** (same |Δ| thresholds as P&L Predict). The holdings detail lists
+  per option leg its **OTM $** (distance to strike — call: strike−spot, put: spot−strike;
+  + = OTM cushion, − = ITM, red) and **OTM %** (that as a share of spot = moneyness).
+  A **protective-stop** alert lists short calls not backed by a GTC buy-stop; the strategy
+  rule is a **half hedge — 50 shares per short contract** (see `HEDGE_SHARES_PER_CALL`),
+  and the alert shows each call's stop price, OTM $, OTM %, and shares covered/needed.
+- **Sync** (`/sync`, `getSyncSummary`/`getBalanceSeries`) — IB sync status hub:
+  (1) **Account balances** — latest daily snapshot tiles (NLV, cash, RegT equity/margin,
+  init/maint margin, gross/stock/option value, cushion) with day-over-day + **MTD** NAV
+  change; (2) **Balance history** — a multi-line chart (NAV/Cash/RegT/Position) and a
+  day-by-day table, **forward-filled** so days you forget to sync carry the last snapshot
+  (marked "carried"); (3) **Synced data** — per-dataset row counts + freshness
+  (positions/orders/transactions/watchlists/greeks/margin/IB-options); (4) **Recent syncs**
+  — the extension's per-run history (`option_harvest_sync_runs`).
 - **Orders** (`/orders`) — live IB working orders. Each protective **buy-stop** is
   matched to the short call it covers (same underlying, trigger = strike) and shows the
   **target call** (strike · DTE · Δ, delta colour-coded by assignment risk), the **hedge
-  size** (shares the stop buys vs the 100×contracts needed — a partial hedge like 50/100
-  is flagged), and the **room to trigger** (spot → stop, in $ and %). Orphan stops (no
-  matching call) are flagged for cancelling. Built by `analyzeOrders` (`positions.ts`).
+  size** (shares the stop buys vs the **50×contracts half-hedge target** — a short hedge
+  like 25/50 is flagged), and the **room to trigger** (spot → stop, in $ and %). Orphan
+  stops (no matching call) are flagged for cancelling. Built by `analyzeOrders` (`positions.ts`).
 - **P&L Predict** (`/pnl-predict`) — the open option book grouped by **expiry
   (nearest first)** with each date's unrealized P/L + premium, a running **cumulative**,
   **Earned %** (unrealized P/L ÷ credit) + **Unearned $/%** (credit − unrealized P/L =
@@ -175,6 +189,11 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   (fields 7308/7309/7310/7311/7283) and joined to held positions by conid at read time.
   Separate table so greeks survive the full-replace positions re-import; the POST only
   writes fields IB actually returns (won't null out a prior good value). Feeds P&L Predict.
+- **position_margin** — exact per-position margin keyed by **conid** (PK): maint_margin,
+  init_margin, currency, at. Computed by the extension via the Client-Portal what-if
+  order endpoint (`POST /iserver/account/{acct}/orders/whatif` on a *closing* order):
+  the position's requirement = `maintenance.current − maintenance.after`. Joined to held
+  legs by conid; feeds the Positions maint-margin column/tile.
 - **transactions** — parsed trade rows. **Two sources merged into one table:** the IB
   **Transaction History** export (`txparse.ts`; carries a `"Transaction Type"` field —
   Buy/Sell/Assignment/Withdrawal/…), replaced wholesale on CSV upload; and the **Chrome-
@@ -190,6 +209,16 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   list+instrument); replaced wholesale each sync, `OH:*` lists excluded. Read via
   `getIbWatchlists()`; OH lists are computed, not stored. See **docs/watchlists.md**.
 - **ingest_runs** — audit log of each run.
+- **account_balances** — daily IB account-balance snapshot, PK `date` (one row/day,
+  upserted): net_liquidation, total_cash, settled_cash, available_funds,
+  excess_liquidity, buying_power, gross_position_value, equity_with_loan, regt_equity,
+  regt_margin, init_margin, maint_margin, full_init/maint_margin, cushion, stock_value,
+  option_value, currency, acct, raw. Pulled from `/portfolio/{acct}/summary` by the
+  extension on every sync; stock-vs-option value computed from positions. Feeds the
+  `/sync` balances panel + history chart (`lib/balances.ts`).
+- **sync_runs** — audit log of each IB→web sync (Chrome extension): at, source
+  (manual/auto), acct, per-dataset counts (positions/orders/trades/watchlists/greeks/
+  margin/oh_push), error, raw. Powers the `/sync` run history (`lib/synclog.ts`).
 
 ### IB parsers
 - **ibparse.ts** (positions): IB Activity Statements are multi-section CSVs;

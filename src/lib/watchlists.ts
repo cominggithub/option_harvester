@@ -26,6 +26,9 @@ export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
   const nccan = nc.filter((s) => !s.held);
   const cpos = securities.filter((s) => s.position && s.position.call !== 0);
   const ppos = securities.filter((s) => s.position && s.position.put !== 0);
+  // RED — held names whose biggest option leg has |Δ| > 0.30 (call OR put): the
+  // high assignment-risk book. Needs synced greeks; names without a delta are excluded.
+  const red = securities.filter((s) => s.position && (s.position.maxOptAbsDelta ?? 0) > 0.3);
 
   return [
     {
@@ -51,6 +54,12 @@ export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
       name: "Ppos",
       desc: "Underlyings you currently hold a put option on.",
       members: ppos.map(toMember).sort(byTicker),
+    },
+    {
+      key: "red",
+      name: "RED",
+      desc: "High assignment risk — held names whose largest option leg has |Δ| > 0.30 (call or put). Needs synced greeks.",
+      members: red.map(toMember).sort(byTicker),
     },
   ];
 }

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getOrders, getPositionGroups, analyzeOrders, type OrderView } from "@/lib/positions";
+import { getOrders, getPositionGroups, analyzeOrders, HEDGE_SHARES_PER_CALL, type OrderView } from "@/lib/positions";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Orders — Option Harvester" };
@@ -24,8 +24,8 @@ function ProtectsCell({ v }: { v: OrderView }) {
         ⚠ no matching call
       </span>
     );
-  // Coverage: shares the stop buys vs shares the short call(s) need (100 × |qty|).
-  const neededShares = v.protects.reduce((s, c) => s + Math.abs(c.qty) * 100, 0);
+  // Coverage: shares the stop buys vs the half-hedge target (50 × |qty|).
+  const neededShares = v.protects.reduce((s, c) => s + Math.abs(c.qty) * HEDGE_SHARES_PER_CALL, 0);
   const stopShares = v.order.quantity ?? 0;
   const coverPct = neededShares ? stopShares / neededShares : null;
   const under = coverPct != null && coverPct < 0.999;
@@ -85,8 +85,8 @@ export default async function OrdersPage() {
       <p className="mt-2 max-w-3xl text-[13.5px] leading-relaxed text-ink-muted">
         Live working orders synced from IB. Each protective buy-stop is matched to the short call it covers (same
         underlying, trigger = strike) and shows the <strong className="text-ink">target call</strong> (strike · DTE · Δ),
-        the <strong className="text-ink">hedge size</strong> (shares bought vs the 100×contracts needed — a partial
-        hedge like 50/100 is flagged), and the <strong className="text-ink">room to trigger</strong> (spot → stop, in $ and %).
+        the <strong className="text-ink">hedge size</strong> (shares bought vs the 50×contracts half-hedge target — a
+        short hedge like 25/50 is flagged), and the <strong className="text-ink">room to trigger</strong> (spot → stop, in $ and %).
         See <Link href="/positions" className="text-accent hover:underline">Positions</Link> for the inverse — calls still missing a stop.
       </p>
 

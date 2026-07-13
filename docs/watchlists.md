@@ -23,6 +23,7 @@ OH→IB push so membership has one source of truth.
 | `nccan`| NCcan   | `s.nc && !s.held` — short-call candidates: in NC but no position held yet. |
 | `cpos` | Cpos    | `s.position.call !== 0` — underlyings you hold a **call** option on. |
 | `ppos` | Ppos    | `s.position.put !== 0` — underlyings you hold a **put** option on. |
+| `red`  | RED     | `s.position && maxOptAbsDelta > 0.30` — high assignment risk: held names whose largest option leg (call or put) has \|Δ\| > 0.30. Needs synced greeks. |
 
 (NC = the doctrine's naked-call screen; see docs/spec.md §3 and docs/strategy.md.)
 
@@ -67,7 +68,8 @@ IB keys everything by **conid** (contract id), not ticker. `securities.conid`
 - Extension resolves them in the logged-in IB page via `/trsrv/stocks?symbols=…`
   (batched 50, picks the US listing's conid), then `POST /api/securities/conids`
   (`{ ibStocks }` raw, or `{ conids }`).
-- Coverage: 600/602 (the 2 dot class-shares BRK.B / BF.B need IB's space form).
+- Coverage: dot class-shares (BRK.B / BF.B) are queried in IB's space form
+  (`BRK B` / `BF B`) and mapped back to the dot ticker, so they resolve too.
 
 Popup action: **Resolve conids (backfill)**. One-time; conids rarely change.
 
@@ -90,16 +92,20 @@ to auto-sync too; **greeks do NOT** run on auto-sync (heavy: one snapshot per he
 contract) — only on manual **Sync now** (or the standalone **Get greeks (IB)** button).
 
 ### 4b. web → IB  (popup: **Push OH → IB watchlists**, and part of Sync now)
-Publishes the OH lists to IB as **`OH:NC`, `OH:NCcan`, `OH:Cpos`, `OH:Ppos`**.
+Publishes the OH lists to IB as **`OH:NC`, `OH:NCcan`, `OH:Cpos`, `OH:Ppos`, `OH:RED`**.
 
-- `GET /api/oh-watchlists` → each list with a fixed id (990001–990004), `OH:`-prefixed
+- `GET /api/oh-watchlists` → each list with a suggested id (990001–990005), `OH:`-prefixed
   name, and IB-ready `rows:[{C: conid}]` (conids from `securities.conid`; names
   without one are reported in `missing` and skipped).
-- IB has **no in-place edit**, so push = **delete + recreate**: `DELETE
-  /iserver/watchlist?id=` (the fixed id + any name-match), then `POST
-  /iserver/watchlist { id, name, rows }`.
-- The `OH:` prefix + reserved ids mean the push **only ever touches its own lists**
-  — never the user's. Re-pushing refreshes them to the current screen/positions.
+- IB has **no in-place edit**, so push = **delete + recreate**, but deletion is
+  **by name only**: the extension deletes just the lists whose name starts with
+  `OH:`, then `POST /iserver/watchlist { id, name, rows }`. The create id is bumped
+  off any **user** list's id so a create can't overwrite one.
+- **Safety invariant: the push only ever deletes `OH:*`-named lists — never a
+  user's.** (IB assigns user-list ids in the same numeric range as our suggested OH
+  ids, so deleting/creating by a bare id could clobber a user list — fixed in v0.8.5
+  after an OH id collided with a user list `W` at id 990005.) Re-pushing refreshes
+  them to the current screen/positions.
 
 ### 4c. Removal
 No dedicated delete flow is needed: deleting a list in IB and running **Sync now**
@@ -135,13 +141,25 @@ Backend (`src/app/api`):
   `/iserver/marketdata/snapshot?fields=…,7308,7309,7310,7311` until delta appears
   (greeks compute server-side after subscribe; best coverage during US market hours).
   Drives the P&L Predict Δ/Θ/Γ columns.
+- `margin` — `GET` → held option conids with the closing order params
+  `[{conid,ticker,desc,side,quantity}]`; `POST { fetched }` → per-contract margin into
+  `option_harvest_position_margin` (upsert by conid, non-null only). In-page: for each
+  held conid the extension what-ifs a **closing** MKT order via
+  `POST /iserver/account/{acct}/orders/whatif`; the position's requirement =
+  `maintenance.current − maintenance.after`. Drives the Positions maintenance-margin
+  column/tile.
+- `balances` — `POST { summary, acct }` (the IB `/portfolio/{acct}/summary`) → daily
+  snapshot in `option_harvest_account_balances` (cash / NLV / RegT / init+maint margin;
+  stock-vs-option value computed from positions). Pulled on every sync (manual + auto).
+  Drives the `/sync` balances panel.
 
 IB Client Portal API (called in-page by the extension):
 `/iserver/watchlists`, `/iserver/watchlist` (GET/POST/DELETE), `/trsrv/stocks`,
-`/iserver/secdef/search|strikes|info`, `/iserver/marketdata/snapshot`.
+`/iserver/secdef/search|strikes|info`, `/iserver/marketdata/snapshot`,
+`/iserver/account/{acct}/orders/whatif`, `/portfolio/{acct}/summary`.
 
 Libs: `src/lib/watchlists.ts` (OH definitions + IB reader), `src/lib/ibparse.ts`
-(`parseIbPortalWatchlists`, `parseIbStocks`, `parseIbOptionSnapshot`, `parseIbPositionGreeks`).
+(`parseIbPortalWatchlists`, `parseIbStocks`, `parseIbOptionSnapshot`, `parseIbPositionGreeks`, `parseIbPositionMargin`).
 
 ---
 

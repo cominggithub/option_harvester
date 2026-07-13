@@ -54,30 +54,36 @@ export type PositionSummary = {
   put: number; // net put contracts
   value: number | null; // summed market value
   net: number; // headline for sorting: option net if any options, else shares
+  maxOptAbsDelta: number | null; // max |per-contract delta| across held option legs (from greeks, by conid)
   legs: PositionLeg[];
 };
 
 const KIND_ORDER: Record<PositionKind, number> = { spot: 0, call: 1, put: 2, opt: 3 };
 
 export async function getPositionSummaries(): Promise<Map<string, PositionSummary>> {
-  const rows = await prisma.position.findMany({
-    select: {
-      symbol: true,
-      secType: true,
-      description: true,
-      right: true,
-      strike: true,
-      expiry: true,
-      quantity: true,
-      avgCost: true,
-      marketValue: true,
-    },
-  });
+  const [rows, greekRows] = await Promise.all([
+    prisma.position.findMany({
+      select: {
+        symbol: true,
+        secType: true,
+        description: true,
+        right: true,
+        strike: true,
+        expiry: true,
+        quantity: true,
+        avgCost: true,
+        marketValue: true,
+        raw: true, // carries conid → join per-contract greeks
+      },
+    }),
+    prisma.optionGreek.findMany({ select: { conid: true, delta: true } }).catch(() => []),
+  ]);
+  const deltaByConid = new Map(greekRows.map((g) => [g.conid, g.delta != null ? Number(g.delta) : null]));
 
   const m = new Map<string, PositionSummary>();
   for (const r of rows) {
     const key = r.symbol.toUpperCase();
-    const s = m.get(key) ?? { count: 0, spot: 0, call: 0, put: 0, value: 0, net: 0, legs: [] };
+    const s = m.get(key) ?? { count: 0, spot: 0, call: 0, put: 0, value: 0, net: 0, maxOptAbsDelta: null, legs: [] };
     const qty = r.quantity != null ? Number(r.quantity) : 0;
     const isOpt = r.right != null || /option/i.test(r.secType ?? "");
     const kind: PositionKind =
@@ -86,6 +92,13 @@ export async function getPositionSummaries(): Promise<Map<string, PositionSummar
     if (kind === "spot") s.spot += qty;
     else if (kind === "call") s.call += qty;
     else if (kind === "put") s.put += qty;
+
+    // Track the biggest |delta| among held option legs (assignment risk) — the RED list.
+    if (kind === "call" || kind === "put") {
+      const conid = (r.raw as { conid?: unknown } | null)?.conid;
+      const d = conid != null && conid !== "" ? deltaByConid.get(String(conid)) : null;
+      if (d != null) s.maxOptAbsDelta = Math.max(s.maxOptAbsDelta ?? 0, Math.abs(d));
+    }
 
     s.count += 1;
     s.value = (s.value ?? 0) + (r.marketValue != null ? Number(r.marketValue) : 0);
@@ -130,6 +143,8 @@ export type PositionGroupLeg = {
   delta: number | null; // per-contract greeks (from option_harvest_option_greeks, by conid)
   gamma: number | null;
   theta: number | null;
+  maintMargin: number | null; // exact IB maintenance margin this position ties up (what-if, by conid)
+  initMargin: number | null;
 };
 
 export type PositionGroup = {
@@ -142,6 +157,7 @@ export type PositionGroup = {
   totalCost: number | null;
   marketValue: number | null;
   unrealizedPnl: number | null;
+  maintMargin: number | null; // Σ exact IB maintenance margin across the group's legs
 };
 
 const rawNum = (raw: unknown, key: string): number | null => {
@@ -166,7 +182,9 @@ export async function getPositionGroups(): Promise<PositionGroup[]> {
     prisma.quote.findMany({ select: { ticker: true, ivPct: true, price: true, nextEarnings: true } }),
     prisma.optionGreek.findMany(),
   ]);
+  const marginRows = await prisma.positionMargin.findMany().catch(() => []); // table may be unprovisioned
   const greeks = new Map(greekRows.map((g) => [g.conid, g]));
+  const margins = new Map(marginRows.map((m) => [m.conid, m]));
   const iv = new Map(quotes.map((q) => [q.ticker.toUpperCase(), q.ivPct != null ? Number(q.ivPct) : null]));
   const px = new Map(quotes.map((q) => [q.ticker.toUpperCase(), q.price != null ? Number(q.price) : null]));
   const earn = new Map(
@@ -178,7 +196,7 @@ export async function getPositionGroups(): Promise<PositionGroup[]> {
     const key = r.symbol.toUpperCase();
     const g =
       m.get(key) ??
-      { symbol: key, currency: r.currency, ivPct: iv.get(key) ?? null, price: px.get(key) ?? null, nextEarnings: earn.get(key) ?? null, legs: [], totalCost: 0, marketValue: 0, unrealizedPnl: 0 };
+      { symbol: key, currency: r.currency, ivPct: iv.get(key) ?? null, price: px.get(key) ?? null, nextEarnings: earn.get(key) ?? null, legs: [], totalCost: 0, marketValue: 0, unrealizedPnl: 0, maintMargin: null };
 
     const isOpt = r.right != null || /option/i.test(r.secType ?? "");
     const kind: PositionKind = r.right === "C" ? "call" : r.right === "P" ? "put" : isOpt ? "opt" : "spot";
@@ -193,6 +211,8 @@ export async function getPositionGroups(): Promise<PositionGroup[]> {
     const conidRaw = (r.raw as { conid?: unknown } | null)?.conid;
     const conid = conidRaw != null && conidRaw !== "" ? String(conidRaw) : null;
     const gk = conid ? greeks.get(conid) : null;
+    const mg = conid ? margins.get(conid) : null;
+    const maintMargin = mg?.maintMargin != null ? Number(mg.maintMargin) : null;
 
     g.legs.push({
       kind,
@@ -210,10 +230,13 @@ export async function getPositionGroups(): Promise<PositionGroup[]> {
       delta: gk?.delta != null ? Number(gk.delta) : null,
       gamma: gk?.gamma != null ? Number(gk.gamma) : null,
       theta: gk?.theta != null ? Number(gk.theta) : null,
+      maintMargin,
+      initMargin: mg?.initMargin != null ? Number(mg.initMargin) : null,
     });
     g.totalCost = (g.totalCost ?? 0) + (totalCost ?? 0);
     g.marketValue = (g.marketValue ?? 0) + (mv ?? 0);
     g.unrealizedPnl = (g.unrealizedPnl ?? 0) + (pnl ?? 0);
+    if (maintMargin != null) g.maintMargin = (g.maintMargin ?? 0) + maintMargin;
     m.set(key, g);
   }
 
@@ -357,8 +380,11 @@ export function buildOptionPnlByExpiry(groups: PositionGroup[], asOf: Date = new
 
 // ── Protective-stop coverage ─────────────────────────────────────────────────
 // Strategy rule: every short call must be backed by a GTC BUY-STOP on the
-// underlying triggered at the call's strike, so an ITM breakout auto-buys the
-// shares (turning the naked call into a covered one) instead of running open.
+// underlying triggered at the call's strike, so an ITM breakout auto-buys stock
+// to hedge the assignment. We run a HALF hedge — 50 shares per short contract
+// (not the full 100) — so "covered" means the stop buys ≥ 50 × |qty| shares.
+export const HEDGE_SHARES_PER_CALL = 50;
+
 export type OrderRow = {
   symbol: string;
   action: string | null;
@@ -399,15 +425,15 @@ export type CallProtection = {
   status: "covered" | "partial" | "unprotected";
   trigger: number | null; // matched stop's trigger price
   tif: string | null;
-  sharesNeeded: number; // 100 × |qty|
+  sharesNeeded: number; // HEDGE_SHARES_PER_CALL × |qty| (half hedge = 50 × |qty|)
   sharesCovered: number; // shares the matched stop(s) would buy
 };
 
 const STRIKE_EPS = 0.005;
 
 // Match each short call to a GTC BUY-STOP on the same underlying triggered at the
-// call's strike. covered = stop exists AND buys enough shares; partial = stop at
-// strike but too few shares; unprotected = no stop at that strike.
+// call's strike. covered = stop exists AND buys enough shares (≥ the half-hedge
+// target); partial = stop at strike but too few shares; unprotected = no stop.
 export function analyzeCallProtection(groups: PositionGroup[], orders: OrderRow[]): CallProtection[] {
   const stops = orders.filter(
     (o) => /buy/i.test(o.action ?? "") && /stop|stp/i.test(o.orderType ?? "") && o.auxPrice != null,
@@ -421,7 +447,7 @@ export function analyzeCallProtection(groups: PositionGroup[], orders: OrderRow[
           ? []
           : stops.filter((o) => o.symbol === g.symbol && Math.abs((o.auxPrice as number) - leg.strike!) < STRIKE_EPS);
       const sharesCovered = matches.reduce((a, o) => a + (o.quantity ?? 0), 0);
-      const sharesNeeded = 100 * Math.abs(leg.quantity ?? 0);
+      const sharesNeeded = HEDGE_SHARES_PER_CALL * Math.abs(leg.quantity ?? 0);
       const status: CallProtection["status"] =
         matches.length === 0 ? "unprotected" : sharesCovered >= sharesNeeded ? "covered" : "partial";
       out.push({

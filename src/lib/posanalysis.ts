@@ -28,6 +28,7 @@ export const ACTION_META: Record<ActionKind, { label: string; cls: string; rank:
 
 export type LegSuggestion = {
   symbol: string;
+  contract: string; // full IB contract string (for stop lookup / keying)
   right: "C" | "P";
   strike: number | null;
   expiry: string | null;
@@ -40,6 +41,10 @@ export type LegSuggestion = {
   costToClose: number | null; // current cost to buy it back
   unrealizedPnl: number | null;
   capturedPct: number | null; // unrealizedPnl / credit (1.0 = full premium kept)
+  delta: number | null; // per-contract greeks (from IB, by conid)
+  gamma: number | null;
+  theta: number | null;
+  maintMargin: number | null; // exact IB maintenance margin this position ties up (what-if)
   action: ActionKind;
   why: string;
   urgency: number; // 3 = act now … 0 = nothing to do
@@ -131,8 +136,9 @@ export function analyzeShortOption(
     urgency = 0;
   }
 
-  return { symbol: leg.contract.split(" ")[0], right, strike: leg.strike, expiry: leg.expiry, qty,
-    spot, dte, moneyness, itm, credit, costToClose, unrealizedPnl: upnl, capturedPct: captured, action, why, urgency,
+  return { symbol: leg.contract.split(" ")[0], contract: leg.contract, right, strike: leg.strike, expiry: leg.expiry, qty,
+    spot, dte, moneyness, itm, credit, costToClose, unrealizedPnl: upnl, capturedPct: captured,
+    delta: leg.delta, gamma: leg.gamma, theta: leg.theta, maintMargin: leg.maintMargin, action, why, urgency,
     earningsDate, earningsRisk };
 }
 
@@ -142,7 +148,7 @@ export function _selfCheck(): void {
   const mk = (o: Partial<PositionGroupLeg>): PositionGroupLeg => ({
     kind: "call", right: "C", contract: "X 18JUL26 100 C", quantity: -1, strike: 100, expiry: "2026-08-21",
     unitCost: 2, totalCost: -200, closePrice: null, marketValue: -50, unrealizedPnl: 150,
-    conid: null, delta: null, gamma: null, theta: null, ...o,
+    conid: null, delta: null, gamma: null, theta: null, maintMargin: null, initMargin: null, ...o,
   });
   const assert = (c: boolean, m: string) => { if (!c) throw new Error("posanalysis self-check: " + m); };
 

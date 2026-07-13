@@ -510,3 +510,122 @@ export function parseIbPositionGreeks(f: IbGreekFetch): MappedGreek | null {
     iv: pnumIb(o["7283"]),
   };
 }
+
+// ── Per-position margin mapper (Client Portal what-if order, from the extension) ─
+// The extension runs a what-if on a CLOSING order for each held contract; the
+// response carries `maintenance`/`initial` sections { current, change, after }.
+// The margin the position ties up = current − after (== |change| for a full close).
+// Older API shapes expose flat maintMarginBefore/After/Change keys — fall back to
+// those. Values arrive as localized strings ("1,234 USD"); pnumIb strips to number.
+export type IbMarginFetch = {
+  conid?: unknown;
+  whatif?: Record<string, unknown> | null; // the /orders/whatif response object
+};
+
+export type MappedMargin = {
+  conid: string;
+  maintMargin: number | null;
+  initMargin: number | null;
+  currency: string | null;
+};
+
+// Pull a margin figure from a nested {current,change,after} section, or flat keys.
+function whatifMargin(
+  w: Record<string, unknown>,
+  nested: string,
+  flatCurrent: string,
+  flatAfter: string,
+  flatChange: string,
+): number | null {
+  const sec = w[nested] as Record<string, unknown> | undefined;
+  const cur = pnumIb(sec?.["current"] ?? w[flatCurrent]);
+  const aft = pnumIb(sec?.["after"] ?? w[flatAfter]);
+  const chg = pnumIb(sec?.["change"] ?? w[flatChange]);
+  if (cur != null && aft != null) return Math.abs(cur - aft);
+  if (chg != null) return Math.abs(chg);
+  return null;
+}
+
+export function parseIbPositionMargin(f: IbMarginFetch): MappedMargin | null {
+  const conid = f?.conid != null && f.conid !== "" ? String(f.conid) : null;
+  if (!conid) return null;
+  const w = (f.whatif ?? {}) as Record<string, unknown>;
+  const currencyRaw =
+    (w["currency"] as string | undefined) ??
+    ((w["amount"] as Record<string, unknown> | undefined)?.["currency"] as string | undefined) ??
+    null;
+  return {
+    conid,
+    maintMargin: whatifMargin(w, "maintenance", "maintMarginBefore", "maintMarginAfter", "maintMarginChange"),
+    initMargin: whatifMargin(w, "initial", "initMarginBefore", "initMarginAfter", "initMarginChange"),
+    currency: currencyRaw && currencyRaw !== "" ? String(currencyRaw) : null,
+  };
+}
+
+// ── Account-balance mapper (Client Portal /portfolio/{acct}/summary) ──────────
+// The summary keys are lowercased tag names, each an object
+// { amount, currency, isNull, timestamp, value, severity }. Values come in three
+// flavours: base (whole account), `-s` (securities segment), `-c` (commodities).
+// We read the base tag, falling back to `-s` for securities-only accounts.
+export type MappedBalance = {
+  netLiquidation: number | null;
+  totalCash: number | null;
+  settledCash: number | null;
+  availableFunds: number | null;
+  excessLiquidity: number | null;
+  buyingPower: number | null;
+  grossPositionValue: number | null;
+  equityWithLoan: number | null;
+  regtEquity: number | null;
+  regtMargin: number | null;
+  initMargin: number | null;
+  maintMargin: number | null;
+  fullInitMargin: number | null;
+  fullMaintMargin: number | null;
+  cushion: number | null;
+  currency: string | null;
+};
+
+// Read a summary tag's numeric `amount`, trying the base key then the `-s`
+// (securities) segment. Tags flagged isNull are treated as absent.
+function sumAmt(summary: Record<string, unknown>, key: string): number | null {
+  for (const k of [key, `${key}-s`]) {
+    const cell = summary[k] as Record<string, unknown> | undefined;
+    if (!cell || cell.isNull === true) continue;
+    const a = cell.amount ?? cell.value;
+    const n = typeof a === "number" ? a : pnumIb(a);
+    if (n != null) return n;
+  }
+  return null;
+}
+function sumCurrency(summary: Record<string, unknown>, ...keys: string[]): string | null {
+  for (const key of keys)
+    for (const k of [key, `${key}-s`]) {
+      const c = (summary[k] as Record<string, unknown> | undefined)?.currency;
+      if (typeof c === "string" && c !== "") return c;
+    }
+  return null;
+}
+
+export function parseIbAccountSummary(summary: unknown): MappedBalance | null {
+  if (!summary || typeof summary !== "object") return null;
+  const s = summary as Record<string, unknown>;
+  return {
+    netLiquidation: sumAmt(s, "netliquidation"),
+    totalCash: sumAmt(s, "totalcashvalue"),
+    settledCash: sumAmt(s, "settledcash"),
+    availableFunds: sumAmt(s, "availablefunds"),
+    excessLiquidity: sumAmt(s, "excessliquidity"),
+    buyingPower: sumAmt(s, "buyingpower"),
+    grossPositionValue: sumAmt(s, "grosspositionvalue"),
+    equityWithLoan: sumAmt(s, "equitywithloanvalue"),
+    regtEquity: sumAmt(s, "regtequity"),
+    regtMargin: sumAmt(s, "regtmargin"),
+    initMargin: sumAmt(s, "initmarginreq"),
+    maintMargin: sumAmt(s, "maintmarginreq"),
+    fullInitMargin: sumAmt(s, "fullinitmarginreq"),
+    fullMaintMargin: sumAmt(s, "fullmaintmarginreq"),
+    cushion: sumAmt(s, "cushion"),
+    currency: sumCurrency(s, "netliquidation", "totalcashvalue"),
+  };
+}
