@@ -5,7 +5,7 @@ const show = (r) => {
   if (!r) return;
   $("log").textContent = r.error
     ? `✕ ${r.error}`
-    : `✓ acct ${r.acct ?? "?"} · pos ${r.positions?.count ?? "—"} · ord ${r.orders?.count ?? "—"} · trades +${r.trades?.added ?? 0} · wl ${r.watchlists?.lists ?? 0} · OH→IB ${r.ohPush?.pushed ?? 0}/${r.ohPush?.total ?? 0}${r.greeks?.updated != null ? ` · greeks ${r.greeks.updated}/${r.greeks.tried ?? "?"}` : ""}${r.margins?.updated != null ? ` · margin ${r.margins.updated}/${r.margins.tried ?? "?"}` : ""}${r.balances?.ok ? " · bal ✓" : ""}${r.conids?.updated != null ? ` · conid ${r.conids.updated}` : ""}`;
+    : `✓ acct ${r.acct ?? "?"} · pos ${r.positions?.count ?? "—"} · ord ${r.orders?.count ?? "—"} · trades +${r.trades?.added ?? 0} · wl ${r.watchlists?.lists ?? 0} · OH→IB ${r.ohPush?.pushed ?? 0}/${r.ohPush?.total ?? 0}${r.ohVerify ? (r.ohVerify.error ? " · verify ✕" : r.ohVerify.ok ? " · verify ✓" : ` · verify ⚠${r.ohVerify.mismatched ?? "?"}`) : ""}${r.greeks?.updated != null ? ` · greeks ${r.greeks.updated}/${r.greeks.tried ?? "?"}` : ""}${r.margins?.updated != null ? ` · margin ${r.margins.updated}/${r.margins.tried ?? "?"}` : ""}${r.balances?.ok ? " · bal ✓" : ""}${r.conids?.updated != null ? ` · conid ${r.conids.updated}` : ""}${r.underlyings?.pinned != null ? ` · und ${r.underlyings.pinned}/${r.underlyings.tried ?? "?"}` : ""}`;
 };
 const backend = () => ($("backend").value.trim() || DEFAULT).replace(/\/$/, "");
 
@@ -80,6 +80,31 @@ $("pushoh").onclick = () => {
     ($("log").textContent = r?.error
       ? `✕ ${r.error}`
       : `✓ pushed ${r?.pushed ?? 0}/${r?.total ?? 0} OH lists → IB${(r?.results || []).some((x) => !x.ok) ? " (some failed)" : ""}`),
+  );
+};
+
+// Read back the pushed OH:* lists from IB and verify their conids against the
+// intended payload (result also shows on /sync). Catches a wrong/stale conid
+// (e.g. a "wrong FXI") without eyeballing the IB app.
+$("verifyoh").onclick = () => {
+  $("log").textContent = "Verifying OH lists (reading back from IB)…";
+  chrome.runtime.sendMessage({ type: "verifyOhWatchlists", backend: backend() }, (r) =>
+    ($("log").textContent = r?.error
+      ? `✕ ${r.error}`
+      : r?.ok
+        ? `✓ verified ${r?.lists ?? 0} OH lists · ${r?.matched ?? 0} conids match`
+        : `⚠ ${r?.mismatched ?? "?"} mismatch across ${r?.lists ?? 0} lists — see /sync`),
+  );
+};
+
+// Resolve the true underlying conid for held option-only names from IB and pin it
+// (fixes a wrong /trsrv pick, e.g. B/COIN/GDX). Also runs as part of manual Sync.
+$("fixconids").onclick = () => {
+  $("log").textContent = "Resolving underlying conids from held options…";
+  chrome.runtime.sendMessage({ type: "resolveUnderlyings", backend: backend() }, (r) =>
+    ($("log").textContent = r?.error
+      ? `✕ ${r.error}`
+      : `✓ pinned ${r?.pinned ?? 0}/${r?.tried ?? 0} underlying conids${r?.resolved != null ? ` (resolved ${r.resolved})` : ""}`),
   );
 };
 

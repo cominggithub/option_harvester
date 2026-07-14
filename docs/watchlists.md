@@ -66,12 +66,34 @@ IB keys everything by **conid** (contract id), not ticker. `securities.conid`
 
 - `GET /api/securities/conids` → tickers still missing a conid.
 - Extension resolves them in the logged-in IB page via `/trsrv/stocks?symbols=…`
-  (batched 50, picks the US listing's conid), then `POST /api/securities/conids`
-  (`{ ibStocks }` raw, or `{ conids }`).
+  (batched 50). A symbol isn't unique in IB, so `parseIbStocks` disambiguates in two
+  steps: pick the **company** entry whose IB name best matches our (Yahoo) name — not
+  just the first US one, which fixes symbol reuse / stale rename listings — then pick
+  its **US** exchange contract, falling back to the first listing for non-US-only names.
+  Then `POST /api/securities/conids` (`{ ibStocks }` raw, or `{ conids }`).
 - Coverage: dot class-shares (BRK.B / BF.B) are queried in IB's space form
   (`BRK B` / `BF B`) and mapped back to the dot ticker, so they resolve too.
 
 Popup action: **Resolve conids (backfill)**. One-time; conids rarely change.
+
+### Correct-conid pins (when /trsrv picks the wrong listing)
+
+`/trsrv/stocks` resolves a *symbol* to a conid, and for ambiguous symbols it can pick
+the wrong listing (e.g. `SMCI`, `DOW`, an old renamed listing). Last session's fix —
+prefer the **held position's** conid — only helps names where the underlying stock is
+held; a **naked** book holds options, not the stock, so it can't. Two corrections:
+
+- **`option_harvest_security_conids`** (the pin registry) holds known-correct conids.
+  A pin **beats** the `/trsrv` value, is **mirrored into `Security.conid`** (so every
+  consumer uses it), and **survives the periodic full re-resolve** (which now *skips*
+  pinned tickers). Two sources:
+  - **`manual`** — user-pinned via `POST /api/security-conids { overrides:{TICKER:conid} }`
+    (e.g. `SMCI=731466419`). Never auto-overwritten.
+  - **`ib-option`** — derived from a **held option leg's underlying** (`undConid`, which
+    IB reports authoritatively): the popup **Fix conids from held options** action (and
+    manual Sync) asks IB for each held-option ticker's underlying and pins it. This is
+    the naked-strategy analogue of the held-stock-conid fix (fixes B/COIN/GDX/…).
+- `buildOhPushLists` conid priority is therefore: **pin → held-stock position → /trsrv**.
 
 ---
 
@@ -107,6 +129,24 @@ Publishes the OH lists to IB as **`OH:NC`, `OH:NCcan`, `OH:Cpos`, `OH:Ppos`, `OH
   after an OH id collided with a user list `W` at id 990005.) Re-pushing refreshes
   them to the current screen/positions.
 
+### 4f. Read-back verification  (part of Sync now; popup: **Verify OH lists**)
+Closes the loop on the push (4b): after publishing the `OH:*` lists, the extension
+**re-fetches** them from IB (`GET /iserver/watchlist?id=<ohid>` per `OH:*` list) and
+POSTs the conids it got back to **`POST /api/oh-verify`**. The endpoint rebuilds the
+*intended* payload (`buildOhPushLists` in `src/lib/ohpush.ts` — the exact same source
+`oh-watchlists` GET feeds the push) and **diffs** it against what IB stored, per list:
+
+- **missing** = a conid we intended but IB didn't store;
+- **extra** = a conid IB stored that we didn't intend (the stale "wrong FXI" case —
+  e.g. IB holding `13049078` where we pushed the held `31421120`).
+
+A list is `ok` when both are empty. The latest result (matched / mismatched counts +
+per-list diff) is stored in `option_harvest_oh_verify` and shown on **/sync** under
+"OH → IB push verification" — so a bad push surfaces automatically, without eyeballing
+the lists in the IB app. Runs whenever the push ran (manual **Sync now** and auto),
+since the `OH:*` lists are deliberately excluded from the normal pull (§4d) and this
+is the only programmatic read of what IB actually stored.
+
 ### 4c. Removal
 No dedicated delete flow is needed: deleting a list in IB and running **Sync now**
 (4a) removes it from the web (wholesale replace). Deleting an OH list in IB and
@@ -132,7 +172,14 @@ name a genuine IB list `OH:*`.
 Backend (`src/app/api`):
 - `watchlist` — `POST { ibWatchlists }` full-replace store; `DELETE` clears.
 - `oh-watchlists` — `GET` → OH lists with conid rows for the push.
-- `securities/conids` — `GET` missing tickers; `POST { ibStocks | conids }` store.
+- `oh-verify` — `POST { verified:[{name,conids}] }` → diff IB's read-back against the
+  intended payload (§4f), store in `option_harvest_oh_verify`; `GET` → latest result.
+- `securities/conids` — `GET` missing tickers; `POST { ibStocks | conids }` store
+  (skips pinned tickers so corrections aren't clobbered).
+- `security-conids` — `POST { overrides }` manual correct-conid pins (sticky, mirrored
+  into `securities.conid`); `GET` lists pins.
+- `underlying-conids` — `GET` held-option representative conids per ticker; `POST
+  { resolved:[{ticker,undConid}] }` pins the IB-derived underlying (source `ib-option`).
 - `options` — `GET?tickers=` → ticker→conid; `POST { fetched }` → IB option snapshot
   into the `ib_*` quote columns (see docs/spec.md; drives the `/ib` compare page).
 - `greeks` — `GET` → held option conids `[{conid,ticker,desc}]`; `POST { fetched }` →
@@ -158,7 +205,9 @@ IB Client Portal API (called in-page by the extension):
 `/iserver/secdef/search|strikes|info`, `/iserver/marketdata/snapshot`,
 `/iserver/account/{acct}/orders/whatif`, `/portfolio/{acct}/summary`.
 
-Libs: `src/lib/watchlists.ts` (OH definitions + IB reader), `src/lib/ibparse.ts`
+Libs: `src/lib/watchlists.ts` (OH definitions + IB reader), `src/lib/ohpush.ts`
+(`buildOhPushLists` — intended OH→IB push payload, shared by `oh-watchlists` +
+`oh-verify`), `src/lib/ibparse.ts`
 (`parseIbPortalWatchlists`, `parseIbStocks`, `parseIbOptionSnapshot`, `parseIbPositionGreeks`, `parseIbPositionMargin`).
 
 ---

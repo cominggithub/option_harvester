@@ -384,23 +384,82 @@ export function parseIbPortalWatchlists(
 
 // ── IB /trsrv/stocks symbol → conid resolver (Chrome extension) ──────────────
 // /trsrv/stocks?symbols=A,B,C returns { SYMBOL: [ { name, assetClass, contracts:
-// [{ conid, exchange, isUS }] } ] }. We pick the US stock/ETF listing's conid.
-// Preference: assetClass STK entry, then a US contract, else the first contract.
+// [{ conid, exchange, isUS }] } ] }.
+//
+// Two levels of ambiguity, because a symbol is NOT a unique key in IB's universe:
+//   • Multiple ARRAY ENTRIES = different COMPANIES sharing the symbol (symbol reuse,
+//     or a stale listing left after a rename/spinoff — e.g. old Dow Chemical vs Dow
+//     Inc). Disambiguate by matching our known company name (from Yahoo); this is
+//     what fixes wrong picks like DOW/SMCI/B/COIN/GDX.
+//   • Multiple CONTRACTS within one company = the same company on different EXCHANGES.
+//     We focus on the US listing, but some tracked names are non-US only, so prefer a
+//     US contract and fall back to the first (non-US) when there's no US listing.
 export type ParsedConid = { ticker: string; conid: string };
 
-export function parseIbStocks(stocks: Record<string, unknown>): ParsedConid[] {
+// Corporate suffixes / share-class noise stripped before comparing company names.
+const NAME_STOP = new Set([
+  "INC", "INCORPORATED", "CORP", "CORPORATION", "CO", "COMPANY", "COS", "LTD", "LIMITED",
+  "PLC", "HOLDINGS", "HOLDING", "GROUP", "THE", "CLASS", "CL", "COM", "COMMON", "STOCK",
+  "NV", "SA", "AG", "ETF", "TRUST", "FUND", "SHARES", "SHS", "ORD", "REIT", "LP", "AB", "SE",
+]);
+function normName(s: unknown): string {
+  return String(s ?? "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9 ]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t && !NAME_STOP.has(t))
+    .join(" ")
+    .trim();
+}
+// 0..1 similarity between our name and an IB entry name (1 = exact after normalizing).
+function nameScore( our: unknown, ib: unknown): number {
+  const na = normName(our);
+  const nb = normName(ib);
+  if (!na || !nb) return 0;
+  const ca = na.replace(/ /g, "");
+  const cb = nb.replace(/ /g, "");
+  if (ca === cb) return 1;
+  if (ca.includes(cb) || cb.includes(ca)) return 0.9;
+  const ta = new Set(na.split(" "));
+  const tb = nb.split(" ");
+  const inter = tb.filter((t) => ta.has(t)).length;
+  const denom = Math.max(ta.size, tb.length);
+  return denom ? (inter / denom) * 0.8 : 0;
+}
+
+// Pick the company entry: the best name match (if confident), else the old heuristic
+// (first STK entry, then first entry) so a missing/odd name never makes it worse.
+function pickEntry(entries: Record<string, unknown>[], ourName?: string): Record<string, unknown> | undefined {
+  if (ourName) {
+    let best: Record<string, unknown> | undefined;
+    let bestScore = 0;
+    for (const e of entries) {
+      const sc = nameScore(ourName, e?.name);
+      const boosted = sc + (String(e?.assetClass ?? "").toUpperCase() === "STK" ? 0.05 : 0);
+      if (sc > 0 && boosted > bestScore) {
+        bestScore = boosted;
+        best = e;
+      }
+    }
+    if (best && bestScore >= 0.5) return best; // confident company match
+  }
+  return entries.find((e) => String(e?.assetClass ?? "").toUpperCase() === "STK") ?? entries[0];
+}
+
+export function parseIbStocks(stocks: Record<string, unknown>, namesByTicker?: Map<string, string>): ParsedConid[] {
   const out: ParsedConid[] = [];
   for (const [sym, val] of Object.entries(stocks ?? {})) {
     if (!Array.isArray(val)) continue;
-    // Prefer an assetClass === "STK" entry; fall back to the first entry.
+    const ticker = sym.trim().toUpperCase();
     const entries = val as Record<string, unknown>[];
-    const entry = entries.find((e) => String(e?.assetClass ?? "").toUpperCase() === "STK") ?? entries[0];
-    const contracts = Array.isArray(entry?.contracts) ? (entry.contracts as Record<string, unknown>[]) : [];
+    const entry = pickEntry(entries, namesByTicker?.get(ticker));
+    const contracts = Array.isArray(entry?.contracts) ? (entry!.contracts as Record<string, unknown>[]) : [];
     if (!contracts.length) continue;
+    // Prefer the US listing; fall back to the first (covers non-US-only names).
     const pick = contracts.find((c) => c?.isUS === true) ?? contracts[0];
     const conid = pick?.conid;
     if (conid == null || conid === "") continue;
-    out.push({ ticker: sym.trim().toUpperCase(), conid: String(conid) });
+    out.push({ ticker, conid: String(conid) });
   }
   return out;
 }

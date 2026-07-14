@@ -28,10 +28,31 @@ export type SyncRunRow = {
   error: string | null;
 };
 
+// Read-back verification of the OH→IB push (latest run). Per-list conid diff of
+// what IB stored vs the intended payload — powers the /sync OH-verify panel.
+export type OhVerifyListDiff = {
+  key: string | null;
+  name: string;
+  intended: string[];
+  actual: string[];
+  missing: string[];
+  extra: string[];
+  ok: boolean;
+};
+export type OhVerifyResult = {
+  at: string;
+  ok: boolean;
+  lists: number | null;
+  matched: number | null;
+  mismatched: number | null;
+  error: string | null;
+  detail: OhVerifyListDiff[];
+};
+
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
 
-export async function getSyncSummary(): Promise<{ datasets: SyncDataset[]; runs: SyncRunRow[] }> {
-  const [pos, posUpload, ord, tx, wlAgg, wlLists, greeks, margin, ibOpts, runsRaw] = await Promise.all([
+export async function getSyncSummary(): Promise<{ datasets: SyncDataset[]; runs: SyncRunRow[]; ohVerify: OhVerifyResult | null }> {
+  const [pos, posUpload, ord, tx, wlAgg, wlLists, greeks, margin, ibOpts, runsRaw, ohVerifyRaw, conidPins] = await Promise.all([
     prisma.position.aggregate({ _count: { _all: true }, _max: { uploadedAt: true } }),
     prisma.positionUpload.findFirst({ orderBy: { uploadedAt: "desc" }, select: { filename: true, uploadedAt: true } }),
     prisma.order.aggregate({ _count: { _all: true }, _max: { uploadedAt: true } }),
@@ -42,6 +63,8 @@ export async function getSyncSummary(): Promise<{ datasets: SyncDataset[]; runs:
     prisma.positionMargin.aggregate({ _count: { _all: true }, _max: { at: true } }).catch(() => null),
     prisma.quote.aggregate({ where: { ibAt: { not: null } }, _count: { _all: true }, _max: { ibAt: true } }),
     prisma.syncRun.findMany({ orderBy: { at: "desc" }, take: 30 }).catch(() => []),
+    prisma.ohVerify.findFirst({ orderBy: { at: "desc" } }).catch(() => null),
+    prisma.securityConid.aggregate({ _count: { _all: true }, _max: { at: true } }).catch(() => null),
   ]);
 
   const datasets: SyncDataset[] = [
@@ -66,6 +89,7 @@ export async function getSyncSummary(): Promise<{ datasets: SyncDataset[]; runs:
     { key: "greeks", label: "Option greeks", count: greeks?._count._all ?? 0, lastAt: iso(greeks?._max.at ?? null), detail: "held contracts, by conid", source: "IB sync (Get greeks)" },
     { key: "margin", label: "Position margin", count: margin?._count._all ?? 0, lastAt: iso(margin?._max.at ?? null), detail: "held contracts, what-if", source: "IB sync (Get margin)" },
     { key: "ib-options", label: "IB option quotes", count: ibOpts._count._all, lastAt: iso(ibOpts._max.ibAt), detail: "ATM snapshot in ib_* cols", source: "IB sync (Get options)" },
+    { key: "conid-pins", label: "Conid pins", count: conidPins?._count._all ?? 0, lastAt: iso(conidPins?._max.at ?? null), detail: "manual + option-derived overrides", source: "manual / IB sync (Fix conids)" },
   ];
 
   const runs: SyncRunRow[] = runsRaw.map((r) => ({
@@ -83,5 +107,17 @@ export async function getSyncSummary(): Promise<{ datasets: SyncDataset[]; runs:
     error: r.error,
   }));
 
-  return { datasets, runs };
+  const ohVerify: OhVerifyResult | null = ohVerifyRaw
+    ? {
+        at: ohVerifyRaw.at.toISOString(),
+        ok: ohVerifyRaw.ok,
+        lists: ohVerifyRaw.lists,
+        matched: ohVerifyRaw.matched,
+        mismatched: ohVerifyRaw.mismatched,
+        error: ohVerifyRaw.error,
+        detail: Array.isArray(ohVerifyRaw.detail) ? (ohVerifyRaw.detail as unknown as OhVerifyListDiff[]) : [],
+      }
+    : null;
+
+  return { datasets, runs, ohVerify };
 }

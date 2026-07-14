@@ -32,7 +32,11 @@ export async function POST(req: Request) {
 
   let pairs: { ticker: string; conid: string }[];
   if (body.ibStocks && typeof body.ibStocks === "object") {
-    pairs = parseIbStocks(body.ibStocks as Record<string, unknown>);
+    // Give the resolver our known company names so it can disambiguate symbols that
+    // map to multiple companies (picks the name-matched entry, not just the first US one).
+    const secs = await prisma.security.findMany({ select: { ticker: true, name: true } });
+    const namesByTicker = new Map(secs.map((s) => [s.ticker.toUpperCase(), s.name]));
+    pairs = parseIbStocks(body.ibStocks as Record<string, unknown>, namesByTicker);
   } else if (body.conids && typeof body.conids === "object") {
     pairs = Object.entries(body.conids as Record<string, unknown>)
       .filter(([, v]) => v != null && v !== "")
@@ -41,9 +45,21 @@ export async function POST(req: Request) {
     return Response.json({ error: "Expected { ibStocks: {...} } or { conids: {...} }" }, { status: 400 });
   }
 
+  // Pinned tickers (SecurityConid) hold a known-correct conid — a full re-resolve
+  // must NOT overwrite them with the (possibly wrong) /trsrv pick, or corrections
+  // like SMCI/DOW would revert every sync. Skip them.
+  const pinned = new Set(
+    (await prisma.securityConid.findMany({ select: { ticker: true } }).catch(() => [])).map((p) => p.ticker.toUpperCase()),
+  );
+
   let updated = 0;
+  let skippedPinned = 0;
   const notFound: string[] = [];
   for (const { ticker, conid } of pairs) {
+    if (pinned.has(ticker.toUpperCase())) {
+      skippedPinned++;
+      continue;
+    }
     const r = await prisma.security.updateMany({ where: { ticker }, data: { conid } });
     if (r.count) updated += r.count;
     else notFound.push(ticker); // resolved a symbol we don't track
@@ -51,5 +67,5 @@ export async function POST(req: Request) {
 
   const have = await prisma.security.count({ where: { isActive: true, NOT: { conid: null } } });
   const total = await prisma.security.count({ where: { isActive: true } });
-  return Response.json({ received: pairs.length, updated, notFound, have, remaining: total - have });
+  return Response.json({ received: pairs.length, updated, skippedPinned, notFound, have, remaining: total - have });
 }

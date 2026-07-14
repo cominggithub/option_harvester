@@ -143,7 +143,8 @@ Pages (all `force-dynamic`):
 - `src/app/sync/page.tsx` — **Sync** status: latest IB account balances (cash / NLV /
   RegT / init+maint margin / stock+option value), per-dataset synced-row counts + freshness
   (positions/orders/transactions/watchlists/greeks/margin/IB-options) and the extension's
-  per-run history (`option_harvest_sync_runs`). Built by `getSyncSummary` (`lib/synclog.ts`)
+  per-run history (`option_harvest_sync_runs`), plus an **OH → IB push verification**
+  panel (`option_harvest_oh_verify`) diffing IB's read-back against the intended push. Built by `getSyncSummary` (`lib/synclog.ts`)
   + `getLatestBalance` (`lib/balances.ts`).
 
 API (`src/app/api/…`, mutations + on-demand data):
@@ -158,8 +159,14 @@ API (`src/app/api/…`, mutations + on-demand data):
   snapshot in `option_harvest_account_balances` (cash / NLV / RegT / init+maint margin;
   stock-vs-option value computed from positions). Powers the `/sync` balances panel.
 - `watchlist` — IB watchlists sync-in (full replace; `OH:*` excluded); `oh-watchlists`
-  — OH lists with conid rows for the OH→IB push; `securities/conids` — conid backfill
-  (GET missing / POST `/trsrv/stocks`); `options` — GET ticker→conid, POST IB option
+  — OH lists with conid rows for the OH→IB push; `oh-verify` — read-back check that
+  diffs the conids IB stored for the pushed `OH:*` lists against the intended payload
+  (`buildOhPushLists`) → `option_harvest_oh_verify`, shown on `/sync`; `securities/conids` — conid backfill
+  (GET missing / POST `/trsrv/stocks`, skips pinned tickers); `security-conids` —
+  manual correct-conid pins (POST `{overrides}` → sticky pin + mirror into
+  `securities.conid`; GET lists pins); `underlying-conids` — GET held-option reps per
+  ticker, POST IB-derived `undConid` → `ib-option` pin (fixes naked option-only names
+  whose `/trsrv` pick is wrong); pins live in `option_harvest_security_conids`; `options` — GET ticker→conid, POST IB option
   snapshot into `ib_*`; `greeks` — GET held option conids, POST per-contract greek
   snapshots (7308/09/10/11) into `option_harvest_option_greeks` (keyed by conid).
   `margin` — GET held option conids + closing side/qty; POST per-contract IB
@@ -195,6 +202,11 @@ the option book by expiry with cumulative P/L/credit + net greeks for P&L Predic
 `view.ts` (sort; per-window `trendW1..trendY1` keys, `TrendWindowKey` w1/w2),
 `labels.ts` (derived stock-label catalog),
 `watchlists.ts` (OH watchlist definitions + IB reader — see docs/watchlists.md),
+`ohpush.ts` (`buildOhPushLists` — intended OH→IB push payload: conid priority
+`SecurityConid` pin → held-stock position → `/trsrv`; shared by the `oh-watchlists`
+push route + the `oh-verify` read-back diff),
+`conidpins.ts` (`applyConidPin` — upsert a correct-conid pin + mirror into
+`securities.conid`; used by `security-conids` + `underlying-conids`),
 `synclog.ts` (`getSyncSummary` — /sync dataset freshness + run history),
 `balances.ts` (`getLatestBalance`/`getBalanceHistory` — daily IB account balances),
 `enrich.ts` (shared ingest pipeline), `ibparse.ts`/`txparse.ts` (IB CSV +
@@ -220,19 +232,23 @@ pulls positions/orders/trades/watchlists + the daily account-balance summary
 then fetches per-position greeks (Δ/Θ/Γ) for held options → `greeks`, exact
 maintenance margin per held contract (what-if) → `margin`, **re-resolves all conids**
 (IB `/trsrv/stocks` → `securities/conids?all=1`, overwrites stale ones so renames/
-spinoffs like an old DOW/FISV listing self-correct), and pushes OH
-watchlists → IB (`OH:*`); auto-sync does the light pull only (positions/orders/trades/
-watchlists/balances, no greeks/margin/conid-refresh). Other
+spinoffs like an old DOW/FISV listing self-correct — but skips **pinned** conids),
+**resolves the true underlying conid for held option-only names** (a naked book holds
+options not the stock, so IB's per-symbol `/trsrv` pick can be wrong — the option's
+`undConid` is authoritative; pinned as `ib-option`), and pushes OH
+watchlists → IB (`OH:*`), then **reads them back to verify** the pushed conids
+(`/api/oh-verify`, shown on `/sync`); auto-sync does the light pull only (positions/orders/trades/
+watchlists/balances, no greeks/margin/conid-refresh/underlying-resolve, but the OH push + read-back verify still run). Other
 popup actions: **Resolve conids** (backfill `securities.conid` via `/trsrv/stocks`),
 **Get options (IB)** (per-ticker ATM option snapshot → `ib_*`), **Get greeks (IB)**
 (per held-contract snapshot → `option_harvest_option_greeks`), **Get margin (IB)**
 (per held-contract what-if close order → `option_harvest_position_margin`),
-**Push OH → IB**, and
+**Push OH → IB**, **Verify OH lists (read back)**, **Fix conids from held options**, and
 **Send page (dev)** capture → `ib-capture`. Every Sync (manual + auto) posts a daily
 account-balance snapshot to `balances` and its run summary to `sync-log` (the `/sync`
 page). Full flows in **docs/watchlists.md**.
 **Bump `manifest.json` `version` on every edit** (see
-`[[bump-extension-version]]`; currently 0.8.5).
+`[[bump-extension-version]]`; currently 0.8.7).
 
 ## Local dev gotchas (WSL on `/mnt/d`)
 

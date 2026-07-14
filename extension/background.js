@@ -103,10 +103,18 @@ async function runSync(backend, { preferActive, withGreeks, source } = {}) {
   // (spinoffs/renames — e.g. an old DOW/FISV listing) self-correct in one click.
   // Full re-resolve is heavy (~600 names), so manual Sync only; overwrites stale.
   if (withGreeks) out.conids = await resolveConids(backend, { all: true }).catch((e) => ({ error: String(e) }));
+  // Resolve underlying conids for held option-only names and pin them, so the OH
+  // push below uses the authoritative underlying (not a wrong /trsrv pick). Runs
+  // after the re-resolve (which skips pinned) and before the push. Manual sync only.
+  if (withGreeks) out.underlyings = await resolveUnderlyings(backend).catch((e) => ({ error: String(e) }));
   // Push OH watchlists back to IB. Positions were just posted above, so the OH
   // lists (Cpos/Ppos/NCcan) reflect the fresh snapshot. Failure here doesn't fail
   // the pull.
   out.ohPush = await pushOhWatchlists(backend).catch((e) => ({ error: String(e) }));
+  // Read-back verification: re-fetch the OH:* lists from IB and diff their conids
+  // against the intended payload (surfaced on /sync). Only meaningful if the push
+  // ran; light (a few GETs). Non-fatal.
+  if (out.ohPush && !out.ohPush.error) out.ohVerify = await verifyOhWatchlists(backend).catch((e) => ({ error: String(e) }));
   // Record this run in the sync-log history (non-fatal).
   await post(`${backend}/api/sync-log`, { summary: out, source: source || (withGreeks ? "manual" : "auto") }).catch(() => {});
   return out;
@@ -438,6 +446,119 @@ async function pushOhWatchlists(backend) {
   return { pushed, total: lists.length, results };
 }
 
+// Runs IN the IB page: read back every "OH:*" list we pushed and collect the
+// conids IB actually stored. These lists are excluded from the normal watchlist
+// pull (§4d), so this is a dedicated read purely for verification.
+async function fetchOhListsInPage() {
+  const base = location.origin + "/portal.proxy/v1/portal";
+  const j = async (u) => {
+    try {
+      const r = await fetch(u, { credentials: "include" });
+      return r.ok ? await r.json() : null;
+    } catch {
+      return null;
+    }
+  };
+  let existing = [];
+  try {
+    const w = await j(`${base}/iserver/watchlists?SC=USER_WATCHLIST`);
+    existing = (w?.data?.user_lists || []).filter((e) => String(e?.name || "").startsWith("OH:"));
+  } catch {}
+  const out = [];
+  for (const e of existing) {
+    const d = await j(`${base}/iserver/watchlist?id=${encodeURIComponent(e.id)}`);
+    const instruments = Array.isArray(d?.instruments) ? d.instruments : [];
+    // Same conid field IB uses for watchlist instruments (see parseIbPortalWatchlists).
+    const conids = instruments.map((x) => String((x && (x.conid ?? x.C)) ?? "")).filter(Boolean);
+    out.push({ id: String(e.id), name: e.name, conids });
+    await new Promise((s) => setTimeout(s, 150));
+  }
+  return out;
+}
+
+// Verify the OH→IB push: re-fetch the OH:* lists from IB and POST their conids to
+// /api/oh-verify, which diffs them against the intended payload. Non-fatal.
+async function verifyOhWatchlists(backend) {
+  const tab = await findIbTab(false);
+  if (!tab?.id) return { error: "no IB tab open — log into the IB portal" };
+  const [res] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: fetchOhListsInPage });
+  const verified = res?.result || [];
+  if (!verified.length) return { error: "no OH:* lists found in IB (push first?)" };
+  const out = await post(`${backend}/api/oh-verify`, { verified });
+  return { ...out, lists: verified.length };
+}
+
+// Runs IN the IB page: for each held OPTION conid, ask IB what UNDERLYING it settles
+// to (undConid). A naked book holds options, not the stock, so this is how we learn
+// the authoritative underlying conid for those names (the /trsrv symbol pick can be
+// wrong). Tries /trsrv/secdef then the contract-info endpoint; scans for an
+// underlying-conid field defensively (IB field names vary by endpoint/version).
+async function fetchUnderlyingsInPage(items) {
+  const base = location.origin + "/portal.proxy/v1/portal";
+  const j = async (u) => {
+    try {
+      const r = await fetch(u, { credentials: "include" });
+      return r.ok ? await r.json() : null;
+    } catch {
+      return null;
+    }
+  };
+  // Pull an underlying conid out of an arbitrary IB object: first numeric field whose
+  // key looks like und/underlying conid and isn't the option's own conid.
+  const findUnd = (obj, optConid) => {
+    if (!obj || typeof obj !== "object") return null;
+    for (const [k, v] of Object.entries(obj)) {
+      if (/^und(erlying)?[_ ]?con[_ ]?id$/i.test(k) || /^underlyingconid$/i.test(k.replace(/[_ ]/g, ""))) {
+        const n = Number(v);
+        if (Number.isFinite(n) && n > 0 && String(n) !== String(optConid)) return String(n);
+      }
+    }
+    return null;
+  };
+  const out = [];
+  for (const it of items) {
+    const opt = it.conid;
+    let und = null;
+    let raw = null;
+    // 1) /trsrv/secdef — contract definition(s); options carry undConid here.
+    const sd = await j(`${base}/trsrv/secdef?conids=${encodeURIComponent(opt)}`);
+    const secArr = Array.isArray(sd?.secdef) ? sd.secdef : Array.isArray(sd) ? sd : sd ? [sd] : [];
+    for (const s of secArr) {
+      raw = raw || s;
+      und = findUnd(s, opt);
+      if (und) break;
+    }
+    // 2) fallback: contract info endpoint.
+    if (!und) {
+      const ci = await j(`${base}/iserver/contract/${encodeURIComponent(opt)}/info`);
+      if (ci) {
+        raw = raw || ci;
+        und = findUnd(ci, opt);
+      }
+    }
+    out.push({ ticker: it.ticker, optionConid: String(opt), undConid: und, raw });
+    await new Promise((s) => setTimeout(s, 200));
+  }
+  return out;
+}
+
+// Resolve underlying conids for held option-only names and pin them (source
+// "ib-option"): ask the backend which held-option tickers to resolve, fetch each
+// underlying in the IB page, then POST them back. Non-fatal.
+async function resolveUnderlyings(backend) {
+  const items = await (await fetch(`${backend}/api/underlying-conids`)).json().catch(() => null);
+  if (!Array.isArray(items) || !items.length) return { pinned: 0, tried: 0 };
+
+  const tab = await findIbTab(false);
+  if (!tab?.id) return { error: "no IB tab open — log into the IB portal" };
+
+  const [res] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, args: [items], func: fetchUnderlyingsInPage });
+  const fetched = (res?.result || []).filter((r) => r && r.undConid);
+  const resolved = fetched.map((r) => ({ ticker: r.ticker, undConid: r.undConid }));
+  const out = await post(`${backend}/api/underlying-conids`, { resolved });
+  return { ...out, tried: items.length, resolved: resolved.length };
+}
+
 // Timer: sync whenever the alarm fires, if auto-sync is on and an IB tab exists.
 chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name !== ALARM) return;
@@ -453,11 +574,13 @@ function summary(r) {
   const t = r.trades ? `+${r.trades.added}` : "—";
   const w = r.watchlists?.lists != null ? `${r.watchlists.lists}` : "—";
   const oh = r.ohPush?.pushed != null ? `${r.ohPush.pushed}/${r.ohPush.total}` : "—";
+  const ohv = r.ohVerify ? (r.ohVerify.error ? " · verify ✕" : r.ohVerify.ok ? " · verify ✓" : ` · verify ⚠${r.ohVerify.mismatched ?? "?"}`) : "";
   const g = r.greeks?.updated != null ? ` · greeks ${r.greeks.updated}/${r.greeks.tried ?? "?"}` : "";
   const mg = r.margins?.updated != null ? ` · margin ${r.margins.updated}/${r.margins.tried ?? "?"}` : "";
   const bal = r.balances?.ok ? " · bal ✓" : "";
   const cd = r.conids?.updated != null ? ` · conid ${r.conids.updated}` : "";
-  return `pos ${p} · ord ${o} · trd ${t} · wl ${w} · OH→IB ${oh}${g}${mg}${bal}${cd}`;
+  const un = r.underlyings?.pinned != null ? ` · und ${r.underlyings.pinned}/${r.underlyings.tried ?? "?"}` : "";
+  return `pos ${p} · ord ${o} · trd ${t} · wl ${w} · OH→IB ${oh}${ohv}${g}${mg}${bal}${cd}${un}`;
 }
 
 function scheduleAuto(minutes) {
@@ -534,6 +657,18 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
   }
   if (msg.type === "pushOhWatchlists") {
     pushOhWatchlists(msg.backend)
+      .then(reply)
+      .catch((e) => reply({ error: String(e) }));
+    return true;
+  }
+  if (msg.type === "verifyOhWatchlists") {
+    verifyOhWatchlists(msg.backend)
+      .then(reply)
+      .catch((e) => reply({ error: String(e) }));
+    return true;
+  }
+  if (msg.type === "resolveUnderlyings") {
+    resolveUnderlyings(msg.backend)
       .then(reply)
       .catch((e) => reply({ error: String(e) }));
     return true;

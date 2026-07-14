@@ -8,6 +8,27 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// Sticky correct-conid registry — overrides the /trsrv-resolved `Security.conid`
+/// when that pick is wrong (a naked book rarely holds the underlying stock, so the
+/// "prefer the held position's conid" rule can't help, and IB's /trsrv/stocks can
+/// resolve a symbol to the wrong listing — e.g. SMCI/DOW). Two sources:
+///   • "manual"    — user-pinned to a known-correct conid (never auto-overwritten).
+///   • "ib-option" — derived from a HELD option leg's underlying (undConid), which
+///                   IB reports authoritatively (the naked-strategy analogue of the
+///                   held-stock-conid fix).
+/// Writing a pin also mirrors the conid into Security.conid so every consumer uses
+/// it; the periodic full re-resolve (POST /api/securities/conids) SKIPS pinned
+/// tickers so the correction sticks. Consumed by buildOhPushLists (src/lib/ohpush.ts).
+model SecurityConid {
+  ticker String   @id
+  conid  String
+  source String   @default("manual") // "manual" | "ib-option"
+  note   String?
+  at     DateTime @updatedAt
+
+  @@map("option_harvest_security_conids")
+}
+
 /// Static metadata for each S&P 500 constituent / large ETF.
 model Security {
   ticker      String   @id
@@ -361,6 +382,29 @@ model SyncRun {
 
   @@index([at])
   @@map("option_harvest_sync_runs")
+}
+
+/// Read-back verification of the OH→IB watchlist push. After pushing the "OH:*"
+/// lists to IB, the Chrome extension re-fetches them from IB (`/iserver/watchlist`)
+/// and POSTs the returned conids to /api/oh-verify, which diffs them against the
+/// intended payload (`buildOhPushLists`, the same source `oh-watchlists` GET uses).
+/// This closes the loop that eyeballing OH:RED in the IB app used to cover — the
+/// OH:* lists are deliberately excluded from the normal watchlist sync (§4d), so
+/// this dedicated path is the only programmatic window into what IB actually stored.
+/// One row per verification run; powers the /sync page's OH-verify panel.
+model OhVerify {
+  id         Int      @id @default(autoincrement())
+  at         DateTime @default(now())
+  lists      Int? // OH lists read back from IB
+  matched    Int? // conids that matched the intended payload
+  mismatched Int? // conids missing (intended, not stored) + extra (stored, not intended)
+  ok         Boolean  @default(false) // every list matched exactly (no missing/extra)
+  detail     Json? // per-list diff: [{ key, name, intended, actual, missing, extra, ok }]
+  error      String? // top-level error, if verification failed
+  raw        Json? // the payload the extension posted (lists + conids from IB)
+
+  @@index([at])
+  @@map("option_harvest_oh_verify")
 }
 
 /// Daily IB account-balance snapshot, pulled by the Chrome extension from the

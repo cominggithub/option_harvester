@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getSyncSummary, type SyncDataset, type SyncRunRow } from "@/lib/synclog";
+import { getSyncSummary, type SyncDataset, type SyncRunRow, type OhVerifyResult } from "@/lib/synclog";
 import { getBalanceSeries, type BalancePoint } from "@/lib/balances";
 import { BalanceLines } from "@/components/charts";
 import { formatTimestamp } from "@/lib/format";
@@ -158,6 +158,73 @@ function HistoryTable({ points }: { points: BalancePoint[] }) {
   );
 }
 
+// OH→IB push read-back verification. Shows the latest diff of what IB actually
+// stored vs the intended payload — a mismatch (missing/extra conid) means the push
+// didn't land as intended (e.g. a stale "wrong FXI" conid).
+function OhVerifyPanel({ v }: { v: OhVerifyResult }) {
+  const rows = [...v.detail].sort((a, b) => a.name.localeCompare(b.name));
+  return (
+    <div className="overflow-hidden rounded-lg border border-line bg-surface px-4 py-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <div className="flex items-center gap-2">
+          {v.error ? (
+            <span className="rounded bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700">✕ verify failed</span>
+          ) : v.ok ? (
+            <span className="rounded bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">✓ all lists match</span>
+          ) : (
+            <span className="rounded bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">⚠ {v.mismatched ?? "?"} mismatch</span>
+          )}
+          <span className="tnum text-[11px] text-ink-muted">
+            {v.lists ?? 0} list{v.lists === 1 ? "" : "s"} · {v.matched ?? 0} conids matched
+          </span>
+        </div>
+        <span className="tnum text-[11px] text-ink-faint" title={formatTimestamp(new Date(v.at))}>read back {ago(v.at)}</span>
+      </div>
+      {v.error ? (
+        <p className="mt-2 text-[12px] text-rose-700">{v.error}</p>
+      ) : rows.length > 0 ? (
+        <table className="mt-2 w-full text-[12.5px]">
+          <thead className="text-left text-[9.5px] uppercase tracking-wider text-ink-faint">
+            <tr className="border-b border-line">
+              <th className="py-1.5 pr-3 font-medium">OH list</th>
+              <th className="py-1.5 pr-2 text-right font-medium">Intended</th>
+              <th className="py-1.5 pr-2 text-right font-medium">In IB</th>
+              <th className="py-1.5 pr-2 text-right font-medium">Missing</th>
+              <th className="py-1.5 pr-2 text-right font-medium">Extra</th>
+              <th className="py-1.5 font-medium">Result</th>
+            </tr>
+          </thead>
+          <tbody className="text-ink-muted">
+            {rows.map((d) => (
+              <tr key={d.name} className="border-b border-line/50 last:border-0 hover:bg-canvas">
+                <td className="py-1.5 pr-3 font-medium text-ink">{d.name}</td>
+                <td className="tnum py-1.5 pr-2 text-right">{d.intended.length}</td>
+                <td className="tnum py-1.5 pr-2 text-right">{d.actual.length}</td>
+                <td className={`tnum py-1.5 pr-2 text-right ${d.missing.length ? "text-rose-700" : ""}`} title={d.missing.join(", ")}>
+                  {d.missing.length}
+                </td>
+                <td className={`tnum py-1.5 pr-2 text-right ${d.extra.length ? "text-amber-700" : ""}`} title={d.extra.join(", ")}>
+                  {d.extra.length}
+                </td>
+                <td className="py-1.5">
+                  {d.ok ? <span className="text-emerald-700">✓ match</span> : <span className="text-amber-700">⚠ differs</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <p className="mt-2 text-[12px] text-ink-faint">No OH lists read back.</p>
+      )}
+      <p className="mt-2 text-[10.5px] text-ink-faint">
+        The extension re-fetches the pushed <strong>OH:*</strong> lists from IB and diffs their conids against the intended
+        payload. <span className="text-rose-700">Missing</span> = intended but not stored; <span className="text-amber-700">extra</span> =
+        stored but not intended (e.g. a stale conid). Held names push the position&rsquo;s own conid.
+      </p>
+    </div>
+  );
+}
+
 function RunsTable({ runs }: { runs: SyncRunRow[] }) {
   return (
     <div className="overflow-x-auto">
@@ -204,7 +271,7 @@ function RunsTable({ runs }: { runs: SyncRunRow[] }) {
 }
 
 export default async function SyncPage() {
-  const [{ datasets, runs }, series] = await Promise.all([getSyncSummary(), getBalanceSeries()]);
+  const [{ datasets, runs, ohVerify }, series] = await Promise.all([getSyncSummary(), getBalanceSeries()]);
   const balance = series.latest;
   const lastRun = runs[0] ?? null;
   const anySynced = datasets.some((d) => d.lastAt != null);
@@ -294,6 +361,14 @@ export default async function SyncPage() {
           Nothing synced yet — log into the IB portal and run <strong>Sync now</strong> from the extension, or{" "}
           <Link href="/upload" className="text-accent hover:underline">upload an IB CSV</Link>.
         </p>
+      )}
+
+      {/* OH→IB push verification (read-back) */}
+      {ohVerify && (
+        <>
+          <h2 className="mt-8 mb-3 text-[13px] font-semibold uppercase tracking-wider text-ink-faint">OH → IB push verification</h2>
+          <OhVerifyPanel v={ohVerify} />
+        </>
       )}
 
       {/* Run history */}
