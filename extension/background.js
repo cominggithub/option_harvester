@@ -388,10 +388,15 @@ async function pushOhWatchlists(backend) {
   const tab = await findIbTab(false);
   if (!tab?.id) return { error: "no IB tab open — log into the IB portal" };
 
+  // Ids of the OH lists WE created on the last push (chrome.storage). Passed in so the
+  // in-page code can delete exactly our lists and never touch one it didn't create.
+  const store = await chrome.storage.local.get("ohListIds");
+  const priorOhIds = Object.values(store.ohListIds || {}).map(String);
+
   const [res] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
-    args: [lists],
-    func: async (lists) => {
+    args: [lists, priorOhIds],
+    func: async (lists, priorOhIds) => {
       const base = location.origin + "/portal.proxy/v1/portal";
       const sleep = (ms) => new Promise((s) => setTimeout(s, ms));
       const del = async (id) => {
@@ -399,27 +404,50 @@ async function pushOhWatchlists(backend) {
           await fetch(`${base}/iserver/watchlist?id=${encodeURIComponent(id)}`, { method: "DELETE", credentials: "include" });
         } catch {}
       };
-      let existing = [];
-      try {
-        const w = await (await fetch(`${base}/iserver/watchlists?SC=USER_WATCHLIST`, { credentials: "include" })).json();
-        existing = w?.data?.user_lists || [];
-      } catch {}
+      // Enumerate ALL existing lists as completely as possible — merge the plain and
+      // the scoped endpoints by id (the two can return different subsets; using only
+      // one previously left some user lists invisible → their ids got overwritten).
+      const enumerate = async () => {
+        const out = new Map();
+        for (const q of ["/iserver/watchlists", "/iserver/watchlists?SC=USER_WATCHLIST"]) {
+          try {
+            const w = await (await fetch(base + q, { credentials: "include" })).json();
+            for (const e of w?.data?.user_lists || []) if (e && e.id != null) out.set(String(e.id), { id: String(e.id), name: e.name });
+          } catch {}
+        }
+        return [...out.values()];
+      };
       const isOh = (nm) => String(nm || "").startsWith("OH:");
-      // SAFETY: only ever delete our OWN "OH:*" lists — never one of the user's.
-      // (IB assigns user-list ids in the same numeric range as our fixed OH ids, so
-      // deleting/creating by a bare id can clobber a user list — do NOT do that.)
+      const prior = new Set((priorOhIds || []).map(String));
+
+      const existing = await enumerate();
+      // "Ours" = a list we created: either "OH:*"-named (our naming convention — a user
+      // list is never OH:*-named) OR an id we recorded creating last push. Delete only
+      // these; a list that is neither is the user's and is never touched.
+      const mine = (e) => isOh(e.name) || prior.has(String(e.id));
       for (const e of existing) {
-        if (e && isOh(e.name)) {
+        if (mine(e)) {
           await del(e.id);
           await sleep(200);
         }
       }
-      // Ids used by the user's own (non-OH) lists — never reuse/overwrite them.
-      const taken = new Set(existing.filter((e) => e && !isOh(e.name)).map((e) => String(e.id)));
+      // Also delete any tracked id enumeration didn't return (incomplete list APIs),
+      // so we never leave a stale OH list behind and then duplicate it.
+      for (const id of prior) {
+        if (!existing.some((e) => String(e.id) === id)) {
+          await del(id);
+          await sleep(150);
+        }
+      }
+      // SAFETY (creation): a create POST whose id already exists OVERWRITES that list.
+      // Forbid every surviving id that ISN'T ours (deleted above) — so a create can
+      // never land on a user list. This is the fix for the clobbered-watchlist bug:
+      // `taken` is now built from a COMPLETE enumeration, not one scoped endpoint.
+      const taken = new Set(existing.filter((e) => !mine(e)).map((e) => String(e.id)));
 
       const results = [];
+      const created = {}; // name -> IB-assigned id (persisted for next push)
       for (const l of lists) {
-        // Pick a create id that can't collide with a user list's id.
         let id = String(l.id);
         while (taken.has(id)) id = String(Number(id) + 10000);
         taken.add(id);
@@ -431,17 +459,23 @@ async function pushOhWatchlists(backend) {
             body: JSON.stringify({ id, name: l.name, rows: l.rows }),
           });
           const j = await r.json().catch(() => null);
-          results.push({ name: l.name, ok: r.ok && !!j && !j.error, rows: l.rows.length, error: j?.error || (r.ok ? null : `HTTP ${r.status}`) });
+          const ok = r.ok && !!j && !j.error;
+          const assignedId = String((j && (j.id ?? j.listId)) ?? id); // capture IB's real id
+          if (ok) created[l.name] = assignedId;
+          results.push({ name: l.name, ok, rows: l.rows.length, id: assignedId, error: j?.error || (r.ok ? null : `HTTP ${r.status}`) });
         } catch (e) {
           results.push({ name: l.name, ok: false, rows: l.rows.length, error: String(e) });
         }
         await sleep(450);
       }
-      return results;
+      return { results, created };
     },
   });
 
-  const results = res?.result || [];
+  const out = res?.result || {};
+  const results = out.results || [];
+  // Remember exactly which ids we created, so the next push deletes only these.
+  if (out.created && Object.keys(out.created).length) await chrome.storage.local.set({ ohListIds: out.created });
   const pushed = results.filter((r) => r.ok).length;
   return { pushed, total: lists.length, results };
 }

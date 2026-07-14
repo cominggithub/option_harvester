@@ -120,15 +120,22 @@ Publishes the OH lists to IB as **`OH:NC`, `OH:NCcan`, `OH:Cpos`, `OH:Ppos`, `OH
 - `GET /api/oh-watchlists` → each list with a suggested id (990001–990006), `OH:`-prefixed
   name, and IB-ready `rows:[{C: conid}]` (conids from `securities.conid`; names
   without one are reported in `missing` and skipped).
-- IB has **no in-place edit**, so push = **delete + recreate**, but deletion is
-  **by name only**: the extension deletes just the lists whose name starts with
-  `OH:`, then `POST /iserver/watchlist { id, name, rows }`. The create id is bumped
-  off any **user** list's id so a create can't overwrite one.
-- **Safety invariant: the push only ever deletes `OH:*`-named lists — never a
-  user's.** (IB assigns user-list ids in the same numeric range as our suggested OH
-  ids, so deleting/creating by a bare id could clobber a user list — fixed in v0.8.5
-  after an OH id collided with a user list `W` at id 990005.) Re-pushing refreshes
-  them to the current screen/positions.
+- IB has **no in-place edit**, so push = **delete + recreate**. The extension deletes
+  only lists that are **ours** — `OH:*`-named *or* an id it recorded creating last push
+  (tracked in `chrome.storage.local.ohListIds`) — then `POST /iserver/watchlist
+  { id, name, rows }` and records IB's assigned id for next time.
+- **Safety invariant: the push never deletes or overwrites a list it didn't create.**
+  Two guards:
+  1. **Deletion** touches only `OH:*`-named lists (a user list is never `OH:*`-named)
+     or ids we tracked creating.
+  2. **Creation** — a `POST` with an existing `id` *overwrites* that list, so the create
+     id is bumped off **every surviving list id from a COMPLETE enumeration** (both
+     `/iserver/watchlists` and `?SC=USER_WATCHLIST`, merged) — never just one scoped
+     call. This is the v0.8.8 fix: a user list `W` was clobbered because the old push
+     enumerated with only `?SC=USER_WATCHLIST`, so an unseen user-list id collided with
+     a fixed OH id (worsened when HIV added a 6th id, 990006). (Earlier v0.8.5 fix
+     stopped a blind delete-by-fixed-id.) Re-pushing refreshes lists to the current
+     screen/positions.
 
 ### 4f. Read-back verification  (part of Sync now; popup: **Verify OH lists**)
 Closes the loop on the push (4b): after publishing the `OH:*` lists, the extension
