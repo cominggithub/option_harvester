@@ -93,6 +93,12 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   (marked "carried"); (3) **Synced data** — per-dataset row counts + freshness
   (positions/orders/transactions/watchlists/greeks/margin/IB-options); (4) **Recent syncs**
   — the extension's per-run history (`option_harvest_sync_runs`).
+- **WL Log** (`/wl-log`, `getOhChangeLog`) — OH-watchlist change log. Snapshots each
+  day's screen (`option_harvest_oh_screen_snapshots`, written at the end of the daily
+  refresh) and shows, per OH list (NC/NCcan/Cpos/Ppos/RED/HIV), what was **added** /
+  **removed** between renews and **why** — the predicate input that flipped (IV crossing
+  50/40%, a trend window turning, a weekly-ladder gap, a position open/close, |Δ| past
+  0.30). Current membership counts at top; diffs are day-over-day.
 - **Orders** (`/orders`) — live IB working orders. Each protective **buy-stop** is
   matched to the short call it covers (same underlying, trigger = strike) and shows the
   **target call** (strike · DTE · Δ, delta colour-coded by assignment risk), the **hedge
@@ -219,6 +225,22 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
 - **sync_runs** — audit log of each IB→web sync (Chrome extension): at, source
   (manual/auto), acct, per-dataset counts (positions/orders/trades/watchlists/greeks/
   margin/oh_push), error, raw. Powers the `/sync` run history (`lib/synclog.ts`).
+- **oh_verify** — read-back check of the OH→IB push (Chrome extension re-fetches the
+  pushed `OH:*` lists from IB): at, ok, lists, matched, mismatched, detail (per-list
+  conid diff: intended/actual/missing/extra), error, raw. The `OH:*` lists are excluded
+  from the normal pull, so this is the only programmatic proof of what IB stored; shown
+  on `/sync` (`/api/oh-verify`, `lib/synclog.ts`).
+- **security_conids** — sticky correct-conid pin registry, PK `ticker`: conid, source
+  (`manual` user-pinned | `ib-option` derived from a held option's `undConid`), note, at.
+  Overrides the `/trsrv`-resolved `securities.conid` (mirrored into it) and **survives the
+  full re-resolve** (which skips pinned tickers) — fixes wrong symbol picks (SMCI/DOW) and
+  naked option-only names (B/COIN/GDX). `/api/security-conids` + `/api/underlying-conids`,
+  `lib/conidpins.ts`; consumed by `buildOhPushLists` (`lib/ohpush.ts`).
+- **oh_screen_snapshots** — daily OH-watchlist screen snapshot, PK `(date, ticker)`:
+  nc, held, posCall, posPut, max_opt_abs_delta + the NC criteria (volume, price,
+  weekly_buckets, iv_pct, trend_m1/m3/m6). Written by `scripts/snapshot-oh.ts` at the end
+  of the daily refresh; the **WL Log** (`/wl-log`) diffs consecutive days per OH list
+  (NC/NCcan/Cpos/Ppos/RED/HIV) and explains each add/remove (`lib/ohhistory.ts`).
 
 ### IB parsers
 - **ibparse.ts** (positions): IB Activity Statements are multi-section CSVs;

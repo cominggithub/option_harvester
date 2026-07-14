@@ -74,7 +74,8 @@ Windows reboot → "WSL Autostart" task → systemd (PID 1) → this unit runs
 
 - **Daily refresh** — `option_harvester-ingest.timer` runs `scripts/daily.sh` at
   **06:00 local** (`Persistent=true`): `npm run ingest` → `ingest:history` →
-  `predict`. Logs → `log/daily.log`.
+  `predict` → `snapshot:oh` (OH-watchlist screen snapshot for the /wl-log change log).
+  Logs → `log/daily.log`.
 - **Intraday spreads** — `option_harvester-spreads.timer` runs `scripts/spreads.sh`
   (`npm run ingest:spreads`) at **23:30 / 01:00 / 02:30 GMT+8** (US market hours, when
   Yahoo returns live bid/ask; `Persistent=false`). Logs → `log/spreads.log`.
@@ -120,6 +121,11 @@ Pages (all `force-dynamic`):
 - `src/app/stock/[ticker]/page.tsx` — per-symbol detail page (7 sections).
 - `src/app/watchlists/page.tsx` — watchlists browser (`<WatchlistBrowser>`): OH
   (computed) + IB (synced) lists in the Analyzer table view. See docs/watchlists.md.
+- `src/app/wl-log/page.tsx` — **WL Log**: OH-watchlist change log. Diffs the daily
+  `option_harvest_oh_screen_snapshots` per OH list (NC/NCcan/Cpos/Ppos/RED/HIV) and
+  explains each add/remove by the predicate input that flipped (IV crossing a
+  threshold, a trend window, a ladder gap, a position open/close, |Δ| past 0.30).
+  Built by `getOhChangeLog` (`lib/ohhistory.ts`).
 - `src/app/ib/page.tsx` — IB-vs-Yahoo option-data comparison (`ib_*` quote columns).
 - `src/app/positions/page.tsx` — positions + action board (sticky TOC nav); holdings
   detail shows per option leg its OTM $ (distance to strike) + OTM % (moneyness) and
@@ -207,6 +213,8 @@ the option book by expiry with cumulative P/L/credit + net greeks for P&L Predic
 push route + the `oh-verify` read-back diff),
 `conidpins.ts` (`applyConidPin` — upsert a correct-conid pin + mirror into
 `securities.conid`; used by `security-conids` + `underlying-conids`),
+`ohhistory.ts` (`snapshotOhScreen` — daily per-ticker screen snapshot; `getOhChangeLog`
+— per-OH-list day-over-day add/remove diff with reasons, for /wl-log),
 `synclog.ts` (`getSyncSummary` — /sync dataset freshness + run history),
 `balances.ts` (`getLatestBalance`/`getBalanceHistory` — daily IB account balances),
 `enrich.ts` (shared ingest pipeline), `ibparse.ts`/`txparse.ts` (IB CSV +
@@ -218,7 +226,8 @@ Client-Portal JSON parsers: `parseIbPortal{Positions,Orders,Watchlists}`,
 Scripts (`scripts/`):
 - Ingest: `ingest-sp500.ts` (`ingest`), `ingest-history.ts` (`ingest:history`),
   `ingest-spreads.ts` (`ingest:spreads`), `iv.ts` (`getAtmIv`), `backfill-iv-history.ts`
-  (`ingest:iv-backfill`), `backfill-earnings.ts`.
+  (`ingest:iv-backfill`), `backfill-earnings.ts`, `snapshot-oh.ts` (`snapshot:oh` —
+  daily OH-watchlist screen snapshot for the /wl-log change log; last step of daily.sh).
 - CC model (Python): `predict-cc.py` (`predict`, daily), `cc_model.py` (shared model),
   `backtest-cc.py`, `calibrate-cc.py`, `validate-cc.py`, `iv-rv-screen.py` — see
   `docs/cc-target-strategy.md`. Predictions written to `predictions/cc-*.jsonl`.
