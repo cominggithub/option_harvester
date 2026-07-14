@@ -29,6 +29,35 @@ model SecurityConid {
   @@map("option_harvest_security_conids")
 }
 
+/// Daily snapshot of the OH-watchlist screen drivers, one row per (date, ticker),
+/// written by the daily ingest (scripts/snapshot-oh.ts). It records the exact inputs
+/// each OH list's membership rule depends on, so the change log (src/lib/ohhistory.ts)
+/// can diff consecutive days per list (NC/NCcan/Cpos/Ppos/RED) AND explain *why* a
+/// name was added/removed (which predicate input flipped — e.g. IV crossed 40, a
+/// position opened, |Δ| rose past 0.30). OH lists are otherwise computed-only (never
+/// stored), so this is the sole membership history. Upserted per day (last run wins).
+model OhScreenSnapshot {
+  date           DateTime @db.Date
+  ticker         String
+  nc             Boolean  @default(false) // passes the naked-call screen (isNcTarget)
+  held           Boolean  @default(false) // user holds this underlying
+  posCall        Int      @default(0)     // net call contracts held
+  posPut         Int      @default(0)     // net put contracts held
+  maxOptAbsDelta Decimal? @map("max_opt_abs_delta") // max |Δ| across held option legs
+  volume         BigInt? // the NC-criteria inputs, kept for reason strings:
+  price          Decimal?
+  weeklyBuckets  Int?     @map("weekly_buckets")
+  ivPct          Decimal? @map("iv_pct")
+  trendM1        String?  @map("trend_m1") // up|down|sideways
+  trendM3        String?  @map("trend_m3")
+  trendM6        String?  @map("trend_m6")
+  at             DateTime @updatedAt
+
+  @@id([date, ticker])
+  @@index([date])
+  @@map("option_harvest_oh_screen_snapshots")
+}
+
 /// Static metadata for each S&P 500 constituent / large ETF.
 model Security {
   ticker      String   @id

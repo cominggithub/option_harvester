@@ -102,13 +102,13 @@ const CSP_MIN_MARKETCAP = 1_000_000_000_000; // $1T
 // "NC" auto-target — the user's naked-call screen: liquid, mid-priced, juicy IV,
 // a full weekly ladder, and NOT rising on any of 1M/3M/6M. Drives the Analyzer's
 // "Naked Call" screen (view "cc") + the "NC" auto-label chip.
-const NC_MIN_VOLUME = 3_000_000;
-const NC_PRICE_MIN = 20;
-const NC_PRICE_MAX = 180;
-const NC_IV_MIN = 40;
+export const NC_MIN_VOLUME = 3_000_000;
+export const NC_PRICE_MIN = 20;
+export const NC_PRICE_MAX = 180;
+export const NC_IV_MIN = 40;
 // ponytail: ≥5 expiries ≤42d is the 7/14/21/28/35 ladder (same threshold as
 // "bad option date"); swap to exact-DTE matching only if a phase bug ever bites.
-const NC_MIN_WEEKLY_BUCKETS = 5;
+export const NC_MIN_WEEKLY_BUCKETS = 5;
 
 function isNcTarget(s: {
   volume: number | null;

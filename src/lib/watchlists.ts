@@ -13,14 +13,19 @@ import type { SecurityRow } from "@/lib/securities";
 export type OhMember = { ticker: string; name: string; type: string };
 export type OhWatchlist = { key: string; name: string; desc: string; members: OhMember[] };
 
+// HIV list threshold — front-month ATM implied vol above this (%) = "high IV".
+export const HIV_IV_MIN = 50;
+
 const byTicker = (a: OhMember, b: OhMember) => a.ticker.localeCompare(b.ticker);
 const toMember = (s: SecurityRow): OhMember => ({ ticker: s.ticker, name: s.name, type: s.type });
 
-// The four OH watchlists:
+// The OH watchlists:
 //  nc    — the Analyzer "Naked Call" screen (isNcTarget / the B criteria).
 //  nccan — short-call candidates: in NC but no position held yet.
 //  cpos  — underlyings you hold a call option on.
 //  ppos  — underlyings you hold a put option on.
+//  red   — held names whose biggest option leg has |Δ| > 0.30 (assignment risk).
+//  hiv   — any name with front-month ATM IV above HIV_IV_MIN% (high IV).
 export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
   const nc = securities.filter((s) => s.nc);
   const nccan = nc.filter((s) => !s.held);
@@ -29,6 +34,8 @@ export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
   // RED — held names whose biggest option leg has |Δ| > 0.30 (call OR put): the
   // high assignment-risk book. Needs synced greeks; names without a delta are excluded.
   const red = securities.filter((s) => s.position && (s.position.maxOptAbsDelta ?? 0) > 0.3);
+  // HIV — any tracked name with front-month ATM IV above HIV_IV_MIN% (stocks + ETFs).
+  const hiv = securities.filter((s) => (s.ivPct ?? 0) > HIV_IV_MIN);
 
   return [
     {
@@ -60,6 +67,12 @@ export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
       name: "RED",
       desc: "High assignment risk — held names whose largest option leg has |Δ| > 0.30 (call or put). Needs synced greeks.",
       members: red.map(toMember).sort(byTicker),
+    },
+    {
+      key: "hiv",
+      name: "HIV",
+      desc: `High IV — names whose front-month ATM implied volatility is above ${HIV_IV_MIN}%.`,
+      members: hiv.map(toMember).sort(byTicker),
     },
   ];
 }

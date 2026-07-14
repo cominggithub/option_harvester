@@ -24,6 +24,7 @@ OH→IB push so membership has one source of truth.
 | `cpos` | Cpos    | `s.position.call !== 0` — underlyings you hold a **call** option on. |
 | `ppos` | Ppos    | `s.position.put !== 0` — underlyings you hold a **put** option on. |
 | `red`  | RED     | `s.position && maxOptAbsDelta > 0.30` — high assignment risk: held names whose largest option leg (call or put) has \|Δ\| > 0.30. Needs synced greeks. |
+| `hiv`  | HIV     | `s.ivPct > 50` — high implied vol: any tracked name (stock or ETF) with front-month ATM IV above 50%. |
 
 (NC = the doctrine's naked-call screen; see docs/spec.md §3 and docs/strategy.md.)
 
@@ -114,9 +115,9 @@ to auto-sync too; **greeks do NOT** run on auto-sync (heavy: one snapshot per he
 contract) — only on manual **Sync now** (or the standalone **Get greeks (IB)** button).
 
 ### 4b. web → IB  (popup: **Push OH → IB watchlists**, and part of Sync now)
-Publishes the OH lists to IB as **`OH:NC`, `OH:NCcan`, `OH:Cpos`, `OH:Ppos`, `OH:RED`**.
+Publishes the OH lists to IB as **`OH:NC`, `OH:NCcan`, `OH:Cpos`, `OH:Ppos`, `OH:RED`, `OH:HIV`**.
 
-- `GET /api/oh-watchlists` → each list with a suggested id (990001–990005), `OH:`-prefixed
+- `GET /api/oh-watchlists` → each list with a suggested id (990001–990006), `OH:`-prefixed
   name, and IB-ready `rows:[{C: conid}]` (conids from `securities.conid`; names
   without one are reported in `missing` and skipped).
 - IB has **no in-place edit**, so push = **delete + recreate**, but deletion is

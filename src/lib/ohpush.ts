@@ -13,7 +13,7 @@ import { computeOhWatchlists } from "@/lib/watchlists";
 //   2. Held stock/ETF position's OWN conid — authoritative when the underlying is held.
 //   3. /trsrv universe conid (Security.conid) — the default, but can pick the wrong
 //      listing for ambiguous symbols; that's what the pins above correct.
-export const OH_ID_BASE = 990001; // 990001.. per computeOhWatchlists order (NC/NCcan/Cpos/Ppos/RED)
+export const OH_ID_BASE = 990001; // 990001.. per computeOhWatchlists order (NC/NCcan/Cpos/Ppos/RED/HIV)
 
 export type OhPushList = {
   key: string;

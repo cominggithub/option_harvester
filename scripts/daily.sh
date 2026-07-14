@@ -30,7 +30,11 @@ hist=$?
 # Prediction needs fresh trend + prices, so it runs after history.
 npm run predict >>"$LOG" 2>&1
 pred=$?
+# OH-watchlist screen snapshot for the change log — after everything, so it captures
+# the fresh screen (nc/held/positions/greeks + NC criteria) for day-over-day diffs.
+npm run snapshot:oh >>"$LOG" 2>&1
+snapoh=$?
 
-echo "[$(stamp)] done (snapshot exit=$snap, history exit=$hist, predict exit=$pred)" >>"$LOG"
+echo "[$(stamp)] done (snapshot exit=$snap, history exit=$hist, predict exit=$pred, oh-snapshot exit=$snapoh)" >>"$LOG"
 # Non-zero if any step failed, so systemd marks the run failed.
-[ "$snap" -eq 0 ] && [ "$hist" -eq 0 ] && [ "$pred" -eq 0 ]
+[ "$snap" -eq 0 ] && [ "$hist" -eq 0 ] && [ "$pred" -eq 0 ] && [ "$snapoh" -eq 0 ]

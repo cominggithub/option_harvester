@@ -17,6 +17,8 @@
     "ingest:spreads:test": "dotenv -e .env.test -- tsx scripts/ingest-spreads.ts",
     "ingest:iv-backfill": "tsx scripts/backfill-iv-history.ts",
     "predict": "python3 scripts/predict-cc.py",
+    "snapshot:oh": "tsx scripts/snapshot-oh.ts",
+    "snapshot:oh:test": "dotenv -e .env.test -- tsx scripts/snapshot-oh.ts",
     "db:push": "prisma db push",
     "db:push:test": "dotenv -e .env.test -- prisma db push",
     "db:generate": "prisma generate"
