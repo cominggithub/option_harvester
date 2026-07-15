@@ -76,11 +76,12 @@ $("getmargin").onclick = () => {
 // Push Option Harvester's OH watchlists (NC/NCcan/Cpos/Ppos) to IB as "OH:*" lists.
 $("pushoh").onclick = () => {
   $("log").textContent = "Pushing OH → IB watchlists…";
-  chrome.runtime.sendMessage({ type: "pushOhWatchlists", backend: backend() }, (r) =>
-    ($("log").textContent = r?.error
-      ? `✕ ${r.error}`
-      : `✓ pushed ${r?.pushed ?? 0}/${r?.total ?? 0} OH lists → IB${(r?.results || []).some((x) => !x.ok) ? " (some failed)" : ""}`),
-  );
+  chrome.runtime.sendMessage({ type: "pushOhWatchlists", backend: backend() }, (r) => {
+    if (r?.error) { $("log").textContent = `✕ ${r.error}`; return; }
+    const dropped = (r?.results || []).flatMap((x) => (x.dropped || []).map((c) => `${x.name}:${c}`));
+    const base = `✓ pushed ${r?.pushed ?? 0}/${r?.total ?? 0} OH lists → IB${(r?.results || []).some((x) => !x.ok) ? " (some failed)" : ""}`;
+    $("log").textContent = dropped.length ? `${base}\n⚠ IB rejected conid(s): ${dropped.join(", ")}` : base;
+  });
 };
 
 // Read back the pushed OH:* lists from IB and verify their conids against the

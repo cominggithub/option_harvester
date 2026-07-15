@@ -135,10 +135,13 @@ Publishes the OH lists to IB as **`OH:NC`, `OH:NCcan`, `OH:Cpos`, `OH:Ppos`, `OH
      enumerated with only `?SC=USER_WATCHLIST`, so an unseen user-list id collided with
      a fixed OH id (worsened when HIV added a 6th id, 990006). (Earlier v0.8.5 fix
      stopped a blind delete-by-fixed-id.) Re-pushing refreshes lists to the current
-     screen/positions. **Create is verified**: IB's create can return ok but silently
-     store 0 rows (flaky right after the delete pass — this left `OH:Cpos` empty once),
-     so after each create the extension reads the list back and retries (delete+recreate,
-     up to 3×) until the stored instrument count matches (v0.8.9).
+     screen/positions. **Create is verified + self-healing**: IB's create can return ok
+     but store 0 rows, and it rejects a create *wholesale* if any one row is bad (e.g. a
+     mis-resolved underlying conid). So after each create the extension reads the list
+     back; if the count is short it retries (transient), and if a row is being rejected
+     it **bisects to drop the offending conid(s)**, stores the rest, and reports the
+     dropped conids (popup + `results[].dropped`). This kept `OH:Cpos` from being lost
+     to one bad conid (v0.8.9 read-back-retry, v0.8.10 drop-and-report).
 
 ### 4f. Read-back verification  (part of Sync now; popup: **Verify OH lists**)
 Closes the loop on the push (4b): after publishing the `OH:*` lists, the extension

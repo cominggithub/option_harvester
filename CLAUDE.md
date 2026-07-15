@@ -257,7 +257,7 @@ popup actions: **Resolve conids** (backfill `securities.conid` via `/trsrv/stock
 account-balance snapshot to `balances` and its run summary to `sync-log` (the `/sync`
 page). Full flows in **docs/watchlists.md**.
 **Bump `manifest.json` `version` on every edit** (see
-`[[bump-extension-version]]`; currently 0.8.9).
+`[[bump-extension-version]]`; currently 0.8.10).
 
 ## Local dev gotchas (WSL on `/mnt/d`)
 

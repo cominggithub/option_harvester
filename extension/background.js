@@ -447,7 +447,7 @@ async function pushOhWatchlists(backend) {
 
       const results = [];
       const created = {}; // name -> IB-assigned id (persisted for next push)
-      // How many instruments a list actually stored (read-back after create).
+      const dropReport = {}; // name -> [conids IB refused to store]
       const storedCount = async (id) => {
         try {
           const d = await (await fetch(`${base}/iserver/watchlist?id=${encodeURIComponent(id)}`, { credentials: "include" })).json();
@@ -456,13 +456,13 @@ async function pushOhWatchlists(backend) {
           return 0;
         }
       };
-      const createOnce = async (id, l) => {
+      const createOnce = async (id, name, rows) => {
         try {
           const r = await fetch(`${base}/iserver/watchlist`, {
             method: "POST",
             credentials: "include",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id, name: l.name, rows: l.rows }),
+            body: JSON.stringify({ id, name, rows }),
           });
           const j = await r.json().catch(() => null);
           return { id: String((j && (j.id ?? j.listId)) ?? id), error: j?.error || (r.ok ? null : `HTTP ${r.status}`) };
@@ -470,36 +470,70 @@ async function pushOhWatchlists(backend) {
           return { id: String(id), error: String(e) };
         }
       };
+      // Create `rows` at the list and confirm they stored; retry transient failures
+      // (IB can return ok but store 0 right after a delete). Returns {id, count}.
+      const storeWithRetry = async (id, name, rows) => {
+        let cur = id;
+        let best = { id, count: 0 };
+        for (let a = 0; a < 3; a++) {
+          const c = await createOnce(cur, name, rows);
+          cur = c.id;
+          await sleep(600);
+          const count = await storedCount(cur);
+          if (count > best.count) best = { id: cur, count };
+          if (count >= rows.length) return { id: cur, count };
+          await del(cur);
+          await sleep(400);
+        }
+        return best; // couldn't store the whole set
+      };
+      // Find the subset of rows IB will accept. IB rejects a create wholesale if ANY
+      // row is bad (e.g. a mis-resolved underlying conid), so bisect to drop the bad
+      // ones instead of losing the entire list. Returns the storable rows.
+      const findGood = async (id, name, rows) => {
+        const r = await storeWithRetry(id, name, rows);
+        if (r.count >= rows.length) return rows;
+        if (rows.length <= 1) return []; // this lone row is the poison → drop it
+        const mid = Math.floor(rows.length / 2);
+        const left = await findGood(id, name, rows.slice(0, mid));
+        const right = await findGood(id, name, rows.slice(mid));
+        return left.concat(right);
+      };
       for (const l of lists) {
         let id = String(l.id);
         while (taken.has(id)) id = String(Number(id) + 10000);
         taken.add(id);
         const want = l.rows.length;
-        // IB's create can return ok but silently store 0 rows (flaky right after the
-        // delete pass). So create → read back → retry (delete+recreate) until the
-        // stored count matches, up to 3 attempts.
-        let assignedId = id;
-        let stored = 0;
-        let lastErr = null;
-        let ok = false;
-        for (let attempt = 0; attempt < 3; attempt++) {
-          const c = await createOnce(assignedId, l);
-          assignedId = c.id;
-          lastErr = c.error;
-          await sleep(600);
-          stored = want ? await storedCount(assignedId) : 0;
-          if (!want || (!c.error && stored >= want)) {
-            ok = true;
-            break;
-          }
-          await del(assignedId); // clear the partial/empty list before retrying
+        // Fast path: whole payload (with transient retries).
+        let r = await storeWithRetry(id, l.name, l.rows);
+        let good = l.rows;
+        if (want && r.count < want) {
+          // A row is being rejected — bisect to keep only the storable conids.
+          good = await findGood(id, l.name, l.rows);
+          const keep = new Set(good.map((x) => String(x.C)));
+          dropReport[l.name] = l.rows.map((x) => String(x.C)).filter((c) => !keep.has(c));
+          // Leave the list holding exactly the good subset.
+          await del(id);
+          await sleep(300);
+          const fc = await createOnce(id, l.name, good);
           await sleep(400);
+          r = { id: fc.id, count: await storedCount(fc.id) };
         }
-        if (ok) created[l.name] = assignedId;
-        results.push({ name: l.name, ok, rows: want, stored, id: assignedId, error: ok ? null : lastErr || `stored ${stored}/${want}` });
+        const dropped = dropReport[l.name] || [];
+        const ok = want ? r.count > 0 && r.count >= good.length : true;
+        if (ok || r.count > 0) created[l.name] = String(r.id);
+        results.push({
+          name: l.name,
+          ok: ok && dropped.length === 0,
+          rows: want,
+          stored: r.count,
+          dropped,
+          id: String(r.id),
+          error: dropped.length ? `IB rejected ${dropped.length} conid(s): ${dropped.join(",")}` : ok ? null : `stored ${r.count}/${want}`,
+        });
         await sleep(300);
       }
-      return { results, created };
+      return { results, created, dropReport };
     },
   });
 
