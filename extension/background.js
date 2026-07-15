@@ -447,10 +447,16 @@ async function pushOhWatchlists(backend) {
 
       const results = [];
       const created = {}; // name -> IB-assigned id (persisted for next push)
-      for (const l of lists) {
-        let id = String(l.id);
-        while (taken.has(id)) id = String(Number(id) + 10000);
-        taken.add(id);
+      // How many instruments a list actually stored (read-back after create).
+      const storedCount = async (id) => {
+        try {
+          const d = await (await fetch(`${base}/iserver/watchlist?id=${encodeURIComponent(id)}`, { credentials: "include" })).json();
+          return Array.isArray(d?.instruments) ? d.instruments.length : 0;
+        } catch {
+          return 0;
+        }
+      };
+      const createOnce = async (id, l) => {
         try {
           const r = await fetch(`${base}/iserver/watchlist`, {
             method: "POST",
@@ -459,14 +465,39 @@ async function pushOhWatchlists(backend) {
             body: JSON.stringify({ id, name: l.name, rows: l.rows }),
           });
           const j = await r.json().catch(() => null);
-          const ok = r.ok && !!j && !j.error;
-          const assignedId = String((j && (j.id ?? j.listId)) ?? id); // capture IB's real id
-          if (ok) created[l.name] = assignedId;
-          results.push({ name: l.name, ok, rows: l.rows.length, id: assignedId, error: j?.error || (r.ok ? null : `HTTP ${r.status}`) });
+          return { id: String((j && (j.id ?? j.listId)) ?? id), error: j?.error || (r.ok ? null : `HTTP ${r.status}`) };
         } catch (e) {
-          results.push({ name: l.name, ok: false, rows: l.rows.length, error: String(e) });
+          return { id: String(id), error: String(e) };
         }
-        await sleep(450);
+      };
+      for (const l of lists) {
+        let id = String(l.id);
+        while (taken.has(id)) id = String(Number(id) + 10000);
+        taken.add(id);
+        const want = l.rows.length;
+        // IB's create can return ok but silently store 0 rows (flaky right after the
+        // delete pass). So create → read back → retry (delete+recreate) until the
+        // stored count matches, up to 3 attempts.
+        let assignedId = id;
+        let stored = 0;
+        let lastErr = null;
+        let ok = false;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const c = await createOnce(assignedId, l);
+          assignedId = c.id;
+          lastErr = c.error;
+          await sleep(600);
+          stored = want ? await storedCount(assignedId) : 0;
+          if (!want || (!c.error && stored >= want)) {
+            ok = true;
+            break;
+          }
+          await del(assignedId); // clear the partial/empty list before retrying
+          await sleep(400);
+        }
+        if (ok) created[l.name] = assignedId;
+        results.push({ name: l.name, ok, rows: want, stored, id: assignedId, error: ok ? null : lastErr || `stored ${stored}/${want}` });
+        await sleep(300);
       }
       return { results, created };
     },
