@@ -99,14 +99,15 @@ async function runSync(backend, { preferActive, withGreeks, source } = {}) {
   // Exact per-position maintenance margin via what-if — also heavy (one what-if
   // per held contract), so manual Sync only, right after greeks.
   if (withGreeks) out.margins = await getMargins(backend).catch((e) => ({ error: String(e) }));
-  // Re-resolve conids from IB before pushing OH lists, so corporate actions
-  // (spinoffs/renames — e.g. an old DOW/FISV listing) self-correct in one click.
-  // Full re-resolve is heavy (~600 names), so manual Sync only; overwrites stale.
-  if (withGreeks) out.conids = await resolveConids(backend, { all: true }).catch((e) => ({ error: String(e) }));
-  // Resolve underlying conids for held option-only names and pin them, so the OH
-  // push below uses the authoritative underlying (not a wrong /trsrv pick). Runs
-  // after the re-resolve (which skips pinned) and before the push. Manual sync only.
+  // Resolve & VALIDATE underlying conids for held option-only names first. A validated
+  // underlying is pinned (source ib-option); a mis-resolved one (symbol ≠ ticker) is
+  // rejected and its stale pin dropped — so the /trsrv re-resolve below can correct it
+  // by name in the SAME sync. Manual sync only.
   if (withGreeks) out.underlyings = await resolveUnderlyings(backend).catch((e) => ({ error: String(e) }));
+  // Re-resolve conids from IB (name-matched) before pushing OH lists, so corporate
+  // actions (spinoffs/renames) and any pin dropped just above self-correct. Skips
+  // pinned tickers. Full re-resolve is heavy (~600 names), so manual Sync only.
+  if (withGreeks) out.conids = await resolveConids(backend, { all: true }).catch((e) => ({ error: String(e) }));
   // Push OH watchlists back to IB. Positions were just posted above, so the OH
   // lists (Cpos/Ppos/NCcan) reflect the fresh snapshot. Failure here doesn't fail
   // the pull.
@@ -614,6 +615,17 @@ async function fetchUnderlyingsInPage(items) {
     }
     return null;
   };
+  // The symbol/ticker of a resolved conid, so the backend can confirm the underlying
+  // actually belongs to this ticker (rejects mis-resolved undConids like LVS).
+  const symbolOf = async (conid) => {
+    const sd = await j(`${base}/trsrv/secdef?conids=${encodeURIComponent(conid)}`);
+    const arr = Array.isArray(sd?.secdef) ? sd.secdef : Array.isArray(sd) ? sd : sd ? [sd] : [];
+    for (const s of arr) {
+      const sym = s?.ticker ?? s?.symbol;
+      if (sym) return String(sym).toUpperCase();
+    }
+    return null;
+  };
   const out = [];
   for (const it of items) {
     const opt = it.conid;
@@ -635,7 +647,9 @@ async function fetchUnderlyingsInPage(items) {
         und = findUnd(ci, opt);
       }
     }
-    out.push({ ticker: it.ticker, optionConid: String(opt), undConid: und, raw });
+    // Resolve the underlying's own symbol for validation (skip if we found nothing).
+    const undSymbol = und ? await symbolOf(und) : null;
+    out.push({ ticker: it.ticker, optionConid: String(opt), undConid: und, undSymbol, raw });
     await new Promise((s) => setTimeout(s, 200));
   }
   return out;
@@ -653,7 +667,7 @@ async function resolveUnderlyings(backend) {
 
   const [res] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, args: [items], func: fetchUnderlyingsInPage });
   const fetched = (res?.result || []).filter((r) => r && r.undConid);
-  const resolved = fetched.map((r) => ({ ticker: r.ticker, undConid: r.undConid }));
+  const resolved = fetched.map((r) => ({ ticker: r.ticker, undConid: r.undConid, undSymbol: r.undSymbol }));
   const out = await post(`${backend}/api/underlying-conids`, { resolved });
   return { ...out, tried: items.length, resolved: resolved.length };
 }

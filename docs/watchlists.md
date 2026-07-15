@@ -92,8 +92,14 @@ held; a **naked** book holds options, not the stock, so it can't. Two correction
     (e.g. `SMCI=731466419`). Never auto-overwritten.
   - **`ib-option`** — derived from a **held option leg's underlying** (`undConid`, which
     IB reports authoritatively): the popup **Fix conids from held options** action (and
-    manual Sync) asks IB for each held-option ticker's underlying and pins it. This is
-    the naked-strategy analogue of the held-stock-conid fix (fixes B/COIN/GDX/…).
+    manual Sync) asks IB for each held-option ticker's underlying and pins it — **but only
+    after validating** that IB reports the underlying's own symbol == our ticker. The
+    option `undConid` is occasionally a different instrument / a conid IB won't accept in
+    a watchlist (e.g. LVS); an unvalidated one is **not** pinned, and a stale bad
+    `ib-option` pin is **dropped** so the name-matched `/trsrv` re-resolve corrects it in
+    the same sync (resolveUnderlyings runs before the re-resolve). This is the
+    self-recognition path — identity from our (Yahoo) symbol, conid from IB's
+    name-matched resolve; the option-underlying only overrides when it provably matches.
 - `buildOhPushLists` conid priority is therefore: **pin → held-stock position → /trsrv**.
 
 ---
