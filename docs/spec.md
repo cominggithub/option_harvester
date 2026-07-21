@@ -95,7 +95,7 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   — the extension's per-run history (`option_harvest_sync_runs`).
 - **WL Log** (`/wl-log`, `getOhChangeLog`) — OH-watchlist change log. Snapshots each
   day's screen (`option_harvest_oh_screen_snapshots`, written at the end of the daily
-  refresh) and shows, per OH list (NC/NCcan/Cpos/Ppos/RED/HIV), what was **added** /
+  refresh) and shows, per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/OTC), what was **added** /
   **removed** between renews and **why** — the predicate input that flipped (IV crossing
   50/40%, a trend window turning, a weekly-ladder gap, a position open/close, |Δ| past
   0.30). Current membership counts at top; diffs are day-over-day.
@@ -117,12 +117,18 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   (call/put × tenor 1M/2M/3M+) infers win/loss from **unrealized P/L** (winning = mark in
   your favour) with gross winning/losing/net columns. Sticky section nav throughout. Data:
   `buildOptionPnlByExpiry` (`positions.ts`); greeks from `option_harvest_option_greeks`.
+  Each expiry-detail row shows current underlying **Spot immediately before Strike**.
+- **Markdown mirrors** (`/md/[[...path]]`) — every approved UI page has a dynamic,
+  read-only `.md` URL (for example `/md/pnl-predict.md` and `/md/stock/NVDA.md`). The
+  global TopNav MD/Copy control preserves query parameters. Each fetch rerenders current
+  page data (`no-store`), extracts only `#page-content`, strips scripts, and returns
+  `text/markdown`; API/arbitrary paths are rejected and responses are `noindex`.
 - **IB Upload** (`/upload`) — one CSV box; `/api/upload` auto-detects positions vs
   transaction-history (`uploadkind.ts`). Uploading positions auto-pulls any newly-held
   off-index ticker into the universe immediately (`addNewHoldings`, via `enrich.ts`).
 - **Wiki** (`/wiki`) — static field-manual page (strategy, screens, formulas).
 - **Watchlists** (`/watchlists`, `WatchlistBrowser.tsx`) — left-nav tabs over two
-  groups: **OH** (Option Harvester's computed lists — NC / NCcan / Cpos / Ppos) and
+  groups: **OH** (computed NC / NCcan / Cpos / Ppos / RED / HIV / HIVS / OTC) and
   **IB** (the user's Interactive Brokers lists, synced by the extension). Each tab
   renders the Analyzer's wide table view (`WideStockList`) for its members. Full spec: **docs/watchlists.md**.
 - **IB vs Yahoo** (`/ib`) — compares the IB-sourced option snapshot (price / IV / DTE /
@@ -223,7 +229,7 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   extension on every sync; stock-vs-option value computed from positions. Feeds the
   `/sync` balances panel + history chart (`lib/balances.ts`).
 - **sync_runs** — audit log of each IB→web sync (Chrome extension): at, source
-  (manual/auto), acct, per-dataset counts (positions/orders/trades/watchlists/greeks/
+  (manual/auto/deep), acct, per-dataset counts (positions/orders/trades/watchlists/greeks/
   margin/oh_push), error, raw. Powers the `/sync` run history (`lib/synclog.ts`).
 - **oh_verify** — read-back check of the OH→IB push (Chrome extension re-fetches the
   pushed `OH:*` lists from IB): at, ok, lists, matched, mismatched, detail (per-list
@@ -237,10 +243,10 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   naked option-only names (B/COIN/GDX). `/api/security-conids` + `/api/underlying-conids`,
   `lib/conidpins.ts`; consumed by `buildOhPushLists` (`lib/ohpush.ts`).
 - **oh_screen_snapshots** — daily OH-watchlist screen snapshot, PK `(date, ticker)`:
-  nc, held, posCall, posPut, max_opt_abs_delta + the NC criteria (volume, price,
+  nc, target, held, posCall, posPut, max_opt_abs_delta + the NC criteria (volume, price,
   weekly_buckets, iv_pct, trend_m1/m3/m6). Written by `scripts/snapshot-oh.ts` at the end
   of the daily refresh; the **WL Log** (`/wl-log`) diffs consecutive days per OH list
-  (NC/NCcan/Cpos/Ppos/RED/HIV) and explains each add/remove (`lib/ohhistory.ts`).
+  (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/OTC) and explains each add/remove (`lib/ohhistory.ts`).
 
 ### IB parsers
 - **ibparse.ts** (positions): IB Activity Statements are multi-section CSVs;

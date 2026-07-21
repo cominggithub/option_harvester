@@ -261,6 +261,7 @@ export type OptionPnlLeg = {
   right: "C" | "P" | null;
   contract: string;
   quantity: number | null;
+  spot: number | null; // current underlying quote shared by every leg in the symbol group
   strike: number | null;
   expiry: string | null;
   unitCost: number | null;
@@ -327,6 +328,7 @@ export function buildOptionPnlByExpiry(groups: PositionGroup[], asOf: Date = new
         right: leg.right,
         contract: leg.contract,
         quantity: leg.quantity,
+        spot: g.price,
         strike: leg.strike,
         expiry: leg.expiry,
         unitCost: leg.unitCost,

@@ -40,6 +40,7 @@ model OhScreenSnapshot {
   date           DateTime @db.Date
   ticker         String
   nc             Boolean  @default(false) // passes the naked-call screen (isNcTarget)
+  target         Boolean  @default(false) // user flagged it an Option Target (bullseye)
   held           Boolean  @default(false) // user holds this underlying
   posCall        Int      @default(0)     // net call contracts held
   posPut         Int      @default(0)     // net put contracts held

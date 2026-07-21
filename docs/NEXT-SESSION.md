@@ -1,72 +1,102 @@
-# option_harvester — next-session recap (as of 2026-07-14)
+# option_harvester — next-session recap (as of 2026-07-21)
 
-**Status:** everything from the 2026-07-14 session is built, deployed to prod, and
-pushed to `origin/master` (commits `aacdb65` conid integrity + read-back verify,
-`fac71c8` change log + HIV, plus a docs commit). Working tree clean apart from the
-daily-cron output `predictions/cc-*.jsonl` (intentionally untracked). **No in-flight
-work.**
+**Status:** everything listed below is implemented, validated, built, and deployed to
+production (`114.33.62.221:19210`). This handoff is committed and pushed to
+`origin/master`. The working tree should be clean except for daily generated
+`predictions/cc-*.jsonl` files, which are intentionally untracked.
 
-Ops reminders: prod = `114.33.62.221:19210` (systemd unit `option_harvester`); deploy =
-`npm run build` then `sudo systemctl restart option_harvester` (a build breaks live prod
-until the restart — prod and the test server share one `.next`). Read **CLAUDE.md** first.
+Ops reminder: production is the systemd unit `option_harvester`. Deploy only with
+`npm run build` immediately followed by `sudo systemctl restart option_harvester`;
+prod and test share `.next`, so a build without the restart breaks the live chunks.
+Read **CLAUDE.md** before operating the app or databases.
 
 ## Shipped this session
-1. **OH→IB read-back verify** (`/api/oh-verify`, `option_harvest_oh_verify`, `/sync`
-   panel). After the push, the extension re-fetches the `OH:*` lists from IB and diffs
-   the stored conids vs the intended payload (`buildOhPushLists`). Closes the old
-   "eyeball OH:RED in the IB app" check — `OH:*` is excluded from the normal pull, so
-   this is the only programmatic proof of what IB stored.
-2. **Conid integrity** — the "wrong stock in IB watchlist" fix:
-   - **Pin registry** `option_harvest_security_conids` (`manual` | `ib-option`),
-     mirrored into `securities.conid`, and the full re-resolve now **skips pinned
-     tickers** so corrections stick. `lib/conidpins.ts`, `/api/security-conids`.
-   - **Naked-book underlying resolver** — held names hold options, not the stock, so
-     there was no held-stock conid to prefer. The extension now reads each held option's
-     underlying (`undConid`) from IB and pins it (`ib-option`). `/api/underlying-conids`,
-     popup **Fix conids from held options** + part of manual Sync.
-   - **Name-matching `/trsrv` resolver** — `parseIbStocks` disambiguates the *company*
-     by matching our (Yahoo) name (fixes symbol reuse / stale rename listings like DOW),
-     then prefers the **US** listing with a **non-US fallback**.
-   - **Verified live (Sync v0.8.7, `und 59/59`):** B `41059635→780709675`,
-     COIN `893082872→481691285`, GDX `13056804→229726316` (ib-option pins);
-     DOW `12888945→356576040` (name-match, Dow Inc.); SMCI pinned `731466419` (manual).
-     `verify ✓`. 60 pins (59 ib-option + 1 manual).
-   - `buildOhPushLists` conid priority: **pin → held-stock position → /trsrv**.
-3. **Watchlist change log** (`/wl-log`, TopNav). `scripts/snapshot-oh.ts` writes a daily
-   `option_harvest_oh_screen_snapshots` row per ticker (screen drivers) at the end of
-   `daily.sh`; `getOhChangeLog` (`lib/ohhistory.ts`) diffs consecutive days per OH list
-   and explains each add/remove by the predicate input that flipped. Baseline snapshot
-   taken 2026-07-14; **first real diff appears after the next 06:00 ingest**.
-4. **HIV list** — new OH watchlist: any tracked name (stock or ETF) with front-month ATM
-   IV > 50% (`HIV_IV_MIN`). Flows to `/watchlists` tabs, the OH→IB push (`OH:HIV`, id
-   990006), read-back verify, and the change log automatically. Baseline count 140.
-5. **Extension v0.8.7** — adds the read-back verify, the underlying-conid resolver, and
-   reports `und N/59` in the status line. Bump `manifest.json` on any extension edit.
-6. Docs: `CLAUDE.md`, `docs/watchlists.md`, `docs/spec.md` (§4 pages, §6 tables).
 
-## Known environment issue (confirmed live this session)
-- **The running test server (19211) writes to PROD, not test.** `@prisma/client`
-  auto-loads `.env` (prod) and overrides `dotenv -e .env.test` at runtime, so a POST to
-  19211 hit the prod DB (I cleaned up the stray row). This is follow-up C, worse than
-  just the `db:push:test` CLI: there is **no DB isolation** for the Next server or the
-  tsx scripts until C is fixed. Treat 19211 as prod-backed. `db:push` workaround still:
-  `DATABASE_URL="postgresql://coming@localhost/option_harvester_test?host=/var/run/postgresql&schema=public" npx prisma db push`.
+1. **Extension v0.8.16 — fast Sync vs Deep sync.**
+   - **Sync now** is the short, background-safe path: positions, orders, trades,
+     watchlists, balances, OH push, and OH read-back verification. Auto-sync uses the
+     same light path.
+   - **Deep sync** is a separate button for per-contract greeks, margin what-ifs,
+     held-option underlying resolution, full conid re-resolution, then OH re-push and
+     verify. Keep the IB tab in front; Chrome throttles the in-page timers in a
+     background tab. Run Sync now first so backend position targets are fresh.
+   - The MV3 worker now persists busy/progress state, emits a 15-second heartbeat,
+     timestamps status, detects orphaned runs, and reports live steps/items in the
+     popup. Deep runs are stored with `source=deep` (`/api/sync-log`).
+   - Extension source is v0.8.16. Reload it in `chrome://extensions` to use these UI
+     and progress changes; HIVS itself does not require a new extension because OH
+     lists are fetched dynamically.
 
-## Optional follow-ups (not started)
-- **A. FISV → FI rename** in the sp500 seed (`scripts/ingest-sp500.ts`) + re-resolve.
-- **C. Fix the test-DB isolation** — force the test `DATABASE_URL` past Prisma's `.env`
-  autoload (e.g. don't ship a prod `.env`, or set the URL in code for the test env), so
-  19211 and the `:test` scripts actually hit `option_harvester_test`.
-- **D. Test server (19211) dynamic-route 404** — did NOT recur after a fresh build +
-  restart this session; revisit only if it returns.
-- **E. Auto-sync is light-only** — greeks/margin/conid-refresh/underlying-resolve run on
-  **manual Sync only** (the OH push + read-back verify run on auto too). RED/margin can
-  lag on auto-only days; consider a lighter periodic greeks refresh.
+2. **Test database isolation fixed.** Every `:test` script in `package.json` uses
+   `dotenv -e .env.test -o`, so `.env.test` overrides a prod `DATABASE_URL` inherited
+   from the shell/systemd environment. Verified both before and after importing Prisma.
+
+3. **OTC OH watchlist + history.** `OTC` means “Option Targets, no Call”:
+   `(target || held call || held put) && no held call`. It identifies flagged/held-option
+   names where a call has not yet been written. The daily OH snapshot schema includes
+   `target`; `/wl-log` tracks OTC entries/exits with reasons. The additive column exists
+   in both owned databases.
+
+4. **HIVS OH watchlist.** `HIVS` is exactly HIV (front-month ATM IV > 50%) restricted
+   to strict spot bounds **price > $20 and price < $200**. It appears on `/watchlists`,
+   in `/wl-log`, and in the OH→IB payload as `OH:HIVS` (suggested id 990007; OTC is
+   990008). Production validation on July 21: HIV 151, HIVS 82, 0 missing conids;
+   exact live predicate and HIVS⊆HIV passed. User Sync reported `OH→IB 8/8 · verify ✓`,
+   so all eight lists were published and read back successfully.
+
+5. **Shareable live Markdown for every UI page.** Each approved UI route has a
+   read-only, on-demand Markdown mirror:
+   - `/md/index.md`, `/md/watchlists.md`, `/md/pnl-predict.md`
+   - dynamic example: `/md/stock/NVDA.md`
+   - query parameters are preserved by the global TopNav **MD / Copy** control.
+
+   `src/app/md/[[...path]]/route.ts` loopback-fetches only whitelisted UI routes,
+   extracts `#page-content`, converts headings/tables/lists/links with Cheerio, strips
+   scripts/styles/SVG, and returns `text/markdown`. It uses `no-store` (regenerated on
+   every fetch), `noindex`, public source links, and blocks API/arbitrary-host proxying.
+   `scripts/page-markdown-check.ts` covers URL mapping, content isolation, tables,
+   links, and script removal. All 12 mirrors returned 200 in production; unsupported
+   `/md/api/...` returned 404.
+
+   **Security/behavior note:** these URLs expose the same current data as their web
+   pages; `noindex` is not authentication. Client-only tab/filter changes that do not
+   alter the URL are not represented—the mirror captures the server-rendered/default
+   page state.
+
+6. **P&L Predict Spot column.** Each expiry-detail table now shows current underlying
+   **Spot immediately before Strike**. `buildOptionPnlByExpiry` carries
+   `PositionGroup.price` into every `OptionPnlLeg`. Production validation: 86/86 option
+   legs populated; HTML and `/md/pnl-predict.md` both render
+   `Symbol | Type | Spot | Strike` (sample AG: spot 15.85, strike 22.00).
+
+7. **Docs and validation.** Updated `CLAUDE.md`, `docs/spec.md`,
+   `docs/watchlists.md`, and `docs/test-plan.md`. Final gates: TypeScript, diff check,
+   Prisma schema validation, extension JavaScript syntax, P/L/position/news/Markdown
+   self-checks, production build, systemd restart, route/API smoke tests.
+
+## Current operating notes
+
+- Prod: `http://114.33.62.221:19210`; test: port 19211 and
+  database `option_harvester_test`.
+- Data mutations belong on test only. Additive schema DDL is pushed to both owned
+  databases. Never touch another project's database.
+- Extension changes are not installed by a web deploy. Reload unpacked extension
+  v0.8.16 manually when its Deep-sync/progress behavior is wanted.
+- Markdown is dynamic, not a stored file: opening the same URL later regenerates it
+  from current DB/page data.
+
+## Optional follow-ups
+
+- FISV → FI rename in the S&P seed (`scripts/ingest-sp500.ts`) plus conid re-resolve.
+- If exact client-selected Analyzer/watchlist/transaction tabs must be shareable,
+  encode those selections in URL query parameters and initialize the client views
+  from them; Markdown already preserves query strings.
+- Consider authentication or signed Markdown URLs before sharing account-bearing pages
+  beyond trusted AI chats; `noindex` only discourages crawlers.
 
 ## How to restart next session
-1. Read `CLAUDE.md` (operational map → `docs/spec.md`, `docs/watchlists.md`,
-   `docs/strategy.md`, `docs/cc-target-strategy.md`).
-2. Extension is **v0.8.7** — reload in `chrome://extensions` if needed; **bump
-   `extension/manifest.json` version on any extension edit**.
-3. Pick a follow-up above, or check `/wl-log` (should show its first real day-over-day
-   diff after the 06:00 ingest).
+
+1. Read `CLAUDE.md`, then this file.
+2. Confirm `git status`; only generated `predictions/cc-*.jsonl` should be untracked.
+3. Reload extension v0.8.16 if Deep sync/progress UI is not present.
+4. Open any page and use **MD** to inspect or **Copy MD URL** to share current content.

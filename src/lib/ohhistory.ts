@@ -7,7 +7,7 @@ import {
   NC_IV_MIN,
   NC_MIN_WEEKLY_BUCKETS,
 } from "@/lib/securities";
-import { HIV_IV_MIN } from "@/lib/watchlists";
+import { HIV_IV_MIN, HIVS_PRICE_MIN, HIVS_PRICE_MAX } from "@/lib/watchlists";
 
 // OH-watchlist change log. OH lists (NC/NCcan/Cpos/Ppos/RED) are computed live and
 // never stored, so on their own they have no history — you can't tell what was added
@@ -32,6 +32,7 @@ export async function snapshotOhScreen(): Promise<{ date: string; rows: number }
     date,
     ticker: s.ticker,
     nc: !!s.nc,
+    target: !!s.target,
     held: !!s.held,
     posCall: Math.trunc(s.position?.call ?? 0),
     posPut: Math.trunc(s.position?.put ?? 0),
@@ -58,6 +59,7 @@ export async function snapshotOhScreen(): Promise<{ date: string; rows: number }
 type Snap = {
   ticker: string;
   nc: boolean;
+  target: boolean;
   held: boolean;
   posCall: number;
   posPut: number;
@@ -88,6 +90,9 @@ const LIST_META: { key: string; name: string; inList: (r: Snap) => boolean }[] =
   { key: "ppos", name: "Ppos", inList: (r) => (r.posPut ?? 0) !== 0 },
   { key: "red", name: "RED", inList: (r) => r.held && Number(r.maxOptAbsDelta ?? 0) > 0.3 },
   { key: "hiv", name: "HIV", inList: (r) => Number(r.ivPct ?? 0) > HIV_IV_MIN },
+  { key: "hivs", name: "HIVS", inList: (r) => Number(r.ivPct ?? 0) > HIV_IV_MIN && r.price != null && r.price > HIVS_PRICE_MIN && r.price < HIVS_PRICE_MAX },
+  // OTC — "Option Targets, no Call": flagged (or any option leg held) but no call held.
+  { key: "otc", name: "OTC", inList: (r) => (r.target || (r.posCall ?? 0) !== 0 || (r.posPut ?? 0) !== 0) && (r.posCall ?? 0) === 0 },
 ];
 
 const fmtM = (v: number | null) => (v == null ? "?" : `${(v / 1_000_000).toFixed(1)}M`);
@@ -174,6 +179,33 @@ function reasonFor(key: string, prev: Snap | undefined, cur: Snap, dir: "added" 
       const pv = prev ? fmtIv(prev.ivPct) : "?";
       return dir === "added" ? `IV ${pv}→${fmtIv(cur.ivPct)} (>${HIV_IV_MIN}%)` : `IV ${pv}→${fmtIv(cur.ivPct)} (≤${HIV_IV_MIN}%)`;
     }
+    case "hivs": {
+      // HIVS = high IV AND mid price band. Explain whichever input flipped.
+      const ivHi = (r: Snap | undefined) => r != null && Number(r.ivPct ?? 0) > HIV_IV_MIN;
+      const inBand = (r: Snap | undefined) => r != null && r.price != null && r.price > HIVS_PRICE_MIN && r.price < HIVS_PRICE_MAX;
+      const pv = prev ? fmtIv(prev.ivPct) : "?";
+      const parts: string[] = [];
+      if (dir === "added") {
+        if (!ivHi(prev) && ivHi(cur)) parts.push(`IV ${pv}→${fmtIv(cur.ivPct)} (>${HIV_IV_MIN}%)`);
+        if (!inBand(prev) && inBand(cur)) parts.push(`price ${fmtPrice(cur.price)} (band $${HIVS_PRICE_MIN}–$${HIVS_PRICE_MAX})`);
+      } else {
+        if (ivHi(prev) && !ivHi(cur)) parts.push(`IV ${pv}→${fmtIv(cur.ivPct)} (≤${HIV_IV_MIN}%)`);
+        if (inBand(prev) && !inBand(cur)) parts.push(`price ${fmtPrice(cur.price)} (out of $${HIVS_PRICE_MIN}–$${HIVS_PRICE_MAX})`);
+      }
+      return parts.join("; ") || (dir === "added" ? "entered HIVS" : "left HIVS");
+    }
+    case "otc": {
+      // OTC = (target ∨ any option leg) ∧ no call. Explain which input flipped.
+      if (dir === "added") {
+        if (prev && prev.posCall !== 0 && cur.posCall === 0) return "call position closed (target again)";
+        if (prev && !prev.target && cur.target) return "flagged as Option Target";
+        if (prev && prev.posPut === 0 && cur.posPut !== 0) return `opened put position (${cur.posPut})`;
+        return cur.target ? "flagged Option Target" : cur.posPut !== 0 ? `holds put (${cur.posPut})` : "became a target";
+      }
+      if (prev && prev.posCall === 0 && cur.posCall !== 0) return `opened call position (${cur.posCall}) → now Cpos`;
+      if (prev && prev.target && !cur.target && cur.posPut === 0) return "unflagged (no option leg held)";
+      return "no longer a target";
+    }
     default:
       return dir;
   }
@@ -198,6 +230,7 @@ export async function getOhChangeLog(limitDates = 30): Promise<OhChangeLog> {
     m.set(r.ticker, {
       ticker: r.ticker,
       nc: r.nc,
+      target: r.target,
       held: r.held,
       posCall: r.posCall,
       posPut: r.posPut,

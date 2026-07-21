@@ -18,7 +18,7 @@ export default function RootLayout({
       <body>
         <div className="flex h-screen flex-col overflow-hidden">
           <TopNav />
-          <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth">{children}</div>
+          <div id="page-content" className="min-h-0 flex-1 overflow-y-auto scroll-smooth">{children}</div>
         </div>
       </body>
     </html>

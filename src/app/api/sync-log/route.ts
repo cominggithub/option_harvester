@@ -27,7 +27,7 @@ export async function POST(req: Request) {
     return Response.json({ error: "Expected JSON { summary, source }" }, { status: 400 });
   }
   const s = (body.summary ?? {}) as Record<string, unknown>;
-  const source = body.source === "auto" ? "auto" : "manual";
+  const source = body.source === "auto" ? "auto" : body.source === "deep" ? "deep" : "manual";
   const errTop = typeof s.error === "string" ? s.error : null;
 
   try {

@@ -1,7 +1,9 @@
 "use client";
 
+import { Suspense } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { MarkdownShare } from "@/components/MarkdownShare";
 
 const LINKS = [
   { href: "/", label: "Analyzer" },
@@ -49,6 +51,9 @@ export function TopNav() {
           </Link>
         ))}
       </nav>
+      <Suspense fallback={null}>
+        <MarkdownShare />
+      </Suspense>
     </header>
   );
 }

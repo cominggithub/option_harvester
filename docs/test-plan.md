@@ -26,6 +26,7 @@ must print `... self-check OK`:
 npx tsx scripts/pnl-check.ts          # P/L engine
 npx tsx scripts/posanalysis-check.ts  # position action suggestions
 npx tsx scripts/news-check.ts         # news sentiment lexicon
+npx tsx scripts/page-markdown-check.ts # Markdown route mapping + HTML conversion
 ```
 
 What they cover:
@@ -41,6 +42,9 @@ What they cover:
 - **posanalysis-check** — OTM-with-most-premium → harvest; ITM call → defend;
   tested call → defend; far-OTM loser → watch; ITM put → roll; long/stock legs ignored.
 - **news-check** — bearish headlines flagged, positive ones not.
+- **page-markdown-check** — approved UI-path ↔ `.md` URL mapping, API-path rejection,
+  `#page-content` isolation, front matter/source URL, heading/table/link conversion,
+  and removal of global navigation, scripts, and SVG internals.
 
 A new pure money/security path **must** add or extend a `_selfCheck` (smallest thing
 that fails if the logic breaks).

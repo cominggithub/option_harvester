@@ -78,7 +78,9 @@ async function findIbTab(preferActive) {
   return tabs[0] || null;
 }
 
-async function runSync(backend, { preferActive, withGreeks, source } = {}) {
+async function runSync(backend, { preferActive, source } = {}, onProgress) {
+  const p = (m) => onProgress?.(m);
+  p("reading IB");
   const tab = await findIbTab(preferActive);
   if (!tab?.id) return { error: "no IB tab open — log into the IB portal in a tab" };
   const [res] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: fetchAllInPage });
@@ -86,6 +88,7 @@ async function runSync(backend, { preferActive, withGreeks, source } = {}) {
   if (!d || d.error) return { error: d?.error || "fetch failed" };
 
   const out = { acct: d.acct };
+  p("posting positions/orders");
   if (d.ibPositions?.length) out.positions = await post(`${backend}/api/positions`, { ibPositions: d.ibPositions, source: "ib-extension" });
   // Daily account-balance snapshot (cash / NLV / margin). Posted after positions so
   // the stock-vs-option value split reflects the fresh book. Light (one summary).
@@ -93,36 +96,143 @@ async function runSync(backend, { preferActive, withGreeks, source } = {}) {
   if (d.ibOrders != null) out.orders = await post(`${backend}/api/orders`, { ibOrders: d.ibOrders });
   if (d.ibTrades?.length) out.trades = await post(`${backend}/api/trades`, { ibTrades: d.ibTrades });
   if (d.ibWatchlists?.length) out.watchlists = await post(`${backend}/api/watchlist`, { ibWatchlists: d.ibWatchlists });
-  // Greeks for held options — depends on positions just posted above. Skipped on the
-  // light auto-sync (it snapshots every held contract, ~1s each); run on manual Sync.
-  if (withGreeks) out.greeks = await getGreeks(backend).catch((e) => ({ error: String(e) }));
-  // Exact per-position maintenance margin via what-if — also heavy (one what-if
-  // per held contract), so manual Sync only, right after greeks.
-  if (withGreeks) out.margins = await getMargins(backend).catch((e) => ({ error: String(e) }));
-  // Resolve & VALIDATE underlying conids for held option-only names first. A validated
-  // underlying is pinned (source ib-option); a mis-resolved one (symbol ≠ ticker) is
-  // rejected and its stale pin dropped — so the /trsrv re-resolve below can correct it
-  // by name in the SAME sync. Manual sync only.
-  if (withGreeks) out.underlyings = await resolveUnderlyings(backend).catch((e) => ({ error: String(e) }));
-  // Re-resolve conids from IB (name-matched) before pushing OH lists, so corporate
-  // actions (spinoffs/renames) and any pin dropped just above self-correct. Skips
-  // pinned tickers. Full re-resolve is heavy (~600 names), so manual Sync only.
-  if (withGreeks) out.conids = await resolveConids(backend, { all: true }).catch((e) => ({ error: String(e) }));
   // Push OH watchlists back to IB. Positions were just posted above, so the OH
   // lists (Cpos/Ppos/NCcan) reflect the fresh snapshot. Failure here doesn't fail
   // the pull.
+  p("OH push");
   out.ohPush = await pushOhWatchlists(backend).catch((e) => ({ error: String(e) }));
   // Read-back verification: re-fetch the OH:* lists from IB and diff their conids
   // against the intended payload (surfaced on /sync). Only meaningful if the push
   // ran; light (a few GETs). Non-fatal.
-  if (out.ohPush && !out.ohPush.error) out.ohVerify = await verifyOhWatchlists(backend).catch((e) => ({ error: String(e) }));
+  if (out.ohPush && !out.ohPush.error) {
+    p("OH verify");
+    out.ohVerify = await verifyOhWatchlists(backend).catch((e) => ({ error: String(e) }));
+  }
   // Record this run in the sync-log history (non-fatal).
-  await post(`${backend}/api/sync-log`, { summary: out, source: source || (withGreeks ? "manual" : "auto") }).catch(() => {});
+  await post(`${backend}/api/sync-log`, { summary: out, source: source || "auto" }).catch(() => {});
+  return out;
+}
+
+// Deep sync: the HEAVY passes that "Sync now" no longer does. Each snapshots/what-ifs
+// every held contract (~1s each) or re-resolves ~600 conids, all paced by in-page
+// setTimeouts — so Chrome throttles them to a crawl if the IB tab is backgrounded.
+// Keep the IB tab in the FOREGROUND for the whole run. Reads its targets (held
+// conids, tickers) from the backend, which needs a prior "Sync now" to have posted
+// positions. Non-fatal per step; logged to /sync as source "deep".
+async function runDeep(backend, { source } = {}, onProgress) {
+  const tab = await findIbTab(true);
+  if (!tab?.id) return { error: "no IB tab open — log into the IB portal in a tab" };
+  const p = (m) => onProgress?.(m);
+
+  const out = {};
+  // Per-position greeks (Δ/Θ/Γ) for held options.
+  p("greeks");
+  out.greeks = await getGreeks(backend, p).catch((e) => ({ error: String(e) }));
+  // Exact per-position maintenance margin via what-if.
+  p("margin");
+  out.margins = await getMargins(backend, p).catch((e) => ({ error: String(e) }));
+  // Resolve & VALIDATE underlying conids for held option-only names first. A validated
+  // underlying is pinned (source ib-option); a mis-resolved one (symbol ≠ ticker) is
+  // rejected and its stale pin dropped — so the /trsrv re-resolve below can correct it
+  // by name in the SAME run.
+  p("underlyings");
+  out.underlyings = await resolveUnderlyings(backend).catch((e) => ({ error: String(e) }));
+  // Re-resolve conids from IB (name-matched), so corporate actions (spinoffs/renames)
+  // and any pin dropped just above self-correct. Skips pinned tickers. Heavy (~600).
+  p("conids (re-resolve, ~30s)");
+  out.conids = await resolveConids(backend, { all: true }).catch((e) => ({ error: String(e) }));
+  // Conids/underlyings may have changed the OH lists — re-push and verify.
+  p("OH push");
+  out.ohPush = await pushOhWatchlists(backend).catch((e) => ({ error: String(e) }));
+  if (out.ohPush && !out.ohPush.error) {
+    p("OH verify");
+    out.ohVerify = await verifyOhWatchlists(backend).catch((e) => ({ error: String(e) }));
+  }
+  await post(`${backend}/api/sync-log`, { summary: out, source: source || "deep" }).catch(() => {});
   return out;
 }
 
 async function setStatus(text) {
   await chrome.storage.local.set({ lastStatus: text, lastAt: new Date().toISOString() });
+}
+
+// A background op is running. Persisted so the popup — which is torn down whenever
+// it loses focus — can re-open into "…in progress" instead of showing the previous
+// (stale) result. Cleared when the op finishes (result then lives in lastStatus).
+async function setBusy(label) {
+  const now = new Date().toISOString();
+  // busyAt = start (stable, for display); busyBeat = liveness heartbeat (refreshed).
+  await chrome.storage.local.set({ busy: label, busyAt: now, busyBeat: now });
+}
+// Refresh only the liveness heartbeat. If the MV3 service worker is killed mid-op
+// the beats stop, so the popup can tell a live op from an orphaned "busy" flag.
+async function beatBusy() {
+  await chrome.storage.local.set({ busyBeat: new Date().toISOString() });
+}
+// Update the in-progress label shown in the popup (e.g. "greeks 12/97"), keeping the
+// start time (busyAt) fixed and refreshing the liveness beat. Ops call this via the
+// `report` callback `handle` passes them, so the log shows live progress.
+async function setProgress(label) {
+  await chrome.storage.local.set({ busy: label, busyBeat: new Date().toISOString() });
+}
+async function clearBusy() {
+  await chrome.storage.local.remove(["busy", "busyAt", "busyBeat"]);
+}
+// setInterval in a service worker fires only while the worker is alive and doing
+// work — exactly the signal we want: beats stop the moment the worker is suspended.
+function startHeartbeat() {
+  return setInterval(() => beatBusy(), 15000);
+}
+
+// Status-line formatters for each op (mirrored to lastStatus so a re-opened popup
+// shows the real outcome + timestamp, whether or not it was open when the op ran).
+const fmt = {
+  sync: (r) => (r.error ? `manual: ${r.error}` : `manual ✓ ${summary(r)}`),
+  deepSync: (r) => (r.error ? `deep: ${r.error}` : `deep ✓ ${summary(r)}`),
+  resolveConids: (r) =>
+    r?.error ? `✕ ${r.error}` : `✓ conids +${r?.updated ?? 0} · have ${r?.have ?? "—"} · remaining ${r?.remaining ?? "—"}`,
+  getOptions: (r) =>
+    r?.error ? `✕ ${r.error}` : `✓ options updated ${r?.updated ?? 0}/${r?.tried ?? 0}${r?.errors?.length ? ` · ${r.errors.length} err` : ""}`,
+  getGreeks: (r) =>
+    r?.error ? `✕ ${r.error}` : `✓ greeks updated ${r?.updated ?? 0}/${r?.tried ?? 0}${r?.errors?.length ? ` · ${r.errors.length} err` : ""}`,
+  getMargins: (r) =>
+    r?.error ? `✕ ${r.error}` : `✓ margin updated ${r?.updated ?? 0}/${r?.tried ?? 0}${r?.errors?.length ? ` · ${r.errors.length} err` : ""}`,
+  pushOh: (r) => {
+    if (r?.error) return `✕ ${r.error}`;
+    const dropped = (r?.results || []).flatMap((x) => (x.dropped || []).map((c) => `${x.name}:${c}`));
+    const base = `✓ pushed ${r?.pushed ?? 0}/${r?.total ?? 0} OH lists → IB${(r?.results || []).some((x) => !x.ok) ? " (some failed)" : ""}`;
+    return dropped.length ? `${base}\n⚠ IB rejected conid(s): ${dropped.join(", ")}` : base;
+  },
+  verifyOh: (r) =>
+    r?.error
+      ? `✕ ${r.error}`
+      : r?.ok
+        ? `✓ verified ${r?.lists ?? 0} OH lists · ${r?.matched ?? 0} conids match`
+        : `⚠ ${r?.mismatched ?? "?"} mismatch across ${r?.lists ?? 0} lists — see /sync`,
+  resolveUnderlyings: (r) =>
+    r?.error ? `✕ ${r.error}` : `✓ pinned ${r?.pinned ?? 0}/${r?.tried ?? 0} underlying conids${r?.resolved != null ? ` (resolved ${r.resolved})` : ""}`,
+  capture: (r) => (r?.error ? `✕ ${r.error}` : `✓ captured → ${r?.file ?? "backend"}`),
+};
+
+// Run a background op with a persisted busy label + persisted final status, so the
+// popup can be closed/re-opened at any point and still show the correct line.
+async function handle(label, fn, formatter, reply) {
+  await setBusy(label);
+  const hb = startHeartbeat();
+  let r;
+  try {
+    r = await fn((msg) => setProgress(msg)); // fn reports step/item progress via this
+  } catch (e) {
+    r = { error: String(e) };
+  } finally {
+    clearInterval(hb);
+  }
+  try {
+    await setStatus(formatter(r));
+  } finally {
+    await clearBusy();
+  }
+  reply(r);
 }
 
 // Backfill IB conids for the securities universe. Asks the backend which tickers
@@ -235,7 +345,7 @@ async function fetchOptionInPage(conid, ticker) {
 
 // Fetch IB option data for the given tickers (or all conid'd names if empty),
 // one at a time in the logged-in IB page, then post to /api/options.
-async function getOptions(backend, tickers) {
+async function getOptions(backend, tickers, onProgress) {
   const qs = tickers && tickers.length ? `?tickers=${encodeURIComponent(tickers.join(","))}` : "";
   const targets = await (await fetch(`${backend}/api/options${qs}`)).json().catch(() => null);
   if (!Array.isArray(targets) || !targets.length) return { error: "no tickers with a conid (resolve conids first?)" };
@@ -244,7 +354,9 @@ async function getOptions(backend, tickers) {
   if (!tab?.id) return { error: "no IB tab open — log into the IB portal" };
 
   const fetched = [];
-  for (const t of targets) {
+  for (let i = 0; i < targets.length; i++) {
+    const t = targets[i];
+    onProgress?.(`options ${i + 1}/${targets.length}${t.ticker ? ` (${t.ticker})` : ""}`);
     const [res] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       args: [Number(t.conid), t.ticker],
@@ -291,7 +403,7 @@ async function fetchGreekInPage(conid) {
 
 // Fetch per-position greeks: ask the backend which held option conids exist,
 // snapshot each in the logged-in IB page, then post to /api/greeks.
-async function getGreeks(backend) {
+async function getGreeks(backend, onProgress) {
   const targets = await (await fetch(`${backend}/api/greeks`)).json().catch(() => null);
   if (!Array.isArray(targets) || !targets.length) return { error: "no held option positions (sync positions first?)" };
 
@@ -299,7 +411,9 @@ async function getGreeks(backend) {
   if (!tab?.id) return { error: "no IB tab open — log into the IB portal" };
 
   const fetched = [];
-  for (const t of targets) {
+  for (let i = 0; i < targets.length; i++) {
+    const t = targets[i];
+    onProgress?.(`greeks ${i + 1}/${targets.length}`);
     const [res] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       args: [Number(t.conid)],
@@ -341,7 +455,7 @@ async function fetchMarginInPage(acct, conid, side, quantity) {
 // Fetch exact per-position margin: ask the backend which held option conids exist
 // (with the closing side/qty), what-if each in the logged-in IB page, then post to
 // /api/margin.
-async function getMargins(backend) {
+async function getMargins(backend, onProgress) {
   const targets = await (await fetch(`${backend}/api/margin`)).json().catch(() => null);
   if (!Array.isArray(targets) || !targets.length) return { error: "no held option positions (sync positions first?)" };
 
@@ -365,7 +479,9 @@ async function getMargins(backend) {
   if (!acct) return { error: "not logged in (no account)" };
 
   const fetched = [];
-  for (const t of targets) {
+  for (let i = 0; i < targets.length; i++) {
+    const t = targets[i];
+    onProgress?.(`margin ${i + 1}/${targets.length}`);
     const [res] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       args: [acct, Number(t.conid), t.side, t.quantity],
@@ -677,23 +793,34 @@ chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name !== ALARM) return;
   const { backend, autoOn } = await chrome.storage.local.get(["backend", "autoOn"]);
   if (!autoOn) return;
+  await setBusy("Auto-syncing");
+  const hb = startHeartbeat();
   const r = await runSync(backend || DEFAULT_BACKEND, { preferActive: false, source: "auto" }).catch((e) => ({ error: String(e) }));
-  await setStatus(r.error ? `auto: ${r.error}` : `auto ✓ ${summary(r)}`);
+  clearInterval(hb);
+  try {
+    await setStatus(r.error ? `auto: ${r.error}` : `auto ✓ ${summary(r)}`);
+  } finally {
+    await clearBusy();
+  }
 });
 
 function summary(r) {
-  const p = r.positions?.count ?? "—";
-  const o = r.orders?.count ?? "—";
-  const t = r.trades ? `+${r.trades.added}` : "—";
-  const w = r.watchlists?.lists != null ? `${r.watchlists.lists}` : "—";
-  const oh = r.ohPush?.pushed != null ? `${r.ohPush.pushed}/${r.ohPush.total}` : "—";
-  const ohv = r.ohVerify ? (r.ohVerify.error ? " · verify ✕" : r.ohVerify.ok ? " · verify ✓" : ` · verify ⚠${r.ohVerify.mismatched ?? "?"}`) : "";
-  const g = r.greeks?.updated != null ? ` · greeks ${r.greeks.updated}/${r.greeks.tried ?? "?"}` : "";
-  const mg = r.margins?.updated != null ? ` · margin ${r.margins.updated}/${r.margins.tried ?? "?"}` : "";
-  const bal = r.balances?.ok ? " · bal ✓" : "";
-  const cd = r.conids?.updated != null ? ` · conid ${r.conids.updated}` : "";
-  const un = r.underlyings?.pinned != null ? ` · und ${r.underlyings.pinned}/${r.underlyings.tried ?? "?"}` : "";
-  return `pos ${p} · ord ${o} · trd ${t} · wl ${w} · OH→IB ${oh}${ohv}${g}${mg}${bal}${cd}${un}`;
+  // Only include segments the run actually produced, so a Deep sync doesn't show a
+  // misleading "pos — · ord — · trd —" (it does no light pull) and vice-versa.
+  const parts = [];
+  if (r.acct != null) parts.push(`acct ${r.acct}`);
+  if (r.positions) parts.push(`pos ${r.positions.count ?? "—"}`);
+  if (r.orders) parts.push(`ord ${r.orders.count ?? "—"}`);
+  if (r.trades) parts.push(`trd +${r.trades.added ?? 0}`);
+  if (r.watchlists) parts.push(`wl ${r.watchlists.lists ?? "—"}`);
+  if (r.balances?.ok) parts.push("bal ✓");
+  if (r.ohPush) parts.push(`OH→IB ${r.ohPush.pushed ?? 0}/${r.ohPush.total ?? 0}`);
+  if (r.ohVerify) parts.push(r.ohVerify.error ? "verify ✕" : r.ohVerify.ok ? "verify ✓" : `verify ⚠${r.ohVerify.mismatched ?? "?"}`);
+  if (r.greeks?.updated != null) parts.push(`greeks ${r.greeks.updated}/${r.greeks.tried ?? "?"}`);
+  if (r.margins?.updated != null) parts.push(`margin ${r.margins.updated}/${r.margins.tried ?? "?"}`);
+  if (r.conids?.updated != null) parts.push(`conid ${r.conids.updated}`);
+  if (r.underlyings?.pinned != null) parts.push(`und ${r.underlyings.pinned}/${r.underlyings.tried ?? "?"}`);
+  return parts.join(" · ") || "no changes";
 }
 
 function scheduleAuto(minutes) {
@@ -715,75 +842,63 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
     return; // no reply
   }
   if (msg.type === "sendCapture") {
-    (async () => {
-      let dom = null;
-      let pageUrl = null;
-      try {
-        const tab = await findIbTab(true);
-        if (tab?.id) {
-          const [r] = await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: () => ({ html: document.documentElement.outerHTML, url: location.href }),
-          });
-          dom = r?.result?.html ?? null;
-          pageUrl = r?.result?.url ?? null;
-        }
-      } catch {}
-      return post(`${msg.backend}/api/ib-capture`, { label: msg.label || "", pageUrl, dom, captures, wsFrames });
-    })()
-      .then(reply)
-      .catch((e) => reply({ error: String(e) }));
+    handle(
+      "Sending page capture",
+      async () => {
+        let dom = null;
+        let pageUrl = null;
+        try {
+          const tab = await findIbTab(true);
+          if (tab?.id) {
+            const [r] = await chrome.scripting.executeScript({
+              target: { tabId: tab.id },
+              func: () => ({ html: document.documentElement.outerHTML, url: location.href }),
+            });
+            dom = r?.result?.html ?? null;
+            pageUrl = r?.result?.url ?? null;
+          }
+        } catch {}
+        return post(`${msg.backend}/api/ib-capture`, { label: msg.label || "", pageUrl, dom, captures, wsFrames });
+      },
+      fmt.capture,
+      reply,
+    );
     return true;
   }
   if (msg.type === "sync") {
-    runSync(msg.backend, { preferActive: true, withGreeks: true, source: "manual" })
-      .then((r) => {
-        setStatus(r.error ? `manual: ${r.error}` : `manual ✓ ${summary(r)}`);
-        reply(r);
-      })
-      .catch((e) => reply({ error: String(e) }));
+    handle("Syncing", (report) => runSync(msg.backend, { preferActive: true, source: "manual" }, report), fmt.sync, reply);
+    return true;
+  }
+  if (msg.type === "deepSync") {
+    handle("Deep syncing", (report) => runDeep(msg.backend, { source: "deep" }, report), fmt.deepSync, reply);
     return true;
   }
   if (msg.type === "resolveConids") {
-    resolveConids(msg.backend)
-      .then(reply)
-      .catch((e) => reply({ error: String(e) }));
+    handle("Resolving conids", () => resolveConids(msg.backend), fmt.resolveConids, reply);
     return true;
   }
   if (msg.type === "getOptions") {
-    getOptions(msg.backend, msg.tickers || [])
-      .then(reply)
-      .catch((e) => reply({ error: String(e) }));
+    handle("Fetching options", (report) => getOptions(msg.backend, msg.tickers || [], report), fmt.getOptions, reply);
     return true;
   }
   if (msg.type === "getGreeks") {
-    getGreeks(msg.backend)
-      .then(reply)
-      .catch((e) => reply({ error: String(e) }));
+    handle("Fetching greeks", (report) => getGreeks(msg.backend, report), fmt.getGreeks, reply);
     return true;
   }
   if (msg.type === "getMargins") {
-    getMargins(msg.backend)
-      .then(reply)
-      .catch((e) => reply({ error: String(e) }));
+    handle("Fetching margin", (report) => getMargins(msg.backend, report), fmt.getMargins, reply);
     return true;
   }
   if (msg.type === "pushOhWatchlists") {
-    pushOhWatchlists(msg.backend)
-      .then(reply)
-      .catch((e) => reply({ error: String(e) }));
+    handle("Pushing OH → IB", () => pushOhWatchlists(msg.backend), fmt.pushOh, reply);
     return true;
   }
   if (msg.type === "verifyOhWatchlists") {
-    verifyOhWatchlists(msg.backend)
-      .then(reply)
-      .catch((e) => reply({ error: String(e) }));
+    handle("Verifying OH lists", () => verifyOhWatchlists(msg.backend), fmt.verifyOh, reply);
     return true;
   }
   if (msg.type === "resolveUnderlyings") {
-    resolveUnderlyings(msg.backend)
-      .then(reply)
-      .catch((e) => reply({ error: String(e) }));
+    handle("Resolving underlyings", () => resolveUnderlyings(msg.backend), fmt.resolveUnderlyings, reply);
     return true;
   }
   if (msg.type === "setAuto") {

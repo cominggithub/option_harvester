@@ -111,21 +111,34 @@ This project owns **two dedicated databases**: `option_harvester` (prod) and
 **Apply schema changes** (`prisma/schema.prisma`): `npm run db:push` + `db:push:test`,
 then `db:generate`. Tables/columns are documented in **docs/spec.md § 6**.
 
+- **Why the `:test` scripts use `dotenv -e .env.test -o`.** The session/systemd
+  environment already exports a **prod** `DATABASE_URL`, and `dotenv` does **not**
+  override an already-set var — so a plain `dotenv -e .env.test` was silently ignored
+  and the "test" server/scripts wrote to **prod**. The `-o/--override` flag forces
+  `.env.test` to win (verified: `dotenv -e .env.test -o` → `option_harvester_test`,
+  survives the `@prisma/client` import). **All `:test` scripts must keep `-o`.** Do not
+  add a per-command `DATABASE_URL=…` workaround for `db:push:test` anymore — `-o` covers it.
+
 ## File map
 
 Behavior/why is in **docs/spec.md**; this is where code lives.
 
 Pages (all `force-dynamic`):
+- `src/app/md/[[...path]]/route.ts` — read-only Markdown mirrors for every UI page:
+  `/md/index.md`, `/md/watchlists.md`, `/md/stock/NVDA.md`, etc. The global TopNav
+  **MD / Copy** control builds the corresponding public URL and preserves query params.
+  Conversion is restricted to approved UI paths, extracts only `#page-content`, emits
+  `text/markdown` with `no-store` + `noindex`, and never proxies arbitrary hosts/APIs.
 - `src/app/page.tsx` — analyzer → `<Dashboard>`. The naked-call screen is the
   default "Naked Call" view here (the old standalone `/nc` route was removed).
 - `src/app/stock/[ticker]/page.tsx` — per-symbol detail page (7 sections).
 - `src/app/watchlists/page.tsx` — watchlists browser (`<WatchlistBrowser>`): OH
   (computed) + IB (synced) lists in the Analyzer table view. See docs/watchlists.md.
 - `src/app/wl-log/page.tsx` — **WL Log**: OH-watchlist change log. Diffs the daily
-  `option_harvest_oh_screen_snapshots` per OH list (NC/NCcan/Cpos/Ppos/RED/HIV) and
+  `option_harvest_oh_screen_snapshots` per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/OTC) and
   explains each add/remove by the predicate input that flipped (IV crossing a
-  threshold, a trend window, a ladder gap, a position open/close, |Δ| past 0.30).
-  Built by `getOhChangeLog` (`lib/ohhistory.ts`).
+  threshold, a trend window, a ladder gap, a position open/close, |Δ| past 0.30, a
+  target flag toggled). Built by `getOhChangeLog` (`lib/ohhistory.ts`).
 - `src/app/ib/page.tsx` — IB-vs-Yahoo option-data comparison (`ib_*` quote columns).
 - `src/app/positions/page.tsx` — positions + action board (sticky TOC nav); holdings
   detail shows per option leg its OTM $ (distance to strike) + OTM % (moneyness) and
@@ -141,7 +154,8 @@ Pages (all `force-dynamic`):
   Rolls, All Contracts.
 - `src/app/pnl-predict/page.tsx` — **P&L Predict**: open option book grouped by expiry
   (near→far) with per-date + cumulative unrealized P/L, premium, **earned%/unearned$/%**,
-  per-position greeks (Δ/Θ/Γ; per-leg delta colour-coded by risk), sticky section nav,
+  current underlying **Spot before Strike** on each detail row, per-position greeks
+  (Δ/Θ/Γ; per-leg delta colour-coded by risk), sticky section nav,
   interactive charts (cumulative P/L/credit + earned-vs-unearned amount & %,
   `CumulativePnlChart.tsx`), and an open-book win/loss matrix (inferred from unrealized
   P/L). Built by `buildOptionPnlByExpiry` in `positions.ts`.
@@ -236,28 +250,36 @@ Scripts (`scripts/`):
   see test plan.
 
 Chrome extension (`extension/`): runs in the logged-in IB portal tab. **Sync now**
-pulls positions/orders/trades/watchlists + the daily account-balance summary
-(`/portfolio/{acct}/summary` → `balances`) → the write APIs (IB→web, full replace),
-then fetches per-position greeks (Δ/Θ/Γ) for held options → `greeks`, exact
-maintenance margin per held contract (what-if) → `margin`, **re-resolves all conids**
-(IB `/trsrv/stocks` → `securities/conids?all=1`, overwrites stale ones so renames/
-spinoffs like an old DOW/FISV listing self-correct — but skips **pinned** conids),
+(fast, background-safe) pulls positions/orders/trades/watchlists + the daily
+account-balance summary (`/portfolio/{acct}/summary` → `balances`) → the write APIs
+(IB→web, full replace), then pushes OH watchlists → IB (`OH:*`) and **reads them back
+to verify** the pushed conids (`/api/oh-verify`, shown on `/sync`). It's just parallel
+fetches (no per-contract timers), so it finishes in a few seconds and survives
+switching tabs / a backgrounded window. **Auto-sync** runs this same light pull on a
+timer. **Deep sync** (separate button) runs the **heavy** passes: per-position greeks
+(Δ/Θ/Γ) → `greeks`, exact maintenance margin per held contract (what-if) → `margin`,
 **resolves the true underlying conid for held option-only names** (a naked book holds
 options not the stock, so IB's per-symbol `/trsrv` pick can be wrong — the option's
-`undConid` is authoritative; pinned as `ib-option`), and pushes OH
-watchlists → IB (`OH:*`), then **reads them back to verify** the pushed conids
-(`/api/oh-verify`, shown on `/sync`); auto-sync does the light pull only (positions/orders/trades/
-watchlists/balances, no greeks/margin/conid-refresh/underlying-resolve, but the OH push + read-back verify still run). Other
-popup actions: **Resolve conids** (backfill `securities.conid` via `/trsrv/stocks`),
-**Get options (IB)** (per-ticker ATM option snapshot → `ib_*`), **Get greeks (IB)**
-(per held-contract snapshot → `option_harvest_option_greeks`), **Get margin (IB)**
-(per held-contract what-if close order → `option_harvest_position_margin`),
-**Push OH → IB**, **Verify OH lists (read back)**, **Fix conids from held options**, and
-**Send page (dev)** capture → `ib-capture`. Every Sync (manual + auto) posts a daily
-account-balance snapshot to `balances` and its run summary to `sync-log` (the `/sync`
-page). Full flows in **docs/watchlists.md**.
+`undConid` is authoritative; pinned as `ib-option`), **re-resolves all conids** (IB
+`/trsrv/stocks` → `securities/conids?all=1`, overwrites stale ones so renames/spinoffs
+like an old DOW/FISV listing self-correct — but skips **pinned** conids), then re-pushes
++ re-verifies OH lists. These are paced by in-page `setTimeout`s (a snapshot/what-if per
+held contract, ~600-name conid re-resolve), so Chrome throttles them to a crawl if the
+IB tab is backgrounded — **keep the IB tab in the foreground for a Deep sync**, and run
+a **Sync now first** (Deep reads its targets — held conids/tickers — from the backend).
+The background worker emits a 15s heartbeat while any op runs (doubles as an MV3
+keepalive); the popup uses it to tell a live run from an orphaned "busy" flag and to
+timestamp every log line. While an op runs the worker pushes live step/item progress
+to the popup log (e.g. `greeks 12/97`, `margin 5/97`, `conids…`, `OH push`). Other popup actions: **Resolve conids** (backfill
+`securities.conid` via `/trsrv/stocks`), **Get options (IB)** (per-ticker ATM option
+snapshot → `ib_*`), **Get greeks (IB)** (per held-contract snapshot →
+`option_harvest_option_greeks`), **Get margin (IB)** (per held-contract what-if close
+order → `option_harvest_position_margin`), **Push OH → IB**, **Verify OH lists (read
+back)**, **Fix conids from held options**, and **Send page (dev)** capture →
+`ib-capture`. Every Sync (manual/auto/deep) posts its run summary to `sync-log` (the
+`/sync` page, `source` = `manual` | `auto` | `deep`). Full flows in **docs/watchlists.md**.
 **Bump `manifest.json` `version` on every edit** (see
-`[[bump-extension-version]]`; currently 0.8.11).
+`[[bump-extension-version]]`; currently 0.8.16).
 
 ## Local dev gotchas (WSL on `/mnt/d`)
 

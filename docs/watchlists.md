@@ -25,6 +25,8 @@ OH→IB push so membership has one source of truth.
 | `ppos` | Ppos    | `s.position.put !== 0` — underlyings you hold a **put** option on. |
 | `red`  | RED     | `s.position && maxOptAbsDelta > 0.30` — high assignment risk: held names whose largest option leg (call or put) has \|Δ\| > 0.30. Needs synced greeks. |
 | `hiv`  | HIV     | `s.ivPct > 50` — high implied vol: any tracked name (stock or ETF) with front-month ATM IV above 50%. |
+| `hivs` | HIVS    | `hiv && 20 < s.price < 200` — high implied vol, restricted to the mid price band ($20–$200). |
+| `otc`  | OTC     | `(s.target \|\| s.position.call !== 0 \|\| s.position.put !== 0) && s.position.call === 0` — "Option Targets, no Call": names shown in the Analyzer's Option Targets (flagged bullseye **or** any held option leg) that you don't yet hold a **call** on. Your call-writing candidates; excludes anything already in Cpos. |
 
 (NC = the doctrine's naked-call screen; see docs/spec.md §3 and docs/strategy.md.)
 
@@ -110,20 +112,32 @@ All run in the user's **logged-in IB portal tab** (session cookies) and target t
 backend in the popup (default prod `http://114.33.62.221:19210`). The extension is
 manifest v3; **bump `manifest.json` version on every edit**.
 
-### 4a. IB → web  (popup: **Sync now**)
+### 4a. IB → web  (popup: **Sync now**; auto-sync)
 `fetchAllInPage` also pulls watchlists: `GET /iserver/watchlists` (the
 `data.user_lists`) → `GET /iserver/watchlist?id=<id>` per list → `POST /api/watchlist
 { ibWatchlists }`. The endpoint parses (`parseIbPortalWatchlists`) and
-**deleteMany + createMany** — a full replace. Runs alongside positions/orders/trades.
-**Sync now also fetches per-position greeks (4e) then pushes OH → IB (4b) at the end**
-— positions are posted first, so both reflect the fresh snapshot. The OH push applies
-to auto-sync too; **greeks do NOT** run on auto-sync (heavy: one snapshot per held
-contract) — only on manual **Sync now** (or the standalone **Get greeks (IB)** button).
+**deleteMany + createMany** — a full replace. It runs alongside positions/orders/
+trades/balances, then pushes OH → IB (4b) and reads the result back (4f). **Sync now is
+intentionally fast and background-safe**: no per-contract timers, so switching tabs
+or closing the popup does not strand a long heavy run. Auto-sync uses this same light
+path.
+
+### 4e. Deep sync  (popup: **Deep sync (greeks/margin/conids)**)
+The heavy passes are separate: per-held-contract greeks, per-contract margin what-if,
+validated held-option underlying resolution, and the full ~600-symbol conid re-resolve;
+then OH lists are re-pushed and verified because conids may have changed. Run **Sync
+now first** so the backend has fresh position targets, and keep the IB tab in the
+foreground—Chrome throttles the in-page `setTimeout` pacing in background tabs.
+
+The MV3 worker persists `busy`/progress state in `chrome.storage.local`, refreshes a
+15-second heartbeat, and timestamps every status. Reopening the popup shows the live
+step/item count (`greeks 12/97`, `margin 5/97`, etc.); a stale heartbeat clears an
+orphaned busy flag. Deep runs post `source: "deep"` to `/api/sync-log`.
 
 ### 4b. web → IB  (popup: **Push OH → IB watchlists**, and part of Sync now)
-Publishes the OH lists to IB as **`OH:NC`, `OH:NCcan`, `OH:Cpos`, `OH:Ppos`, `OH:RED`, `OH:HIV`**.
+Publishes the OH lists to IB as **`OH:NC`, `OH:NCcan`, `OH:Cpos`, `OH:Ppos`, `OH:RED`, `OH:HIV`, `OH:HIVS`**.
 
-- `GET /api/oh-watchlists` → each list with a suggested id (990001–990006), `OH:`-prefixed
+- `GET /api/oh-watchlists` → each list with a suggested id (990001–990008), `OH:`-prefixed
   name, and IB-ready `rows:[{C: conid}]` (conids from `securities.conid`; names
   without one are reported in `missing` and skipped).
 - IB has **no in-place edit**, so push = **delete + recreate**. The extension deletes
@@ -163,9 +177,9 @@ POSTs the conids it got back to **`POST /api/oh-verify`**. The endpoint rebuilds
 A list is `ok` when both are empty. The latest result (matched / mismatched counts +
 per-list diff) is stored in `option_harvest_oh_verify` and shown on **/sync** under
 "OH → IB push verification" — so a bad push surfaces automatically, without eyeballing
-the lists in the IB app. Runs whenever the push ran (manual **Sync now** and auto),
-since the `OH:*` lists are deliberately excluded from the normal pull (§4d) and this
-is the only programmatic read of what IB actually stored.
+the lists in the IB app. Runs whenever the push ran (**Sync now**, auto-sync, or
+**Deep sync**), since the `OH:*` lists are deliberately excluded from the normal pull
+(§4d) and this is the only programmatic read of what IB actually stored.
 
 ### 4c. Removal
 No dedicated delete flow is needed: deleting a list in IB and running **Sync now**
@@ -207,7 +221,8 @@ Backend (`src/app/api`):
   fields only). In-page: for each held conid the extension polls
   `/iserver/marketdata/snapshot?fields=…,7308,7309,7310,7311` until delta appears
   (greeks compute server-side after subscribe; best coverage during US market hours).
-  Drives the P&L Predict Δ/Θ/Γ columns.
+  Run by **Deep sync** or the standalone **Get greeks (IB)** button. Drives the P&L
+  Predict Δ/Θ/Γ columns.
 - `margin` — `GET` → held option conids with the closing order params
   `[{conid,ticker,desc,side,quantity}]`; `POST { fetched }` → per-contract margin into
   `option_harvest_position_margin` (upsert by conid, non-null only). In-page: for each

@@ -83,7 +83,7 @@ export default async function WlLogPage() {
       </div>
 
       <p className="mt-2 max-w-3xl text-[13.5px] leading-relaxed text-ink-muted">
-        The OH lists (NC/NCcan/Cpos/Ppos/RED) are recomputed every day from the morning ingest + your
+        The OH lists (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/OTC) are recomputed every day from the morning ingest + your
         synced positions. This log snapshots each day&rsquo;s membership and shows what was{" "}
         <span className="text-emerald-700">added</span> / <span className="text-rose-700">removed</span> between
         renews — and the reason (which screen input flipped: a trend, IV crossing 40%, a ladder gap, or a

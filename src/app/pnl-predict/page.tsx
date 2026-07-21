@@ -336,11 +336,12 @@ export default async function PnlPredictPage() {
                     </div>
 
                     <div className="overflow-x-auto">
-                    <table className="w-full min-w-[1080px] text-[13px]">
+                    <table className="w-full min-w-[1160px] text-[13px]">
                       <thead className="text-left text-[10.5px] uppercase tracking-wider text-ink-faint">
                         <tr className="border-y border-line">
                           <th className="px-4 py-1.5 font-medium">Symbol</th>
                           <th className="px-3 py-1.5 font-medium">Type</th>
+                          <th className="px-3 py-1.5 text-right font-medium">Spot</th>
                           <th className="px-3 py-1.5 text-right font-medium">Strike</th>
                           <th className="px-3 py-1.5 text-right font-medium">Qty</th>
                           <th className="px-3 py-1.5 text-right font-medium">Unit Cost</th>
@@ -363,6 +364,7 @@ export default async function PnlPredictPage() {
                             <tr key={i} className="border-b border-line last:border-0 hover:bg-canvas">
                               <td className="px-4 py-2 font-medium text-ink">{leg.symbol}</td>
                               <td className="px-3 py-2"><span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${cls}`}>{tag}</span></td>
+                              <td className="tnum px-3 py-2 text-right">{price(leg.spot)}</td>
                               <td className="tnum px-3 py-2 text-right">{leg.strike == null ? "—" : price(leg.strike)}</td>
                               <td className="tnum px-3 py-2 text-right">{num(leg.quantity)}</td>
                               <td className="tnum px-3 py-2 text-right">{price(leg.unitCost)}</td>
@@ -382,7 +384,7 @@ export default async function PnlPredictPage() {
                       </tbody>
                       <tfoot>
                         <tr className="border-t border-line bg-canvas/60 text-[12px] font-medium">
-                          <td className="px-4 py-1.5 text-ink-faint" colSpan={5}>{fmtExpiry(g.expiry)} subtotal</td>
+                          <td className="px-4 py-1.5 text-ink-faint" colSpan={6}>{fmtExpiry(g.expiry)} subtotal</td>
                           <td className="tnum px-3 py-1.5 text-right text-emerald-700">{money(g.credit)}</td>
                           <td className="px-3 py-1.5" colSpan={2}></td>
                           <td className={`tnum px-3 py-1.5 text-right ${pnlClass(g.unrealizedPnl)}`}>{signedMoney(g.unrealizedPnl)}</td>
@@ -394,7 +396,7 @@ export default async function PnlPredictPage() {
                           <td className="tnum px-4 py-1.5 text-right text-ink" title="Net position gamma">{gNet(g.netGamma, 1)}</td>
                         </tr>
                         <tr className="bg-canvas/60 text-[12px] font-semibold">
-                          <td className="px-4 py-1.5 text-ink-faint" colSpan={5}>Cumulative through {fmtExpiry(g.expiry)}</td>
+                          <td className="px-4 py-1.5 text-ink-faint" colSpan={6}>Cumulative through {fmtExpiry(g.expiry)}</td>
                           <td className="tnum px-3 py-1.5 text-right text-emerald-700">{money(g.cumulativeCredit)}</td>
                           <td className="px-3 py-1.5" colSpan={2}></td>
                           <td className={`tnum px-3 py-1.5 text-right ${pnlClass(g.cumulativePnl)}`}>{signedMoney(g.cumulativePnl)}</td>
