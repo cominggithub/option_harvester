@@ -8,6 +8,7 @@ export type SortKey =
   | "ccScore"
   | "ivPct"
   | "ivRank"
+  | "roic"
   | "price"
   | "changePct"
   | "marketCap"
@@ -55,6 +56,7 @@ export const SORT_LABELS: Record<SortKey, string> = {
   ccScore: "Call Edge",
   ivPct: "IV",
   ivRank: "IV Rank",
+  roic: "ROIC",
   price: "Last",
   changePct: "Chg %",
   marketCap: "Mkt Cap",

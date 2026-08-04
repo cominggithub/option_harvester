@@ -8,6 +8,7 @@ import {
   NC_MIN_WEEKLY_BUCKETS,
 } from "@/lib/securities";
 import { HIV_IV_MIN, HIVS_PRICE_MIN, HIVS_PRICE_MAX } from "@/lib/watchlists";
+import { HIGH_ROIC_MIN, isHighRoic } from "@/lib/roic";
 
 // OH-watchlist change log. OH lists (NC/NCcan/Cpos/Ppos/RED) are computed live and
 // never stored, so on their own they have no history — you can't tell what was added
@@ -41,6 +42,7 @@ export async function snapshotOhScreen(): Promise<{ date: string; rows: number }
     price: s.price ?? null,
     weeklyBuckets: s.weeklyBuckets ?? null,
     ivPct: s.ivPct ?? null,
+    roic: s.roic ?? null,
     trendM1: s.trend?.m1?.label ?? null,
     trendM3: s.trend?.m3?.label ?? null,
     trendM6: s.trend?.m6?.label ?? null,
@@ -68,6 +70,7 @@ type Snap = {
   price: number | null;
   weeklyBuckets: number | null;
   ivPct: number | null;
+  roic: number | null;
   trendM1: string | null;
   trendM3: string | null;
   trendM6: string | null;
@@ -89,16 +92,21 @@ const LIST_META: { key: string; name: string; inList: (r: Snap) => boolean }[] =
   { key: "cpos", name: "Cpos", inList: (r) => (r.posCall ?? 0) !== 0 },
   { key: "ppos", name: "Ppos", inList: (r) => (r.posPut ?? 0) !== 0 },
   { key: "red", name: "RED", inList: (r) => r.held && Number(r.maxOptAbsDelta ?? 0) > 0.3 },
-  { key: "hiv", name: "HIV", inList: (r) => Number(r.ivPct ?? 0) > HIV_IV_MIN },
-  { key: "hivs", name: "HIVS", inList: (r) => Number(r.ivPct ?? 0) > HIV_IV_MIN && r.price != null && r.price > HIVS_PRICE_MIN && r.price < HIVS_PRICE_MAX },
+  { key: "hiv", name: "HIV", inList: (r) => Number(r.ivPct ?? 0) > HIV_IV_MIN && (r.weeklyBuckets ?? 0) >= NC_MIN_WEEKLY_BUCKETS },
+  { key: "hivs", name: "HIVS", inList: (r) => Number(r.ivPct ?? 0) > HIV_IV_MIN && (r.weeklyBuckets ?? 0) >= NC_MIN_WEEKLY_BUCKETS && r.price != null && r.price > HIVS_PRICE_MIN && r.price < HIVS_PRICE_MAX },
+  // HIVSC — HIVS names with no held call or put option.
+  { key: "hivsc", name: "HIVSC", inList: (r) => Number(r.ivPct ?? 0) > HIV_IV_MIN && (r.weeklyBuckets ?? 0) >= NC_MIN_WEEKLY_BUCKETS && r.price != null && r.price > HIVS_PRICE_MIN && r.price < HIVS_PRICE_MAX && (r.posCall ?? 0) === 0 && (r.posPut ?? 0) === 0 },
   // OTC — "Option Targets, no Call": flagged (or any option leg held) but no call held.
   { key: "otc", name: "OTC", inList: (r) => (r.target || (r.posCall ?? 0) !== 0 || (r.posPut ?? 0) !== 0) && (r.posCall ?? 0) === 0 },
+  // ROIC — value-quality: names with ROIC ≥ HIGH_ROIC_MIN (stocks only).
+  { key: "roic", name: "ROIC", inList: (r) => isHighRoic(r.roic) },
 ];
 
 const fmtM = (v: number | null) => (v == null ? "?" : `${(v / 1_000_000).toFixed(1)}M`);
 const fmtIv = (v: number | null) => (v == null ? "?" : `${v.toFixed(0)}%`);
 const fmtPrice = (v: number | null) => (v == null ? "?" : `$${v.toFixed(0)}`);
 const fmtDelta = (v: number | null) => (v == null ? "?" : Math.abs(v).toFixed(2));
+const fmtRoic = (v: number | null) => (v == null ? "?" : `${(v * 100).toFixed(0)}%`);
 
 // NC criteria booleans for one row.
 function ncCrit(r: Snap) {
@@ -176,23 +184,58 @@ function reasonFor(key: string, prev: Snap | undefined, cur: Snap, dir: "added" 
       return `|Δ| ${pd}→${cd} (≤0.30)`;
     }
     case "hiv": {
+      // HIV = high IV AND a 1/2/3/4-week ladder. Explain whichever input flipped.
+      const ivHi = (r: Snap | undefined) => r != null && Number(r.ivPct ?? 0) > HIV_IV_MIN;
+      const ladderOk = (r: Snap | undefined) => r != null && (r.weeklyBuckets ?? 0) >= NC_MIN_WEEKLY_BUCKETS;
       const pv = prev ? fmtIv(prev.ivPct) : "?";
-      return dir === "added" ? `IV ${pv}→${fmtIv(cur.ivPct)} (>${HIV_IV_MIN}%)` : `IV ${pv}→${fmtIv(cur.ivPct)} (≤${HIV_IV_MIN}%)`;
+      const parts: string[] = [];
+      if (dir === "added") {
+        if (!ivHi(prev) && ivHi(cur)) parts.push(`IV ${pv}→${fmtIv(cur.ivPct)} (>${HIV_IV_MIN}%)`);
+        if (!ladderOk(prev) && ladderOk(cur)) parts.push(`weekly ladder ${cur.weeklyBuckets ?? 0} (≥${NC_MIN_WEEKLY_BUCKETS})`);
+      } else {
+        if (ivHi(prev) && !ivHi(cur)) parts.push(`IV ${pv}→${fmtIv(cur.ivPct)} (≤${HIV_IV_MIN}%)`);
+        if (ladderOk(prev) && !ladderOk(cur)) parts.push(`weekly ladder ${cur.weeklyBuckets ?? 0} (<${NC_MIN_WEEKLY_BUCKETS})`);
+      }
+      return parts.join("; ") || (dir === "added" ? "entered HIV" : "left HIV");
     }
     case "hivs": {
-      // HIVS = high IV AND mid price band. Explain whichever input flipped.
+      // HIVS = high IV AND ladder AND mid price band. Explain whichever input flipped.
       const ivHi = (r: Snap | undefined) => r != null && Number(r.ivPct ?? 0) > HIV_IV_MIN;
+      const ladderOk = (r: Snap | undefined) => r != null && (r.weeklyBuckets ?? 0) >= NC_MIN_WEEKLY_BUCKETS;
       const inBand = (r: Snap | undefined) => r != null && r.price != null && r.price > HIVS_PRICE_MIN && r.price < HIVS_PRICE_MAX;
       const pv = prev ? fmtIv(prev.ivPct) : "?";
       const parts: string[] = [];
       if (dir === "added") {
         if (!ivHi(prev) && ivHi(cur)) parts.push(`IV ${pv}→${fmtIv(cur.ivPct)} (>${HIV_IV_MIN}%)`);
+        if (!ladderOk(prev) && ladderOk(cur)) parts.push(`weekly ladder ${cur.weeklyBuckets ?? 0} (≥${NC_MIN_WEEKLY_BUCKETS})`);
         if (!inBand(prev) && inBand(cur)) parts.push(`price ${fmtPrice(cur.price)} (band $${HIVS_PRICE_MIN}–$${HIVS_PRICE_MAX})`);
       } else {
         if (ivHi(prev) && !ivHi(cur)) parts.push(`IV ${pv}→${fmtIv(cur.ivPct)} (≤${HIV_IV_MIN}%)`);
+        if (ladderOk(prev) && !ladderOk(cur)) parts.push(`weekly ladder ${cur.weeklyBuckets ?? 0} (<${NC_MIN_WEEKLY_BUCKETS})`);
         if (inBand(prev) && !inBand(cur)) parts.push(`price ${fmtPrice(cur.price)} (out of $${HIVS_PRICE_MIN}–$${HIVS_PRICE_MAX})`);
       }
       return parts.join("; ") || (dir === "added" ? "entered HIVS" : "left HIVS");
+    }
+    case "hivsc": {
+      // HIVSC = HIVS (high IV ∧ ladder ∧ mid price band) ∧ no held call/put. Explain which input flipped.
+      const ivHi = (r: Snap | undefined) => r != null && Number(r.ivPct ?? 0) > HIV_IV_MIN;
+      const ladderOk = (r: Snap | undefined) => r != null && (r.weeklyBuckets ?? 0) >= NC_MIN_WEEKLY_BUCKETS;
+      const inBand = (r: Snap | undefined) => r != null && r.price != null && r.price > HIVS_PRICE_MIN && r.price < HIVS_PRICE_MAX;
+      const noPos = (r: Snap | undefined) => r != null && (r.posCall ?? 0) === 0 && (r.posPut ?? 0) === 0;
+      const pv = prev ? fmtIv(prev.ivPct) : "?";
+      const parts: string[] = [];
+      if (dir === "added") {
+        if (!ivHi(prev) && ivHi(cur)) parts.push(`IV ${pv}→${fmtIv(cur.ivPct)} (>${HIV_IV_MIN}%)`);
+        if (!ladderOk(prev) && ladderOk(cur)) parts.push(`weekly ladder ${cur.weeklyBuckets ?? 0} (≥${NC_MIN_WEEKLY_BUCKETS})`);
+        if (!inBand(prev) && inBand(cur)) parts.push(`price ${fmtPrice(cur.price)} (band $${HIVS_PRICE_MIN}–$${HIVS_PRICE_MAX})`);
+        if (!noPos(prev) && noPos(cur)) parts.push("closed call/put position");
+      } else {
+        if (ivHi(prev) && !ivHi(cur)) parts.push(`IV ${pv}→${fmtIv(cur.ivPct)} (≤${HIV_IV_MIN}%)`);
+        if (ladderOk(prev) && !ladderOk(cur)) parts.push(`weekly ladder ${cur.weeklyBuckets ?? 0} (<${NC_MIN_WEEKLY_BUCKETS})`);
+        if (inBand(prev) && !inBand(cur)) parts.push(`price ${fmtPrice(cur.price)} (out of $${HIVS_PRICE_MIN}–$${HIVS_PRICE_MAX})`);
+        if (noPos(prev) && !noPos(cur)) parts.push(`opened ${cur.posCall !== 0 ? "call" : "put"} position`);
+      }
+      return parts.join("; ") || (dir === "added" ? "entered HIVSC" : "left HIVSC");
     }
     case "otc": {
       // OTC = (target ∨ any option leg) ∧ no call. Explain which input flipped.
@@ -205,6 +248,12 @@ function reasonFor(key: string, prev: Snap | undefined, cur: Snap, dir: "added" 
       if (prev && prev.posCall === 0 && cur.posCall !== 0) return `opened call position (${cur.posCall}) → now Cpos`;
       if (prev && prev.target && !cur.target && cur.posPut === 0) return "unflagged (no option leg held)";
       return "no longer a target";
+    }
+    case "roic": {
+      const pv = prev ? fmtRoic(prev.roic) : "?";
+      const cv = fmtRoic(cur.roic);
+      const thr = `${(HIGH_ROIC_MIN * 100).toFixed(0)}%`;
+      return dir === "added" ? `ROIC ${pv}→${cv} (≥${thr})` : `ROIC ${pv}→${cv} (<${thr})`;
     }
     default:
       return dir;
@@ -239,6 +288,7 @@ export async function getOhChangeLog(limitDates = 30): Promise<OhChangeLog> {
       price: r.price != null ? Number(r.price) : null,
       weeklyBuckets: r.weeklyBuckets,
       ivPct: r.ivPct != null ? Number(r.ivPct) : null,
+      roic: r.roic != null ? Number(r.roic) : null,
       trendM1: r.trendM1,
       trendM3: r.trendM3,
       trendM6: r.trendM6,

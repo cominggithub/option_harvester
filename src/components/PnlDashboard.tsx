@@ -261,16 +261,29 @@ function instrumentLabel(t: LedgerTxn): string {
   if (t.expiry) parts.push(`exp ${t.expiry}`);
   return parts.join(" · ");
 }
-// Tint the transaction-type chip: opens (Sell/Buy-to-open) neutral, closes and
-// assignments stand out a touch.
+// Fill label by instrument kind: SPOT stays plain Buy/Sell (Assignment passes
+// through); an OPTION reads as Open / Close / Expired — a short opens by selling
+// and closes by buying (a "buy to close"), a long is the opposite.
+function actionLabel(kind: "option" | "stock", action: string, qty: number, strategy: Strategy | null): string {
+  if (kind === "stock") return action; // Buy / Sell / Assignment
+  if (action !== "Buy" && action !== "Sell") return action; // Expired / Assignment
+  const openIsBuy = strategy === "long_call" || strategy === "long_put";
+  return qty > 0 !== openIsBuy ? "Close" : "Open";
+}
+// Tint the fill-type chip.
 const typeTone = (type: string): string => {
   const t = type.toLowerCase();
   if (t === "expired") return "bg-emerald-50 text-emerald-700";
   if (t === "assignment") return "bg-amber-50 text-amber-700";
+  if (t === "close") return "bg-orange-50 text-orange-700";
+  if (t === "open") return "bg-sky-50 text-sky-700";
   if (t === "sell") return "bg-sky-50 text-sky-700";
   if (t === "buy") return "bg-violet-50 text-violet-700";
   return "bg-canvas text-ink-muted";
 };
+function TypeChip({ label }: { label: string }) {
+  return <span className={`rounded px-1.5 py-0.5 text-[10px] ${typeTone(label)}`}>{label}</span>;
+}
 const px = (n: number | null) => (n == null ? "—" : n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const signedQty = (q: number) => (q > 0 ? `+${q}` : String(q));
 // Gross winning vs losing realized amount from a period's fills (option realized
@@ -342,7 +355,7 @@ function ByPeriod({ r }: { r: PnlReport }) {
 
       <Panel title="Week by week, grouped by month" hint="expand a month → a week to see its transactions">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1040px] table-fixed text-[12.5px]">
+          <table className="w-full min-w-[1180px] table-fixed text-[12.5px]">
             <colgroup>
               <col />
               <col className="w-[48px]" />
@@ -352,6 +365,8 @@ function ByPeriod({ r }: { r: PnlReport }) {
               <col className="w-[74px]" />
               <col className="w-[88px]" />
               <col className="w-[88px]" />
+              <col className="w-[56px]" />
+              <col className="w-[62px]" />
               <col className="w-[90px]" />
               <col className="w-[100px]" />
             </colgroup>
@@ -365,6 +380,8 @@ function ByPeriod({ r }: { r: PnlReport }) {
                 <th className="py-1.5 text-right font-medium" title="Unearned ÷ premium collected">Unearned %</th>
                 <th className="py-1.5 text-right font-medium" title="Gross winning realized P/L (profitable option contracts)">Wins</th>
                 <th className="py-1.5 text-right font-medium" title="Gross losing realized P/L (losing option contracts)">Losses</th>
+                <th className="py-1.5 text-right font-medium" title="Option contracts resolved (closed/expired) in the period">#&nbsp;Opt</th>
+                <th className="py-1.5 text-right font-medium" title="Winning ÷ resolved option contracts">Win&nbsp;%</th>
                 <th className="py-1.5 text-right font-medium">P/L</th>
                 <th className="py-1.5 text-right font-medium">Cumulative</th>
               </tr>
@@ -396,6 +413,8 @@ function ByPeriod({ r }: { r: PnlReport }) {
                       <td className="tnum py-2 text-right text-ink-muted">{g.credit ? pct((g.credit - g.earned) / g.credit) : "·"}</td>
                       <td className={`tnum py-2 text-right ${mwl.win ? "text-emerald-700" : "text-ink-faint"}`} title={`${mwl.wc} winning contract${mwl.wc === 1 ? "" : "s"}`}>{mwl.win ? money(mwl.win) : "·"}</td>
                       <td className={`tnum py-2 text-right ${mwl.loss ? "text-rose-700" : "text-ink-faint"}`} title={`${mwl.lc} losing contract${mwl.lc === 1 ? "" : "s"}`}>{mwl.loss ? money(mwl.loss) : "·"}</td>
+                      <td className="tnum py-2 text-right text-ink-muted">{mwl.wc + mwl.lc || "·"}</td>
+                      <td className={`tnum py-2 text-right ${mwl.wc + mwl.lc ? cls(mwl.win + mwl.loss) : "text-ink-faint"}`} title={`${mwl.wc}W / ${mwl.lc}L`}>{mwl.wc + mwl.lc ? pct(mwl.wc / (mwl.wc + mwl.lc)) : "·"}</td>
                       <td className={`tnum py-2 text-right font-semibold ${cls(g.pnl)}`}>{money(g.pnl)}</td>
                       <td className={`tnum py-2 text-right ${cls(monthCum)}`}>{money(monthCum)}</td>
                     </tr>
@@ -428,12 +447,14 @@ function ByPeriod({ r }: { r: PnlReport }) {
                             <td className="tnum py-1.5 text-right text-ink-muted">{wk.credit ? pct((wk.credit - wk.earned) / wk.credit) : "·"}</td>
                             <td className={`tnum py-1.5 text-right ${wl.win ? "text-emerald-700" : "text-ink-faint"}`} title={`${wl.wc} winning contract${wl.wc === 1 ? "" : "s"}`}>{wl.win ? money(wl.win) : "·"}</td>
                             <td className={`tnum py-1.5 text-right ${wl.loss ? "text-rose-700" : "text-ink-faint"}`} title={`${wl.lc} losing contract${wl.lc === 1 ? "" : "s"}`}>{wl.loss ? money(wl.loss) : "·"}</td>
+                            <td className="tnum py-1.5 text-right text-ink-muted">{wl.wc + wl.lc || "·"}</td>
+                            <td className={`tnum py-1.5 text-right ${wl.wc + wl.lc ? cls(wl.win + wl.loss) : "text-ink-faint"}`} title={`${wl.wc}W / ${wl.lc}L`}>{wl.wc + wl.lc ? pct(wl.wc / (wl.wc + wl.lc)) : "·"}</td>
                             <td className={`tnum py-1.5 text-right ${wk.pnl ? cls(wk.pnl) : "text-ink-faint"}`}>{wk.pnl ? money(wk.pnl) : "·"}</td>
                             <td className={`tnum py-1.5 text-right ${cls(wk.cum)}`}>{money(wk.cum)}</td>
                           </tr>
                           {wkOpen && hasTx && (
                             <tr className="bg-canvas/40">
-                              <td colSpan={10} className="px-3 py-2 pl-10">
+                              <td colSpan={12} className="px-3 py-2 pl-10">
                                 <table className="w-full text-[11px]">
                                   <thead className="text-left text-[9.5px] uppercase tracking-wider text-ink-faint">
                                     <tr className="border-b border-line/60">
@@ -441,10 +462,10 @@ function ByPeriod({ r }: { r: PnlReport }) {
                                       <th className="py-1 font-medium">Instrument</th>
                                       <th className="py-1 font-medium">Type</th>
                                       <th className="py-1 text-right font-medium">Qty</th>
-                                      <th className="py-1 text-right font-medium" title="Price the position was opened at (shown on the closing fill)">Entry @</th>
-                                      <th className="py-1 text-right font-medium" title="This fill's price">Price</th>
+                                      <th className="py-1 text-right font-medium" title="This fill's execution (deal) price">Price</th>
+                                      <th className="py-1 text-right font-medium" title="Average cost basis of the shares/contracts this fill closes (blank when the fill opens a position)">Cost</th>
                                       <th className="py-1 text-right font-medium" title="Net cash of this fill — credit taken in (+) or paid to close (−)">Cash</th>
-                                      <th className="py-1 text-right font-medium" title="Realized P/L of the round trip, booked on the closing fill (entry − close)">P/L</th>
+                                      <th className="py-1 text-right font-medium" title="Realized P/L when this fill closes a position = (price − cost) × qty">P/L</th>
                                     </tr>
                                   </thead>
                                   <tbody>
@@ -455,10 +476,10 @@ function ByPeriod({ r }: { r: PnlReport }) {
                                           <span className="font-medium text-ink">{t.symbol}</span>
                                           <span className="ml-1.5 text-ink-muted">{instrumentLabel(t)}</span>
                                         </td>
-                                        <td className="py-1 pr-3"><span className={`rounded px-1.5 py-0.5 text-[10px] ${typeTone(t.type)}`}>{t.type}</span></td>
+                                        <td className="py-1 pr-3"><TypeChip label={actionLabel(t.kind, t.type, t.qty, t.strategy)} /></td>
                                         <td className={`tnum py-1 pr-3 text-right ${t.qty < 0 ? "text-rose-700" : t.qty > 0 ? "text-emerald-700" : "text-ink-faint"}`}>{t.qty ? signedQty(t.qty) : "—"}</td>
-                                        <td className="tnum py-1 pr-3 text-right text-ink-muted">{t.entryPrice != null ? px(t.entryPrice) : "·"}</td>
                                         <td className="tnum py-1 pr-3 text-right text-ink-muted">{px(t.price)}</td>
+                                        <td className="tnum py-1 pr-3 text-right text-ink-muted">{t.entryPrice != null ? px(t.entryPrice) : "·"}</td>
                                         <td className={`tnum py-1 pr-3 text-right ${t.cash ? cls(t.cash) : "text-ink-faint"}`}>{t.cash ? money(t.cash) : "—"}</td>
                                         <td className={`tnum py-1 text-right ${t.pnl ? cls(t.pnl) : "text-ink-faint"}`}>{t.pnl ? money(t.pnl) : "·"}</td>
                                       </tr>
@@ -482,7 +503,10 @@ function ByPeriod({ r }: { r: PnlReport }) {
           <span className="text-ink-muted"> Earned %</span> is the share of that premium kept (realized P/L ÷ credit) and
           <span className="text-ink-muted"> Unearned</span> is the rest — premium paid back to buy them closed (credit − earned).
           <span className="text-ink-muted"> P/L</span> is realized only when a contract fully closes and equals the cash difference of its fills
-          (sell credit − buy debit), summed by the date it closed. Expand a week to see its fills: a <span className="text-ink-muted">Sell</span> takes
+          (sell credit − buy debit), summed by the date it closed.
+          <span className="text-ink-muted"> # Opt</span> is the option contracts resolved (closed/expired) in the period and
+          <span className="text-ink-muted"> Win %</span> is the share of them that closed profitable (winning ÷ resolved).
+          Expand a week to see its fills: a <span className="text-ink-muted">Sell</span> takes
           premium in, a <span className="text-ink-muted">Buy</span> pays to close, and the closing fill shows <span className="text-ink-muted">Entry @</span>
           (the price it was opened at) → <span className="text-ink-muted">Price</span> (the close) → the round-trip <span className="text-ink-muted">P/L</span>.
           Weeks run Mon–Sun, filed under the calendar month their Monday falls in; quiet weeks show $0.
@@ -779,7 +803,7 @@ function FragmentRow({ c, open, onToggle }: { c: ContractPnl; open: boolean; onT
                 {c.legDetail.map((l, i) => (
                   <tr key={i}>
                     <td className="tnum py-0.5 pr-6 text-ink-muted">{l.date}</td>
-                    <td className="py-0.5 pr-6 text-ink">{l.action}</td>
+                    <td className="py-0.5 pr-6 text-ink">{actionLabel("option", l.action, l.qty, c.strategy)}</td>
                     <td className={`tnum py-0.5 pr-6 text-right ${l.qty < 0 ? "text-rose-700" : "text-emerald-700"}`}>{l.qty > 0 ? `+${l.qty}` : l.qty}</td>
                     <td className="tnum py-0.5 pr-6 text-right text-ink-muted">{l.price ?? "—"}</td>
                     <td className={`tnum py-0.5 text-right ${cls(l.proceeds)}`}>{money(l.proceeds)}</td>

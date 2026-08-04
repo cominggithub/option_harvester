@@ -26,6 +26,7 @@ must print `... self-check OK`:
 npx tsx scripts/pnl-check.ts          # P/L engine
 npx tsx scripts/posanalysis-check.ts  # position action suggestions
 npx tsx scripts/news-check.ts         # news sentiment lexicon
+npx tsx scripts/roic-check.ts         # ROIC math + high-roic threshold
 npx tsx scripts/page-markdown-check.ts # Markdown route mapping + HTML conversion
 ```
 
@@ -42,6 +43,10 @@ What they cover:
 - **posanalysis-check** — OTM-with-most-premium → harvest; ITM call → defend;
   tested call → defend; far-OTM loser → watch; ITM put → roll; long/stock legs ignored.
 - **news-check** — bearish headlines flagged, positive ones not.
+- **roic-check** — `computeRoic` = NOPAT ÷ invested capital on real-shaped inputs
+  (AAPL ≈ 82%, KO ≈ 22%, negative-EBIT year stays negative), `operatingIncome` EBIT
+  fallback, null on negative/zero invested capital or missing EBIT/equity, effective
+  tax rate (direct → derived → 21% default), and the `HIGH_ROIC_MIN` (15%) threshold.
 - **page-markdown-check** — approved UI-path ↔ `.md` URL mapping, API-path rejection,
   `#page-content` isolation, front matter/source URL, heading/table/link conversion,
   and removal of global navigation, scripts, and SVG internals.

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import type { SecurityRow } from "@/lib/securities";
+import { NC_MIN_WEEKLY_BUCKETS } from "@/lib/securities";
 
 // Watchlists shown on /watchlists (and, later, pushed to IB by the plugin).
 //
@@ -14,6 +15,9 @@ export type OhMember = { ticker: string; name: string; type: string };
 export type OhWatchlist = { key: string; name: string; desc: string; members: OhMember[] };
 
 // HIV list threshold — front-month ATM implied vol above this (%) = "high IV".
+// Kept above NC's 40% (HIV is the *high*-IV list); it also requires a 1/2/3/4-week
+// option ladder (weeklyBuckets ≥ NC_MIN_WEEKLY_BUCKETS) so there's near-term
+// premium to sell.
 export const HIV_IV_MIN = 50;
 
 // HIVS list — same high-IV rule as HIV, but restricted to a mid price band.
@@ -29,10 +33,12 @@ const toMember = (s: SecurityRow): OhMember => ({ ticker: s.ticker, name: s.name
 //  cpos  — underlyings you hold a call option on.
 //  ppos  — underlyings you hold a put option on.
 //  red   — held names whose biggest option leg has |Δ| > 0.30 (assignment risk).
-//  hiv   — any name with front-month ATM IV above HIV_IV_MIN% (high IV).
+//  hiv   — high IV (front-month ATM IV > HIV_IV_MIN%) with a 1/2/3/4-week option ladder.
 //  hivs  — hiv, but only names priced strictly between HIVS_PRICE_MIN and HIVS_PRICE_MAX.
+//  hivsc — hivs, but only names you hold no call OR put option on (HIVS candidates).
 //  otc   — Option Targets (Analyzer bullseye, or any option leg held) that you do NOT
 //          hold a call on yet — i.e. call-writing candidates you've flagged.
+//  roic  — high-ROIC value-quality names (ROIC ≥ HIGH_ROIC_MIN; the /roic screen).
 export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
   const nc = securities.filter((s) => s.nc);
   const nccan = nc.filter((s) => !s.held);
@@ -48,10 +54,18 @@ export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
   // RED — held names whose biggest option leg has |Δ| > 0.30 (call OR put): the
   // high assignment-risk book. Needs synced greeks; names without a delta are excluded.
   const red = securities.filter((s) => s.position && (s.position.maxOptAbsDelta ?? 0) > 0.3);
-  // HIV — any tracked name with front-month ATM IV above HIV_IV_MIN% (stocks + ETFs).
-  const hiv = securities.filter((s) => (s.ivPct ?? 0) > HIV_IV_MIN);
+  // HIV — high IV (> HIV_IV_MIN%) AND a tradable 1/2/3/4-week option ladder
+  // (weeklyBuckets ≥ NC_MIN_WEEKLY_BUCKETS), so there's near-term premium to sell.
+  const hiv = securities.filter(
+    (s) => (s.ivPct ?? 0) > HIV_IV_MIN && (s.weeklyBuckets ?? 0) >= NC_MIN_WEEKLY_BUCKETS,
+  );
   // HIVS — HIV restricted to a mid price band (strictly between HIVS_PRICE_MIN/MAX).
   const hivs = hiv.filter((s) => s.price != null && s.price > HIVS_PRICE_MIN && s.price < HIVS_PRICE_MAX);
+  // HIVSC — HIVS candidates: HIVS names you don't hold a call OR put option on yet.
+  const hivsc = hivs.filter((s) => !hasCall(s) && !hasPut(s));
+  // ROIC — value-quality universe: names flagged high-ROIC (ROIC ≥ HIGH_ROIC_MIN,
+  // stocks only; ETFs have no ROIC). Same membership as the /roic screen.
+  const roic = securities.filter((s) => s.highRoic);
 
   return [
     {
@@ -87,7 +101,7 @@ export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
     {
       key: "hiv",
       name: "HIV",
-      desc: `High IV — names whose front-month ATM implied volatility is above ${HIV_IV_MIN}%.`,
+      desc: `High IV — front-month ATM implied volatility above ${HIV_IV_MIN}% with a 1/2/3/4-week option ladder (≥${NC_MIN_WEEKLY_BUCKETS} weekly expiries).`,
       members: hiv.map(toMember).sort(byTicker),
     },
     {
@@ -97,10 +111,22 @@ export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
       members: hivs.map(toMember).sort(byTicker),
     },
     {
+      key: "hivsc",
+      name: "HIVSC",
+      desc: "HIVS candidates — HIVS names you don't hold a call or put option on yet.",
+      members: hivsc.map(toMember).sort(byTicker),
+    },
+    {
       key: "otc",
       name: "OTC",
       desc: "Option Targets, no Call — names you've flagged as targets (or hold an option leg on) but don't yet hold a call on. Your call-writing candidates.",
       members: otc.map(toMember).sort(byTicker),
+    },
+    {
+      key: "roic",
+      name: "ROIC",
+      desc: "High ROIC — value-quality names with Return on Invested Capital ≥ 15% (the /roic screen); the cash-backed put-write quality universe.",
+      members: roic.map(toMember).sort(byTicker),
     },
   ];
 }

@@ -8,6 +8,7 @@ import YahooFinance from "yahoo-finance2";
 import { prisma } from "./db";
 import { getAtmIv } from "../../scripts/iv";
 import { computeTrend } from "./trend";
+import { computeRoic, type RoicInputs } from "./roic";
 
 const yf = new YahooFinance({ suppressNotices: ["yahooSurvey"] });
 
@@ -44,10 +45,13 @@ export type Fundamentals = {
   profitMargins: number | null;
   analystRec: string | null;
   targetMeanPrice: number | null;
+  roic: number | null; // Return on Invested Capital, fraction (stocks only)
+  roicHistory: { year: number; roic: number }[]; // ROIC per fiscal year, newest last
 };
 const EMPTY_FUNDAMENTALS: Fundamentals = {
   trailingPe: null, forwardPe: null, pegRatio: null, dividendYield: null, beta: null,
   week52Low: null, week52High: null, profitMargins: null, analystRec: null, targetMeanPrice: null,
+  roic: null, roicHistory: [],
 };
 
 type Enriched = {
@@ -75,6 +79,56 @@ type Enriched = {
 
 const numOrNull = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
+
+// ROIC comes from Yahoo's `fundamentalsTimeSeries` (annual) — the only working
+// line-item source since the incomeStatementHistory/balanceSheetHistory
+// quoteSummary modules went empty (Nov 2024). Fetched in its OWN request +
+// try/catch (with validateResult:false, since the payload schema drifts) so a
+// failure here never poisons the primary quote/description/earnings enrichment.
+// Stocks only — ETFs have no invested-capital statements. Returns the ROIC for
+// every reported fiscal year (newest last) plus the latest value.
+async function fetchRoic(
+  yahooSymbol: string,
+  nowMs: number,
+): Promise<{ roic: number | null; history: { year: number; roic: number }[] }> {
+  const empty = { roic: null, history: [] as { year: number; roic: number }[] };
+  try {
+    const period1 = new Date(nowMs - 2200 * 86_400_000); // ~6y → up to 5 annual reports
+    const res = (await yf.fundamentalsTimeSeries(
+      yahooSymbol,
+      { period1, period2: new Date(nowMs), type: "annual", module: "all" },
+      { validateResult: false },
+    )) as unknown;
+    const rows = Array.isArray(res) ? (res as Record<string, unknown>[]) : [];
+    const byYear = new Map<number, number>();
+    for (const r of rows) {
+      const inputs: RoicInputs = {
+        ebit: numOrNull(r.EBIT),
+        operatingIncome: numOrNull(r.operatingIncome),
+        taxRateForCalcs: numOrNull(r.taxRateForCalcs),
+        pretaxIncome: numOrNull(r.pretaxIncome),
+        taxProvision: numOrNull(r.taxProvision),
+        totalDebt: numOrNull(r.totalDebt),
+        stockholdersEquity: numOrNull(r.stockholdersEquity),
+        commonStockEquity: numOrNull(r.commonStockEquity),
+        totalEquityGrossMinorityInterest: numOrNull(r.totalEquityGrossMinorityInterest),
+        cashAndCashEquivalents: numOrNull(r.cashAndCashEquivalents),
+        cashCashEquivalentsAndShortTermInvestments: numOrNull(r.cashCashEquivalentsAndShortTermInvestments),
+      };
+      const roic = computeRoic(inputs);
+      if (roic == null) continue;
+      const d = r.date instanceof Date ? r.date : typeof r.date === "string" ? new Date(r.date) : null;
+      const year = d && !Number.isNaN(d.getTime()) ? d.getUTCFullYear() : null;
+      if (year != null) byYear.set(year, roic); // last write per year wins
+    }
+    const history = [...byYear.entries()]
+      .map(([year, roic]) => ({ year, roic }))
+      .sort((a, b) => a.year - b.year);
+    return { roic: history.length ? history[history.length - 1].roic : null, history };
+  } catch {
+    return empty; // unavailable for this name — leave ROIC null
+  }
+}
 
 async function enrich(yahooSymbol: string, nowMs: number): Promise<Enriched> {
   const q = await yf.quote(yahooSymbol);
@@ -109,11 +163,18 @@ async function enrich(yahooSymbol: string, nowMs: number): Promise<Enriched> {
       profitMargins: numOrNull(fd?.profitMargins),
       analystRec: typeof fd?.recommendationKey === "string" ? (fd.recommendationKey as string) : null,
       targetMeanPrice: numOrNull(fd?.targetMeanPrice),
+      roic: null, // filled after, via fetchRoic (stocks only)
+      roicHistory: [],
     };
   } catch {
     // Unavailable for some ETFs/tickers — leave description/earnings/fundamentals null.
   }
   const iv = await getAtmIv(yf, yahooSymbol, nowMs);
+  // ROIC (value-quality) — stocks only; own isolated request so it can't break
+  // the primary enrichment above.
+  const isStock = q.quoteType !== "ETF";
+  const roicRes = isStock ? await fetchRoic(yahooSymbol, nowMs) : { roic: null, history: [] };
+  fund = { ...fund, roic: roicRes.roic, roicHistory: roicRes.history };
   return {
     fund,
     name: q.shortName ?? q.longName ?? null,
@@ -182,6 +243,8 @@ export async function ingestConstituent(c: Constituent, nowMs: number, ivDate: D
     profitMargins: e.fund.profitMargins,
     analystRec: e.fund.analystRec,
     targetMeanPrice: e.fund.targetMeanPrice,
+    roic: e.fund.roic,
+    roicHistory: e.fund.roicHistory as unknown as Prisma.InputJsonValue,
     currency: e.currency,
   };
   // Nightly bid/ask are 0 (US market closed), so seed them only on insert and

@@ -60,6 +60,12 @@ export function formatIv(value: number | null | undefined): string {
   return `${value.toFixed(1)}%`;
 }
 
+/** ROIC (stored as a fraction) as a whole percent: 0.185 → "18.5%". */
+export function formatRoic(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return `${(value * 100).toFixed(1)}%`;
+}
+
 export function formatTimestamp(d: Date | null | undefined): string {
   if (!d) return "—";
   return d.toLocaleString("en-US", {

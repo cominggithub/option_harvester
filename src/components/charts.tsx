@@ -231,6 +231,57 @@ export function Scatter({
   );
 }
 
+// ── ROIC by fiscal year (value-quality trend) ────────────────────────────────
+// Compact vertical bars, one per reported fiscal year (newest right). Teal for
+// positive ROIC, red for a loss year. showLabels adds the year + % under each bar
+// (for the stock page); omit it for the dense /roic table cell.
+const TEAL = "#0f766e";
+export function RoicYearBars({
+  data,
+  w = 220,
+  h = 120,
+  showLabels = true,
+}: {
+  data: { year: number; roic: number }[];
+  w?: number;
+  h?: number;
+  showLabels?: boolean;
+}) {
+  if (!data.length) return <span className="text-[11px] text-ink-faint">—</span>;
+  const vals = data.map((d) => d.roic);
+  const maxAbs = Math.max(0.01, ...vals.map((v) => Math.abs(v)));
+  const hasNeg = vals.some((v) => v < 0);
+  const pad = { t: 8, b: showLabels ? 24 : 3 };
+  const plotH = h - pad.t - pad.b;
+  const baseY = hasNeg ? pad.t + plotH / 2 : pad.t + plotH;
+  const scale = (hasNeg ? plotH / 2 : plotH) / maxAbs;
+  const n = data.length;
+  const bw = Math.min(28, (w / n) * 0.6);
+  return (
+    <svg width="100%" viewBox={`0 0 ${w} ${h}`} className="block" preserveAspectRatio="xMidYMid meet" aria-hidden>
+      <line x1={0} x2={w} y1={baseY} y2={baseY} stroke={GREY} strokeWidth={0.5} />
+      {data.map((d, i) => {
+        const cx = (i + 0.5) * (w / n);
+        const bh = Math.abs(d.roic) * scale;
+        const y = d.roic >= 0 ? baseY - bh : baseY;
+        return (
+          <g key={d.year}>
+            <rect x={cx - bw / 2} y={y} width={bw} height={Math.max(bh, 0.5)} rx={1} fill={d.roic >= 0 ? TEAL : RED} fillOpacity={0.85}>
+              <title>{`FY${d.year}: ${(d.roic * 100).toFixed(1)}%`}</title>
+            </rect>
+            {showLabels && (
+              <>
+                <text x={cx} y={h - 14} textAnchor="middle" className="fill-ink-faint tnum" fontSize={8.5}>{`'${String(d.year).slice(2)}`}</text>
+                <text x={cx} y={h - 4} textAnchor="middle" className="fill-ink-faint tnum" fontSize={8}>{(d.roic * 100).toFixed(0)}%</text>
+              </>
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 // ── Multi-series balance lines (NAV / Cash / RegT / Position over time) ───────
 // One shared $ axis. Each series is a labelled colour; the last point gets a dot.
 // Server-rendered, no client JS (matches the rest of this file).

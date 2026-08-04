@@ -250,3 +250,51 @@ export function parseIbPortalTrades(records: Record<string, unknown>[]): ParsedT
       };
     });
 }
+
+// ── Dedup for the incremental portal trades feed ─────────────────────────────
+// /iserver/account/trades returns only a rolling ~7-day window, so the backend
+// ADDS (never replaces) and must dedupe every sync. Prefer IB's execution_id
+// (every portal fill carries one) so GENUINE duplicate executions — same
+// contract/price/qty/day, distinct fills — are KEPT, while a re-synced fill is
+// skipped. Fall back to a natural key to skip overlap with legacy CSV rows (which
+// have no execution_id) and any pre-execution_id sync.
+const numKey = (v: unknown): string => {
+  if (v == null || v === "") return "";
+  const n = Number(v);
+  return Number.isFinite(n) ? String(n) : "";
+};
+type TradeKeyFields = {
+  tradeDate: string | null; symbol: string; right: string | null;
+  strike: unknown; expiry: string | null; quantity: unknown; price: unknown;
+};
+export function tradeNaturalKey(t: TradeKeyFields): string {
+  return [t.tradeDate ?? "", t.symbol, t.right ?? "", numKey(t.strike), t.expiry ?? "", numKey(t.quantity), numKey(t.price)].join("|");
+}
+export function tradeExecId(raw: unknown): string {
+  const e = (raw as Record<string, unknown> | null | undefined)?.["execution_id"];
+  return e != null && String(e).trim() !== "" ? String(e) : "";
+}
+export type ExistingTrade = TradeKeyFields & { raw: unknown };
+
+// Return only the parsed fills not already stored. A fill is a duplicate if its
+// execution_id is already present, OR (for rows lacking one — CSV/legacy) its
+// natural key matches. Genuine duplicate executions keep distinct ids → kept.
+export function selectNewTrades(parsed: ParsedTransaction[], existing: ExistingTrade[]): ParsedTransaction[] {
+  const seenExec = new Set<string>();
+  const seenNat = new Set<string>(); // natural keys of rows WITHOUT an execution_id only
+  for (const e of existing) {
+    const eid = tradeExecId(e.raw);
+    if (eid) seenExec.add(eid);
+    else seenNat.add(tradeNaturalKey(e));
+  }
+  const fresh: ParsedTransaction[] = [];
+  for (const t of parsed) {
+    const eid = tradeExecId(t.raw);
+    if (eid && seenExec.has(eid)) continue; // same execution already stored / earlier in batch
+    if (seenNat.has(tradeNaturalKey(t))) continue; // overlaps a legacy no-exec (CSV) row
+    if (eid) seenExec.add(eid);
+    else seenNat.add(tradeNaturalKey(t));
+    fresh.push(t);
+  }
+  return fresh;
+}

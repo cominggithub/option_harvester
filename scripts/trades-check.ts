@@ -1,6 +1,6 @@
 // Self-check for parseIbPortalTrades — the money path (sign of quantity/proceeds,
 // commission handling, option-meta, forex drop). Run: npx tsx scripts/trades-check.ts
-import { parseIbPortalTrades } from "@/lib/txparse";
+import { parseIbPortalTrades, selectNewTrades, tradeNaturalKey, type ExistingTrade } from "@/lib/txparse";
 
 const fixtures = [
   // Sold-to-open call: net_amount is gross (×100 baked in), commission separate.
@@ -38,4 +38,27 @@ console.assert(Math.abs((onds.proceeds ?? 0) - (-2 - 1.51)) < 1e-9, "buy proceed
 const ubsg = by("UBSG");
 console.assert(ubsg.quantity === -200 && ubsg.right === null, "stock sell: −qty, no option meta");
 
-console.log("trades-check: OK (3 trades, signs/proceeds/commission/meta verified)");
+// ── selectNewTrades dedup (execution_id preferred, natural-key fallback) ──────
+// Re-syncing the same executions (already stored, matched by execution_id) → none added.
+const existingFromParsed: ExistingTrade[] = out.map((t) => ({
+  raw: t.raw, tradeDate: t.tradeDate, symbol: t.symbol, right: t.right,
+  strike: t.strike, expiry: t.expiry, quantity: t.quantity, price: t.price,
+}));
+console.assert(selectNewTrades(out, existingFromParsed).length === 0, "re-sync of same execution_ids adds nothing");
+
+// A genuine DUPLICATE execution (same contract/price/qty/day, NEW execution_id) is KEPT.
+const dupBx = parseIbPortalTrades([
+  { side: "S", size: 1, price: "2.38", net_amount: 238, commission: "0.81", sec_type: "OPT",
+    put_or_call: "C", contract_description_1: "BX", contract_description_2: "Jul31 '26 128 Call",
+    trade_time: "20260624-15:40:00", execution_id: "x1b" },
+] as Record<string, unknown>[]);
+console.assert(selectNewTrades(dupBx, existingFromParsed).length === 1, "genuine duplicate execution (new id) is kept");
+
+// Overlap with a legacy CSV row (no execution_id, same natural key) → skipped.
+const csvRow: ExistingTrade = {
+  raw: {}, tradeDate: "2026-06-24", symbol: "BX", right: "C", strike: 128, expiry: "2026-07-31", quantity: -1, price: 2.38,
+};
+console.assert(tradeNaturalKey(csvRow) === tradeNaturalKey(by("BX")), "natural keys align for the overlap test");
+console.assert(selectNewTrades([by("BX")], [csvRow]).length === 0, "portal fill overlapping a legacy CSV row is skipped");
+
+console.log("trades-check: OK (3 trades, signs/proceeds/commission/meta + execution_id dedup verified)");

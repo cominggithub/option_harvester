@@ -17,6 +17,8 @@ const SECTOR_COLORS: Record<string, string> = {
   International: "#6a7b8c",
   Commodities: "#9c7b3a",
   "Fixed Income": "#5f6b7a",
+  // Geared funds (2x/3x long + inverse) — high-IV, decay-prone premium targets.
+  "Leveraged / Inverse": "#8a4a4a",
   "ETF / Funds": "#3a3f47",
 };
 
@@ -37,6 +39,7 @@ export const SECTOR_ORDER = [
   "International",
   "Commodities",
   "Fixed Income",
+  "Leveraged / Inverse",
   "ETF / Funds",
 ];
 

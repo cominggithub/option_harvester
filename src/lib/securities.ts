@@ -6,6 +6,7 @@ import { getPositionSummaries, type PositionSummary } from "@/lib/positions";
 import { getPnlReport } from "@/lib/transactions";
 import { type TrendWindows, WINDOW_BARS } from "@/lib/trend";
 import type { TrendWindowKey } from "@/lib/view";
+import { isHighRoic } from "@/lib/roic";
 
 const numOrNull = (v: unknown): number | null => (v != null ? Number(v) : null);
 
@@ -49,7 +50,12 @@ export type SecurityRow = {
     profitMargins: number | null; // fraction
     analystRec: string | null;
     targetMeanPrice: number | null;
+    roic: number | null; // Return on Invested Capital, fraction (stocks only)
   };
+  roic: number | null; // ROIC as a fraction (mirror of fundamentals.roic, for sort/screen)
+  roicYear: number | null; // fiscal year of the latest ROIC (the "company year")
+  roicHistory: { year: number; roic: number }[]; // ROIC per fiscal year, newest last
+  highRoic: boolean; // value-quality flag: stock with ROIC ≥ HIGH_ROIC_MIN
   harvesterScore: number | null;
   bestHarvest: boolean;
   favorite: boolean;
@@ -106,9 +112,10 @@ export const NC_MIN_VOLUME = 3_000_000;
 export const NC_PRICE_MIN = 20;
 export const NC_PRICE_MAX = 180;
 export const NC_IV_MIN = 40;
-// ponytail: ≥5 expiries ≤42d is the 7/14/21/28/35 ladder (same threshold as
-// "bad option date"); swap to exact-DTE matching only if a phase bug ever bites.
-export const NC_MIN_WEEKLY_BUCKETS = 5;
+// A tradable weekly ladder for weeks 1/2/3/4: ≥4 near-term expiries inside the
+// ~6-week bucket window (phase-independent count; see scripts/iv.ts). Shared with
+// the HIV list as the "has 1/2/3/4-week options" floor.
+export const NC_MIN_WEEKLY_BUCKETS = 4;
 
 function isNcTarget(s: {
   volume: number | null;
@@ -347,7 +354,12 @@ export async function getDashboardData(): Promise<DashboardData> {
         profitMargins: numOrNull(r.quote?.profitMargins),
         analystRec: r.quote?.analystRec ?? null,
         targetMeanPrice: numOrNull(r.quote?.targetMeanPrice),
+        roic: numOrNull(r.quote?.roic),
       },
+      roic: numOrNull(r.quote?.roic),
+      roicYear: null, // set below (from roicHistory)
+      roicHistory: ((r.quote?.roicHistory as { year: number; roic: number }[] | null) ?? []),
+      highRoic: false, // set below (stocks only)
       harvesterScore: score,
       bestHarvest: isBestHarvest(price, ivPct, weeklyBuckets),
       favorite: r.mark?.favorite ?? false,
@@ -393,6 +405,10 @@ export async function getDashboardData(): Promise<DashboardData> {
     s.downtrend = isDowntrend(s.trend);
     s.nc = isNcTarget(s);
     if (s.nc) s.autoLabels.push("NC");
+    // Value-quality: high ROIC (stocks only — ETFs have no invested capital).
+    s.highRoic = s.type === "stock" && isHighRoic(s.roic);
+    if (s.highRoic) s.autoLabels.push("high roic");
+    s.roicYear = s.roicHistory.length ? s.roicHistory[s.roicHistory.length - 1].year : null;
     const liquid = (s.weeklyBuckets ?? 0) >= CC_MIN_WEEKLY_BUCKETS;
     s.ccTarget = s.type === "etf" && isWeak(s.trend) && liquid;
     s.cspEligible =

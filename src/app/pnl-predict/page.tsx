@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { getPositionGroups, buildOptionPnlByExpiry, type OptionPnlLeg } from "@/lib/positions";
+import { getPnlReport } from "@/lib/transactions";
+import type { ContractPnl } from "@/lib/pnl";
 import { CumulativePnlByExpiry, EarnUnearnByExpiry } from "@/components/CumulativePnlChart";
 
 export const dynamic = "force-dynamic";
@@ -60,6 +62,54 @@ function legTag(leg: OptionPnlLeg): { tag: string; cls: string } {
   if (leg.right === "C") return { tag: "CALL", cls: "bg-emerald-50 text-emerald-700" };
   if (leg.right === "P") return { tag: "PUT", cls: "bg-indigo-50 text-indigo-700" };
   return { tag: "OPT", cls: "bg-amber-50 text-amber-700" };
+}
+
+// Closed option contracts for an expiry — shown greyed, purely informational and
+// NOT counted in any total/credit/greek/chart (those are the OPEN book only).
+function ClosedLegs({ contracts }: { contracts: ContractPnl[] }) {
+  if (!contracts.length) return null;
+  const rows = [...contracts].sort((a, b) => a.underlying.localeCompare(b.underlying) || (a.strike ?? 0) - (b.strike ?? 0));
+  const sumPnl = contracts.reduce((a, c) => a + c.proceeds, 0);
+  return (
+    <div className="border-t border-dashed border-line bg-canvas/40 px-4 py-2 text-ink-faint">
+      <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+        Closed · {contracts.length} <span className="font-normal normal-case text-ink-faint/80">— already exited, not counted</span>
+      </p>
+      <table className="w-full text-[11.5px]">
+        <thead className="text-left text-[9.5px] uppercase tracking-wider text-ink-faint/80">
+          <tr className="border-b border-line/50">
+            <th className="py-1 font-medium">Symbol</th>
+            <th className="py-1 font-medium">Type</th>
+            <th className="py-1 text-right font-medium">Strike</th>
+            <th className="py-1 text-right font-medium">Qty</th>
+            <th className="py-1 font-medium">Status</th>
+            <th className="py-1 text-right font-medium" title="Realized P/L of the closed contract">Realized P/L</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((c, i) => {
+            const q = (c.strategy === "short_call" || c.strategy === "short_put" ? -1 : 1) * c.contracts;
+            return (
+              <tr key={i} className="border-b border-line/30 last:border-0">
+                <td className="py-1 font-medium">{c.underlying}</td>
+                <td className="py-1">{c.right === "C" ? "CALL" : c.right === "P" ? "PUT" : "OPT"}</td>
+                <td className="tnum py-1 text-right">{c.strike == null ? "—" : price(c.strike)}</td>
+                <td className="tnum py-1 text-right">{q > 0 ? `+${q}` : q}</td>
+                <td className="py-1">{c.status}</td>
+                <td className="tnum py-1 text-right">{signedMoney(c.proceeds)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+        <tfoot>
+          <tr className="border-t border-line/60 font-semibold">
+            <td className="py-1" colSpan={5}>Closed realized P/L · {contracts.length}</td>
+            <td className={`tnum py-1 text-right ${pnlClass(sumPnl)}`}>{signedMoney(sumPnl)}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
 }
 
 // Sticky left table-of-contents — jumps to each section / expiry.
@@ -188,13 +238,43 @@ function OpenWinRate({ legs, today }: { legs: OptionPnlLeg[]; today: string }) {
 }
 
 export default async function PnlPredictPage() {
-  const groups = await getPositionGroups();
+  const [groups, report] = await Promise.all([getPositionGroups(), getPnlReport()]);
   const byExpiry = buildOptionPnlByExpiry(groups);
   const withExpiry = byExpiry.filter((g) => g.expiry != null);
   const allLegs = byExpiry.flatMap((g) => g.legs);
   const today = new Date().toISOString().slice(0, 10);
 
-  const legCount = byExpiry.reduce((a, g) => a + g.count, 0);
+  // Closed option contracts grouped by expiry — informational (greyed, uncounted)
+  // context alongside the OPEN book. Fully-closed expiries with no open leg aren't
+  // shown here (the full realized ledger lives on /transactions).
+  const closedByExpiry = new Map<string, ContractPnl[]>();
+  let closedTotal = 0;
+  for (const c of report.contracts) {
+    if ((c.right === "C" || c.right === "P") && c.status !== "open") {
+      closedTotal += 1;
+      const k = c.expiry ?? "\u2014";
+      (closedByExpiry.get(k) ?? closedByExpiry.set(k, []).get(k)!).push(c);
+    }
+  }
+  const closedFor = (g: { expiry: string | null }) => closedByExpiry.get(g.expiry ?? "\u2014") ?? [];
+  const closedShown = byExpiry.reduce((a, g) => a + closedFor(g).length, 0);
+  const closedShownPnl = byExpiry.reduce((a, g) => a + closedFor(g).reduce((s, c) => s + c.proceeds, 0), 0);
+
+  // Closed realized P/L per expiry for the closed-P/L chart — windowed to the
+  // recent one year (by expiry date), oldest→newest, with a running cumulative.
+  // Same per-expiry proceeds as the week-to-week "Closed" rows below; null-expiry
+  // bucket and anything older than a year are dropped. Cutoff via string math
+  // ("2026-07-29" → "2025-07-29") to avoid any Date/TZ drift.
+  const closedCutoff = `${+today.slice(0, 4) - 1}${today.slice(4)}`;
+  let cClosed = 0;
+  const closedPoints = [...closedByExpiry.entries()]
+    .filter(([k]) => k !== "\u2014" && k >= closedCutoff)
+    .map(([date, cs]) => ({ date, pnl: cs.reduce((s, c) => s + c.proceeds, 0) }))
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((p) => ({ date: p.date, bar: Math.round(p.pnl), cum: Math.round((cClosed += p.pnl)) }));
+  const closedPnlTotal = cClosed;
+
+  const legCount = byExpiry.reduce((a, g) => a + g.count, 0); // OPEN legs (counted)
   const totalPnl = byExpiry.reduce((a, g) => a + g.unrealizedPnl, 0);
   const totalCredit = byExpiry.reduce((a, g) => a + g.credit, 0);
   const nearest = withExpiry[0] ?? null;
@@ -203,17 +283,20 @@ export default async function PnlPredictPage() {
   // Combo-chart series (line = cumulative, bars = per-expiry).
   const cumPoints = withExpiry.map((g) => ({ date: g.expiry as string, cum: Math.round(g.cumulativePnl), bar: Math.round(g.unrealizedPnl) }));
   const creditPoints = withExpiry.map((g) => ({ date: g.expiry as string, cum: Math.round(g.cumulativeCredit), bar: Math.round(g.credit) }));
-  // Earned vs unearned premium per expiry (amount + %).
+  // Earned vs unearned premium per expiry (amount + %), plus the realized P/L of
+  // any already-closed contracts on the same expiry (shown as a soft-red bar).
   const euPoints = withExpiry.map((g) => ({
     date: g.expiry as string,
     earned: Math.round(g.unrealizedPnl),
     unearned: Math.round(g.credit - g.unrealizedPnl),
     credit: Math.round(g.credit),
+    closed: Math.round(closedFor(g).reduce((s, c) => s + c.proceeds, 0)),
   }));
 
   const toc = [
     { id: "summary", label: "Summary" },
     { id: "chart-pnl", label: "Cumulative P/L" },
+    ...(closedPoints.length ? [{ id: "chart-closed", label: "Closed (realized) P/L" }] : []),
     { id: "chart-credit", label: "Cumulative credit" },
     { id: "chart-earned", label: "Earned/unearned $" },
     { id: "chart-earned-pct", label: "Earned/unearned %" },
@@ -233,7 +316,8 @@ export default async function PnlPredictPage() {
               <h1 className="wordmark text-[26px] leading-tight text-ink">P&amp;L Predict</h1>
             </div>
             <span className="tnum text-[13px] text-ink-muted">
-              {legCount} option leg{legCount === 1 ? "" : "s"} · {withExpiry.length} expir{withExpiry.length === 1 ? "y" : "ies"}
+              {legCount + closedShown} leg{legCount + closedShown === 1 ? "" : "s"}
+              <span className="text-ink-faint"> ({legCount} open · {closedShown} closed)</span> · {withExpiry.length} expir{withExpiry.length === 1 ? "y" : "ies"}
             </span>
           </div>
 
@@ -253,12 +337,13 @@ export default async function PnlPredictPage() {
           ) : (
             <>
               {/* Summary band */}
-              <div id="summary" className="mt-6 scroll-mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-3 lg:grid-cols-6">
+              <div id="summary" className="mt-6 scroll-mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
                 {[
                   { label: "Total Unrealized P/L", value: signedMoney(totalPnl), cls: pnlClass(totalPnl), sub: "if closed now" },
                   { label: "Premium Collected", value: money(totalCredit), cls: "text-ink", sub: "short-leg credit" },
                   { label: "Premium Unearned", value: money(unearnedAmt(totalPnl, totalCredit)), cls: "text-amber-700", sub: `${pct(unearnedPct(totalPnl, totalCredit))} still at risk` },
-                  { label: "Option Legs", value: String(legCount), cls: "text-ink" },
+                  { label: "Option Legs", value: String(legCount), cls: "text-ink", sub: `${closedShown} closed shown · ${closedTotal} closed all-time` },
+                  { label: "Closed Realized P/L", value: signedMoney(closedShownPnl), cls: pnlClass(closedShownPnl), sub: `${closedShown} closed shown` },
                   { label: "Nearest Expiry", value: fmtExpiryShort(nearest?.expiry ?? null), cls: "text-ink", sub: nearest?.dte != null ? `${nearest.dte}d` : undefined },
                   { label: "Farthest Expiry", value: fmtExpiryShort(farthest?.expiry ?? null), cls: "text-ink", sub: farthest?.dte != null ? `${farthest.dte}d` : undefined },
                 ].map((s) => (
@@ -277,6 +362,17 @@ export default async function PnlPredictPage() {
                   <CumulativePnlByExpiry points={cumPoints} label="Cumulative unrealized P/L" barLabel="Per-expiry P/L" w={1180} h={340} />
                 </div>
               </div>
+              {closedPoints.length > 0 && (
+                <div id="chart-closed" className="mt-4 scroll-mt-6 rounded-lg border border-line bg-surface px-4 py-3">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <div className="overline text-ink-faint">Closed (realized) P/L by expiry date · last 12 months</div>
+                    <span className="tnum text-[11px] text-ink-faint">total <span className={pnlClass(closedPnlTotal)}>{signedMoney(closedPnlTotal)}</span> · already exited, not in the open book above</span>
+                  </div>
+                  <div className="mt-2">
+                    <CumulativePnlByExpiry points={closedPoints} label="Cumulative realized P/L (closed)" barLabel="Per-expiry closed P/L" w={1180} h={340} />
+                  </div>
+                </div>
+              )}
               <div id="chart-credit" className="mt-4 scroll-mt-6 rounded-lg border border-line bg-surface px-4 py-3">
                 <div className="overline text-ink-faint">Cumulative premium collected by expiry date</div>
                 <div className="mt-2">
@@ -309,7 +405,9 @@ export default async function PnlPredictPage() {
 
               {/* Grouped-by-expiry tables */}
               <h2 id="expiries" className="mt-8 mb-3 scroll-mt-6 text-[13px] font-semibold uppercase tracking-wider text-ink-faint">By expiry · detail</h2>              <div className="space-y-5">
-                {byExpiry.map((g) => (
+                {byExpiry.map((g) => {
+                  const closed = closedFor(g);
+                  return (
                   <div key={g.expiry ?? "none"} id={expId(g.expiry)} className="scroll-mt-6 overflow-hidden rounded-lg border border-line">
                     <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 bg-surface px-4 py-2.5">
                       <div className="flex items-baseline gap-3">
@@ -320,7 +418,7 @@ export default async function PnlPredictPage() {
                           </span>
                         )}
                         <span className="tnum text-[12px] text-ink-faint">
-                          {g.count} leg{g.count === 1 ? "" : "s"}
+                          {g.count} open{closed.length ? ` · ${closed.length} closed` : ""}
                         </span>
                       </div>
                       <div className="tnum flex flex-wrap items-baseline gap-x-5 gap-y-0.5 text-[12px] text-ink-muted">
@@ -408,8 +506,10 @@ export default async function PnlPredictPage() {
                       </tfoot>
                     </table>
                     </div>
+                    {closed.length > 0 && <ClosedLegs contracts={closed} />}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </>
           )}

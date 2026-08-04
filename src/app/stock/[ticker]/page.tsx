@@ -7,7 +7,7 @@ import { analyzeShortOption, ACTION_META } from "@/lib/posanalysis";
 import { getNews } from "@/lib/news";
 import type { ContractPnl } from "@/lib/pnl";
 import { HistoryChart } from "@/components/HistoryChart";
-import { IvLine } from "@/components/charts";
+import { IvLine, RoicYearBars } from "@/components/charts";
 import { sectorColor } from "@/lib/sectors";
 import { formatEarningsDate, formatMarketCap, formatVolume } from "@/lib/format";
 
@@ -164,9 +164,16 @@ export default async function StockPage({ params }: { params: Promise<{ ticker: 
             <Field label="Beta" value={num(f.beta, 2)} />
             <Field label="Div yield" value={f.dividendYield != null ? pct(f.dividendYield, 2) : "—"} />
             <Field label="Profit margin" value={f.profitMargins != null ? pct(f.profitMargins) : "—"} />
+            <Field label="ROIC" value={f.roic != null ? pct(f.roic) : "—"} cls={f.roic != null && f.roic >= 0.15 ? "text-[#0f766e] font-semibold" : "text-ink"} />
             <Field label="Analyst" value={f.analystRec ? f.analystRec.replace(/_/g, " ") : "—"} />
             <Field label="Target" value={f.targetMeanPrice != null ? `${px(f.targetMeanPrice)}${tgt != null ? ` (${tgt >= 0 ? "+" : ""}${(tgt * 100).toFixed(0)}%)` : ""}` : "—"} cls={tgt != null ? pnlCls(tgt) : "text-ink"} />
           </div>
+          {s.roicHistory.length > 1 && (
+            <div className="mt-3 border-t border-line pt-2">
+              <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">ROIC by fiscal year</p>
+              <RoicYearBars data={s.roicHistory} w={260} h={104} />
+            </div>
+          )}
           {s.description && <p className="mt-3 max-h-32 overflow-y-auto text-[11.5px] leading-relaxed text-ink-muted">{s.description}</p>}
         </Card>
 

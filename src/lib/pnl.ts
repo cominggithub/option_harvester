@@ -5,10 +5,14 @@
  *
  *   - Group option rows into contracts (underlying|right|strike|expiry).
  *     realized P/L for a CLOSED or EXPIRED contract = Σ proceeds of its legs.
- *     A sold option that expires worthless has no closing row → its P/L is just
- *     the opening credit (which is exactly Σ proceeds). Open contracts are
- *     unrealized (premium at risk), excluded from realized totals.
- *   - Stock trades (Buy/Sell, no option right) roll up per symbol.
+ *     A sold option that expires worthless has no closing row (or a $0 expiry
+ *     leg) → its P/L is just the opening credit. Open contracts are unrealized
+ *     (premium at risk), excluded from realized totals.
+ *   - SHARE movements — stock Buy/Sell AND assignments (a delivered/called-away
+ *     lot) — feed a per-symbol AVERAGE-COST inventory. Realized P/L books only
+ *     when a lot is reduced (sale vs avg cost / short cover vs entry credit);
+ *     shares still held are unrealized and excluded, so an open assigned lot is
+ *     never counted as a loss. Options and spot are thus computed separately.
  *   - Everything else (withdrawal/interest/tax/FX/dividend/fee) is an ACCOUNT
  *     FLOW — kept for the account summary, excluded from trading P/L.
  *
@@ -173,34 +177,121 @@ const FLOW_TYPES = new Set([
 const dte = (open: string | null, expiry: string | null): number | null =>
   open && expiry ? Math.round((Date.parse(expiry) - Date.parse(open)) / DAY) : null;
 
+// Execution order: trade date, then IB's per-fill execution time (portal
+// `trade_time`), then import id as a last resort. IB's timestamp is authoritative
+// — the import id can be recorded out of order for same-day fills, so sequencing
+// by id alone mis-pairs an intraday buy/sell (a long round trip can look short).
+const byExecution = (a: TransactionRow, b: TransactionRow): number =>
+  (a.tradeDate ?? "").localeCompare(b.tradeDate ?? "") ||
+  (a.tradeTime ?? "").localeCompare(b.tradeTime ?? "") ||
+  a.id - b.id;
+
 function classify(right: "C" | "P", openingQty: number): Strategy {
   const short = openingQty < 0; // sold to open
   if (right === "C") return short ? "short_call" : "long_call";
   return short ? "short_put" : "long_put";
 }
 
+// Per-symbol SPOT (share) P/L via average-cost inventory. Shares reach the account
+// as stock Buy/Sell fills AND as option assignments (a delivered/called-away lot).
+// Realized P/L books ONLY when a position is reduced — sale proceeds vs the average
+// cost of the shares closed (short covers: entry credit vs buyback). Shares still
+// held carry unrealized cost basis and are EXCLUDED from realized P/L (so an open
+// assigned lot never shows as a loss). This mirrors how options realize only on
+// close, keeping spot and option P/L cleanly separated. Proceeds are net of
+// commission (IB "Net Amount"), so realized is net too.
+export type StockFill = {
+  date: string | null;
+  type: string; // Buy / Sell / Assignment
+  qty: number; // signed shares (+ bought, − sold)
+  price: number | null;
+  cash: number; // net cash of the fill (credit +/debit −)
+  pnl: number; // realized P/L booked on this fill (0 unless it closes shares)
+  entryPrice: number | null; // avg cost/share of the shares CLOSED by this fill (null on opens)
+};
+export type StockPnl = {
+  realized: number;
+  realizedYtd: number;
+  fills: StockFill[];
+  openQty: number; // signed shares still held (unrealized)
+  openCost: number; // cost basis of the held shares (magnitude)
+  closes: number; // # fills that realized P/L
+  wins: number; // of those, # with pnl > 0
+  assignments: number; // # assignment fills
+};
+
+export function stockInventory(legs: TransactionRow[], ytdStart: string): StockPnl {
+  // Execution order = trade date, then import id. Spot is LONG-ONLY (we never
+  // short the underlying), so a sell can only ever CLOSE existing shares. Same-day
+  // fills can be recorded out of order (no intraday timestamp), which could make a
+  // sell look like it opens a short — so process greedily: take the earliest fill
+  // that keeps the position ≥ 0, deferring a sell until its covering buy runs.
+  const queue = [...legs].sort(byExecution);
+  let pos = 0; // shares held (≥ 0 for a long-only book)
+  let avg = 0; // average per-share basis of the open position (magnitude)
+  let realized = 0;
+  let realizedYtd = 0;
+  let closes = 0;
+  let wins = 0;
+  let assignments = 0;
+  const fills: StockFill[] = [];
+  while (queue.length) {
+    // earliest fill that doesn't drive the long position negative (buys always
+    // qualify); −1 only if the data is net-short — then just take the next in order.
+    let idx = queue.findIndex((l) => pos + (l.quantity ?? 0) >= 0);
+    if (idx < 0) idx = 0;
+    const l = queue.splice(idx, 1)[0];
+    const q = l.quantity ?? 0;
+    const cash = l.proceeds ?? 0;
+    if ((l.txType ?? "").toLowerCase() === "assignment") assignments++;
+    if (q === 0) continue;
+    const perShare = Math.abs(cash) / Math.abs(q); // net per-share amount of this fill
+    let pnl = 0;
+    let entryPrice: number | null = null;
+    if (pos === 0 || Math.sign(q) === Math.sign(pos)) {
+      // opening or adding in the same direction → weighted-average the basis
+      avg = (avg * Math.abs(pos) + Math.abs(cash)) / (Math.abs(pos) + Math.abs(q));
+      pos += q;
+    } else {
+      // reducing / closing the position → realize on the closed shares vs their
+      // average cost. `avg` (pre-reduction) IS the entry price the P/L is measured
+      // against — surface it so the fill shows "opened @ avg → closed @ price → P/L".
+      entryPrice = avg;
+      const closeQty = Math.min(Math.abs(q), Math.abs(pos));
+      pnl = (pos > 0 ? perShare - avg : avg - perShare) * closeQty; // long sold vs short covered
+      realized += pnl;
+      if ((l.tradeDate ?? "") >= ytdStart) realizedYtd += pnl;
+      closes++;
+      if (pnl > 0) wins++;
+      pos += q;
+      if (pos === 0) avg = 0;
+      else if (Math.sign(pos) === Math.sign(q)) avg = perShare; // flipped past zero → new lot
+    }
+    fills.push({ date: l.tradeDate, type: l.txType ?? "Trade", qty: q, price: l.price, cash, pnl, entryPrice });
+  }
+  return { realized, realizedYtd, fills, openQty: pos, openCost: avg * Math.abs(pos), closes, wins, assignments };
+}
+
 export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): PnlReport {
   const today = asOf.toISOString().slice(0, 10);
   const ytdStart = `${today.slice(0, 4)}-01-01`; // realization on/after this = YTD
 
-  // ── 1. Split rows into option legs / stock trades / account flows ──────────
+  // ── 1. Split rows into option legs / share movements / account flows ───────
+  // Options are identified by an option `right` (C/P). Everything else with a
+  // real share quantity — stock Buy/Sell AND assignments (delivered/called-away
+  // lots) — is a SHARE movement and goes through the average-cost inventory.
+  // Rows with no right and no share quantity (withdrawal/interest/tax/FX/…) are
+  // account flows, excluded from trading P/L.
   const optByKey = new Map<string, TransactionRow[]>();
   const stockBySym = new Map<string, TransactionRow[]>();
   const flowByType = new Map<string, AccountFlow>();
-  const assignBySym = new Map<string, { amount: number; ytd: number; count: number }>();
 
   for (const r of rows) {
     const type = (r.txType ?? "").toLowerCase();
     if (r.right === "C" || r.right === "P") {
       const key = `${r.symbol}|${r.right}|${r.strike}|${r.expiry}`;
       (optByKey.get(key) ?? optByKey.set(key, []).get(key)!).push(r);
-    } else if (type === "assignment") {
-      const a = assignBySym.get(r.symbol) ?? { amount: 0, ytd: 0, count: 0 };
-      a.amount += r.proceeds ?? 0;
-      if (r.tradeDate && r.tradeDate >= ytdStart) a.ytd += r.proceeds ?? 0;
-      a.count += 1;
-      assignBySym.set(r.symbol, a);
-    } else if (TRADE_TYPES.has(type) && r.symbol && r.symbol !== "-") {
+    } else if ((TRADE_TYPES.has(type) || type === "assignment") && r.symbol && r.symbol !== "-" && (r.quantity ?? 0) !== 0) {
       (stockBySym.get(r.symbol) ?? stockBySym.set(r.symbol, []).get(r.symbol)!).push(r);
     } else {
       const t = r.txType ?? "Other";
@@ -214,7 +305,7 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
   // ── 2. Build option contracts ──────────────────────────────────────────────
   const contracts: ContractPnl[] = [];
   for (const [key, legs] of optByKey) {
-    legs.sort((a, b) => (a.tradeDate ?? "").localeCompare(b.tradeDate ?? ""));
+    legs.sort(byExecution);
     const first = legs[0];
     const right = first.right as "C" | "P";
     const openSign = (first.quantity ?? 0) < 0 ? -1 : 1;
@@ -226,9 +317,18 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
     const credit = legs.reduce((s, l) => s + Math.max(0, l.proceeds ?? 0), 0);
     const debit = legs.reduce((s, l) => s + Math.min(0, l.proceeds ?? 0), 0);
     const commission = legs.reduce((s, l) => s + (l.commission ?? 0), 0);
-    const expired = !!first.expiry && first.expiry < today;
-    const status: ContractStatus = qtyNet === 0 ? "closed" : expired ? "expired" : "open";
-    const closeDate = status === "expired" ? first.expiry : legs[legs.length - 1].tradeDate;
+    const pastExpiry = !!first.expiry && first.expiry < today;
+    // Cash moved to CLOSE the position (legs opposite the opening side). A real
+    // buyback pays/receives cash; an expiry fill (IB portal side X → "Expired") is
+    // $0. So a zero-cash flatten = expired, a cash-moving flatten = bought back.
+    const closeCash = legs
+      .filter((l) => Math.sign(l.quantity ?? 0) === -openSign)
+      .reduce((s, l) => s + Math.abs(l.proceeds ?? 0), 0);
+    const status: ContractStatus =
+      qtyNet === 0 ? (closeCash > 0 ? "closed" : "expired") : pastExpiry ? "expired" : "open";
+    // Lapsed = expired with NO closing fill (only the opening leg). Its realization
+    // date is the expiry; a flattened contract's is its last fill.
+    const closeDate = qtyNet !== 0 ? first.expiry : legs[legs.length - 1].tradeDate;
     contracts.push({
       key,
       underlying: first.symbol,
@@ -276,20 +376,20 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
     e.trades += 1;
     if (c.win) e.wins += 1;
   }
+  // Spot (share) P/L via average-cost inventory — computed once per symbol and
+  // reused for the ledger. Only realized (closed) P/L rolls up; held shares are
+  // unrealized and excluded, so an open assigned lot never shows as a loss.
+  const stockInv = new Map<string, StockPnl>();
   for (const [s, legs] of stockBySym) {
-    const realized = legs.reduce((sum, l) => sum + (l.proceeds ?? 0), 0);
+    const inv = stockInventory(legs, ytdStart);
+    stockInv.set(s, inv);
     const e = sym(s);
-    e.realized += realized;
-    e.stock += realized;
-    e.realizedYtd += legs.reduce((sum, l) => sum + (l.tradeDate && l.tradeDate >= ytdStart ? l.proceeds ?? 0 : 0), 0);
-    e.trades += 1;
-    if (realized > 0) e.wins += 1;
-  }
-  for (const [s, a] of assignBySym) {
-    const e = sym(s);
-    e.realized += a.amount;
-    e.realizedYtd += a.ytd;
-    e.assignments += a.count;
+    e.realized += inv.realized;
+    e.stock += inv.realized;
+    e.realizedYtd += inv.realizedYtd;
+    e.trades += inv.closes; // each closing fill is a realized round-trip
+    e.wins += inv.wins;
+    e.assignments += inv.assignments;
   }
   for (const e of symMap.values()) e.winRate = e.trades ? e.wins / e.trades : null;
 
@@ -323,6 +423,7 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
   for (const c of contracts) {
     if (c.status === "open" || !c.closeDate) continue;
     const isShort = c.strategy === "short_call" || c.strategy === "short_put";
+    const hasClosingLeg = c.qtyNet === 0; // flattened by an explicit buyback OR expiry fill
     const lastIdx = c.legDetail.length - 1;
     // Average opening fill price (|qty|-weighted over the legs opened first) — the
     // price the position was entered at, e.g. the premium a short was sold for.
@@ -331,7 +432,7 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
     const openQ = openLegs.reduce((s, l) => s + Math.abs(l.qty), 0);
     const entryPrice = openQ ? openLegs.reduce((s, l) => s + Math.abs(l.qty) * (l.price as number), 0) / openQ : null;
     c.legDetail.forEach((l, i) => {
-      const realizing = c.status === "closed" && i === lastIdx;
+      const realizing = hasClosingLeg && i === lastIdx;
       ledger.push({
         date: l.date ?? c.closeDate!,
         symbol: c.underlying,
@@ -344,17 +445,18 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
         qty: l.qty,
         price: l.price,
         cash: l.proceeds,
-        // A bought-back contract books its whole realized P/L on the final
-        // (closing) fill; opening fills are P/L-neutral.
+        // Realized P/L books on the final (closing) fill — a buyback OR the $0
+        // expiry leg ("Expired"); opening fills are P/L-neutral.
         pnl: realizing ? c.proceeds : 0,
         // The short's premium basis rides on the same realizing fill.
         credit: realizing && isShort ? c.credit : 0,
         entryPrice: realizing ? entryPrice : null,
       });
     });
-    // A lapsed short has no closing fill — book the kept credit on a synthetic
-    // Expired row (zero cash) so the opening Sell doesn't look unresolved.
-    if (c.status === "expired") {
+    // A LAPSED short has no closing fill at all — book the kept credit on a
+    // synthetic Expired row (zero cash) so the opening Sell doesn't look
+    // unresolved. Contracts flattened by a real expiry fill already carry it above.
+    if (!hasClosingLeg) {
       ledger.push({
         date: c.closeDate!, symbol: c.underlying, kind: "option",
         strategy: c.strategy, right: c.right, strike: c.strike, expiry: c.expiry,
@@ -363,13 +465,15 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
       });
     }
   }
-  for (const l of [...stockBySym.values()].flat()) {
-    ledger.push({
-      date: l.tradeDate ?? today, symbol: l.symbol, kind: "stock",
-      strategy: null, right: null, strike: l.strike, expiry: null,
-      type: l.txType ?? "Trade", qty: l.quantity ?? 0, price: l.price,
-      cash: l.proceeds ?? 0, pnl: l.proceeds ?? 0, credit: 0, entryPrice: null,
-    });
+  for (const [s, inv] of stockInv) {
+    for (const f of inv.fills) {
+      ledger.push({
+        date: f.date ?? today, symbol: s, kind: "stock",
+        strategy: null, right: null, strike: null, expiry: null,
+        type: f.type, qty: f.qty, price: f.price,
+        cash: f.cash, pnl: f.pnl, credit: 0, entryPrice: f.entryPrice,
+      });
+    }
   }
   ledger.sort((a, b) => a.date.localeCompare(b.date) || a.symbol.localeCompare(b.symbol));
   let cum = 0;
@@ -413,7 +517,7 @@ export function computePnl(rows: TransactionRow[], asOf: Date = new Date()): Pnl
       premiumPaid: contracts.reduce((s, c) => s + c.debit, 0),
       expiredCount: contracts.filter((c) => c.status === "expired").length,
       boughtBackCount: contracts.filter((c) => c.status === "closed").length,
-      assignedCount: [...assignBySym.values()].reduce((s, a) => s + a.count, 0),
+      assignedCount: [...stockInv.values()].reduce((s, inv) => s + inv.assignments, 0),
       rollCount: rolls.reduce((s, r) => s + r.rolls, 0),
       symbolsTraded: symMap.size,
       firstDate: dates[0] ?? null,
@@ -635,7 +739,7 @@ export function _selfCheck(): void {
   const mk = (o: Partial<TransactionRow>): TransactionRow => ({
     id: 0, symbol: "X", description: null, assetClass: null, tradeDate: null, right: null,
     strike: null, expiry: null, quantity: null, price: null, proceeds: null, commission: null,
-    realizedPnl: null, currency: "USD", txType: null, ...o,
+    realizedPnl: null, currency: "USD", txType: null, tradeTime: null, ...o,
   });
   const asOf = new Date("2026-06-29");
   const r = computePnl([
@@ -723,6 +827,97 @@ export function _selfCheck(): void {
   // unearned = credit − earned (premium given back); opening fills carry no credit
   assert(wm[0].credit - wm[0].earned === 100, "June unearned should be 100");
   assert(r.ledger.filter((t) => t.type === "Sell").every((t) => t.credit === 0), "opening Sell fills must carry no credit basis");
+  // ── spot (share) P/L: average-cost inventory; OPEN lots realize nothing ────
+  const rs = computePnl([
+    // GDX closed long round-trip: buy 100 @ 50 (−5000), sell 100 @ 52 (+5200) = +200
+    mk({ symbol: "GDX", tradeDate: "2026-05-01", quantity: 100, price: 50, proceeds: -5000, txType: "Buy" }),
+    mk({ symbol: "GDX", tradeDate: "2026-05-10", quantity: -100, price: 52, proceeds: 5200, txType: "Sell" }),
+    // USO OPEN assigned lot: buy 200 @ 124 (−24800), never sold → realized 0 (NOT −24800)
+    mk({ symbol: "USO", tradeDate: "2026-05-02", quantity: 200, price: 124, proceeds: -24800, txType: "Assignment" }),
+    // KKR partial close: buy 100 @ 50 (−5000), sell 40 @ 55 (+2200) → (55−50)*40 = +200; 60 held
+    mk({ symbol: "KKR", tradeDate: "2026-05-03", quantity: 100, price: 50, proceeds: -5000, txType: "Buy" }),
+    mk({ symbol: "KKR", tradeDate: "2026-05-12", quantity: -40, price: 55, proceeds: 2200, txType: "Sell" }),
+  ], asOf);
+  const gdx = rs.bySymbol.find((e) => e.symbol === "GDX");
+  assert(!!gdx && Math.abs(gdx.stock - 200) < 1e-9, `GDX stock realized should be 200, got ${gdx?.stock}`);
+  const uso = rs.bySymbol.find((e) => e.symbol === "USO");
+  assert((uso?.stock ?? 0) === 0, `USO open lot must realize 0, got ${uso?.stock}`);
+  const kkr = rs.bySymbol.find((e) => e.symbol === "KKR");
+  assert(!!kkr && Math.abs(kkr.stock - 200) < 1e-9, `KKR partial-close realized should be 200, got ${kkr?.stock}`);
+  assert(Math.abs(rs.summary.realized - 400) < 1e-9, `stock realized should be 400 (200+0+200), got ${rs.summary.realized}`);
+  assert(rs.summary.assignedCount === 1, `assignedCount should be 1, got ${rs.summary.assignedCount}`);
+  // ledger: opening buys are P/L-neutral; only the closing sells realize
+  const usoFills = rs.ledger.filter((t) => t.symbol === "USO");
+  assert(usoFills.length === 1 && usoFills[0].pnl === 0, "USO open buy must be P/L 0 in the ledger");
+  const gdxBuy = rs.ledger.find((t) => t.symbol === "GDX" && t.qty > 0);
+  const gdxSell = rs.ledger.find((t) => t.symbol === "GDX" && t.qty < 0);
+  assert(!!gdxBuy && gdxBuy.pnl === 0, "GDX buy fill must be P/L 0");
+  assert(!!gdxSell && Math.abs(gdxSell.pnl - 200) < 1e-9, "GDX sell fill must carry +200 realized");
+  assert(!!gdxSell && gdxSell.entryPrice === 50, `GDX sell must show entry (avg cost) 50, got ${gdxSell?.entryPrice}`);
+  assert(!!gdxBuy && gdxBuy.entryPrice == null, "GDX buy (open) must have no entry price");
+  // stock weekly total reconciles to realized
+  const wmS = weeklyByMonth(rs.ledger);
+  assert(Math.abs(wmS.reduce((s, g) => s + g.pnl, 0) - rs.summary.realized) < 1e-9, "stock weekly total must equal realized");
+
+  // same-day SELL then BUY must process by execution order (id), so the sale
+  // closes the PRIOR lot rather than blending with the same-day re-buy. Hold
+  // 50 @ 100; on 05-10 sell 50 @ 96 (id 2) then re-buy 50 @ 96 (id 3): the sale
+  // closes the 100 lot (entry 100, −200), the re-buy opens a fresh lot.
+  const ro = computePnl([
+    mk({ id: 1, symbol: "ZZZ", tradeDate: "2026-05-01", quantity: 50, price: 100, proceeds: -5000, txType: "Buy" }),
+    mk({ id: 3, symbol: "ZZZ", tradeDate: "2026-05-10", quantity: 50, price: 96, proceeds: -4800, txType: "Buy" }),
+    mk({ id: 2, symbol: "ZZZ", tradeDate: "2026-05-10", quantity: -50, price: 96, proceeds: 4800, txType: "Sell" }),
+  ], asOf);
+  const zsell = ro.ledger.find((t) => t.symbol === "ZZZ" && t.qty < 0)!;
+  assert(!!zsell && zsell.entryPrice === 100 && Math.abs(zsell.pnl + 200) < 1e-9, `same-day sell must close the 100 lot: entry ${zsell?.entryPrice} pnl ${zsell?.pnl}`);
+
+  // LONG-ONLY: a same-day round trip recorded SELL-first with NO prior lot must
+  // read as buy-opens → sell-closes (never a short). id order lists the sell (2)
+  // before the buy (3); the engine defers the sell so the BUY opens the position.
+  const rl = computePnl([
+    mk({ id: 2, symbol: "LO", tradeDate: "2026-05-05", quantity: -100, price: 20.5, proceeds: 2050, txType: "Sell" }),
+    mk({ id: 3, symbol: "LO", tradeDate: "2026-05-05", quantity: 100, price: 20.0, proceeds: -2000, txType: "Buy" }),
+  ], asOf);
+  const loBuy = rl.ledger.find((t) => t.symbol === "LO" && t.qty > 0)!;
+  const loSell = rl.ledger.find((t) => t.symbol === "LO" && t.qty < 0)!;
+  assert(!!loBuy && loBuy.entryPrice == null && loBuy.pnl === 0, "long-only: the buy opens (no entry / P&L 0)");
+  assert(!!loSell && loSell.entryPrice === 20 && Math.abs(loSell.pnl - 50) < 1e-9, `long-only: the sell closes @ entry 20 for +50; got ${loSell?.entryPrice}/${loSell?.pnl}`);
+  assert((rl.bySymbol.find((e) => e.symbol === "LO")?.stock ?? 0) === 50, "LO realized should be 50");
+
+  // IB execution time (trade_time) drives same-day order, not import id. Hold 100
+  // @ 50; on 05-10 a BUY 50 @ 55 executes 09:00 (id 30) and a SELL 50 @ 60 executes
+  // 10:00 (id 20). By time the buy adds first → 150 @ avg 51.67, then the sell
+  // realizes against 51.67. (Ordering by id would sell first, off a 50 basis.)
+  const rt = computePnl([
+    mk({ id: 1, symbol: "TT", tradeDate: "2026-05-01", quantity: 100, price: 50, proceeds: -5000, txType: "Buy", tradeTime: "20260501-10:00:00" }),
+    mk({ id: 20, symbol: "TT", tradeDate: "2026-05-10", quantity: -50, price: 60, proceeds: 3000, txType: "Sell", tradeTime: "20260510-10:00:00" }),
+    mk({ id: 30, symbol: "TT", tradeDate: "2026-05-10", quantity: 50, price: 55, proceeds: -2750, txType: "Buy", tradeTime: "20260510-09:00:00" }),
+  ], asOf);
+  const ttSell = rt.ledger.find((t) => t.symbol === "TT" && t.qty < 0)!;
+  assert(!!ttSell && Math.abs((ttSell.entryPrice ?? 0) - 51.6667) < 0.01, `trade_time: same-day buy(09:00) precedes sell(10:00) → blended entry 51.67, got ${ttSell?.entryPrice}`);
+
+  // ── expiry labeling: a $0 expiry fill (IB portal side X → "Expired") flattens
+  // the short → status EXPIRED (not "bought back"), full credit kept, and the
+  // realizing ledger fill is typed "Expired" with NO duplicate synthetic row ──
+  const re = computePnl([
+    // EEE: short call flattened by a $0 expiry fill → expired, keeps 150
+    mk({ symbol: "EEE", right: "C", strike: 30, expiry: "2026-06-13", tradeDate: "2026-05-01", quantity: -1, price: 1.5, proceeds: 150, txType: "Sell" }),
+    mk({ symbol: "EEE", right: "C", strike: 30, expiry: "2026-06-13", tradeDate: "2026-06-15", quantity: 1, price: 0, proceeds: 0, txType: "Expired" }),
+    // FFF: genuinely bought back (paid cash to close) → stays "closed"
+    mk({ symbol: "FFF", right: "P", strike: 40, expiry: "2026-12-18", tradeDate: "2026-05-01", quantity: -1, price: 2, proceeds: 200, txType: "Sell" }),
+    mk({ symbol: "FFF", right: "P", strike: 40, expiry: "2026-12-18", tradeDate: "2026-06-01", quantity: 1, price: 0.5, proceeds: -50, txType: "Buy" }),
+  ], asOf);
+  const eee = re.contracts.find((c) => c.underlying === "EEE")!;
+  assert(eee.status === "expired" && Math.abs(eee.proceeds - 150) < 1e-9, `EEE should be expired keeping 150, got ${eee?.status}/${eee?.proceeds}`);
+  const fff = re.contracts.find((c) => c.underlying === "FFF")!;
+  assert(fff.status === "closed", `FFF (bought back) should be closed, got ${fff?.status}`);
+  assert(re.summary.expiredCount === 1 && re.summary.boughtBackCount === 1, `expired/boughtBack should be 1/1, got ${re.summary.expiredCount}/${re.summary.boughtBackCount}`);
+  const eeeFills = re.ledger.filter((t) => t.symbol === "EEE");
+  assert(eeeFills.length === 2, `EEE should have exactly 2 ledger fills, got ${eeeFills.length}`);
+  assert(eeeFills.filter((t) => t.type === "Expired").length === 1, "EEE must show exactly one Expired fill (no duplicate synthetic row)");
+  const eeeReal = eeeFills.find((t) => t.pnl !== 0)!;
+  assert(eeeReal.type === "Expired" && Math.abs(eeeReal.pnl - 150) < 1e-9 && eeeReal.credit === 150, `EEE realizing fill should be Expired/150/credit150, got ${eeeReal?.type}/${eeeReal?.pnl}/${eeeReal?.credit}`);
+
   // eslint-disable-next-line no-console
   console.log("pnl self-check OK");
 }

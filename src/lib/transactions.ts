@@ -17,6 +17,7 @@ export type TransactionRow = {
   realizedPnl: number | null;
   currency: string | null;
   txType: string | null; // IB "Transaction Type": Buy/Sell/Assignment/Withdrawal/Interest/…
+  tradeTime: string | null; // IB execution timestamp (portal), e.g. "20260707-13:55:50"; sortable
 };
 
 const n = (v: unknown) => (v != null ? Number(v) : null);
@@ -25,13 +26,23 @@ const n = (v: unknown) => (v != null ? Number(v) : null);
 // Buy/Sell/Assignment/Withdrawal/…) and the Chrome-portal capture (has `side`:
 // B/S, no "Transaction Type"). Resolve a single transaction type so portal
 // fills aren't left blank (and so stock trades classify correctly downstream).
-const SIDE: Record<string, string> = { B: "Buy", S: "Sell", BUY: "Buy", SELL: "Sell" };
+// The portal marks an option expiration with side "X" — normalize it to
+// "Expired" so a lapsed contract reads the same however it was captured.
+const SIDE: Record<string, string> = { B: "Buy", S: "Sell", BUY: "Buy", SELL: "Sell", X: "Expired" };
 function resolveTxType(raw: Record<string, unknown> | null): string | null {
   const t = raw?.["Transaction Type"];
   if (t != null && String(t).trim() !== "") return String(t);
   const side = raw?.["side"];
   if (side != null && String(side).trim() !== "") return SIDE[String(side).toUpperCase()] ?? String(side);
   return null;
+}
+
+// IB's per-fill execution timestamp (portal `trade_time`, "YYYYMMDD-HH:MM:SS").
+// It's the authoritative execution order — used to sequence same-day fills
+// (import id can be out of order). CSV rows have no time → null (fall back to id).
+function resolveTradeTime(raw: Record<string, unknown> | null): string | null {
+  const t = raw?.["trade_time"];
+  return t != null && String(t).trim() !== "" ? String(t) : null;
 }
 
 export async function getTransactions(): Promise<TransactionRow[]> {
@@ -52,6 +63,7 @@ export async function getTransactions(): Promise<TransactionRow[]> {
     realizedPnl: n(r.realizedPnl),
     currency: r.currency,
     txType: resolveTxType(r.raw as Record<string, unknown> | null),
+    tradeTime: resolveTradeTime(r.raw as Record<string, unknown> | null),
   }));
 }
 

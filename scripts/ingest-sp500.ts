@@ -118,6 +118,42 @@ const LARGE_ETFS: { ticker: string; name: string; sector: string }[] = [
   { ticker: "LQD", name: "iShares iBoxx Investment Grade Corporate Bond ETF", sector: "Fixed Income" },
   { ticker: "AGG", name: "iShares Core U.S. Aggregate Bond ETF", sector: "Fixed Income" },
   { ticker: "EMB", name: "iShares J.P. Morgan USD Emerging Markets Bond ETF", sector: "Fixed Income" },
+  // Leveraged / Inverse — geared 2x/3x long + inverse funds. Not buy-and-hold
+  // (daily-reset decay), but deep option markets + very high IV = prime premium
+  // targets for the naked-selling strategy. Curated for liquidity + optionability.
+  //   Broad index (S&P 500 / Nasdaq-100 / Russell 2000)
+  { ticker: "TQQQ", name: "ProShares UltraPro QQQ (3x Nasdaq-100)", sector: "Leveraged / Inverse" },
+  { ticker: "SQQQ", name: "ProShares UltraPro Short QQQ (-3x Nasdaq-100)", sector: "Leveraged / Inverse" },
+  { ticker: "QLD", name: "ProShares Ultra QQQ (2x Nasdaq-100)", sector: "Leveraged / Inverse" },
+  { ticker: "UPRO", name: "ProShares UltraPro S&P 500 (3x)", sector: "Leveraged / Inverse" },
+  { ticker: "SPXU", name: "ProShares UltraPro Short S&P 500 (-3x)", sector: "Leveraged / Inverse" },
+  { ticker: "SPXL", name: "Direxion Daily S&P 500 Bull 3X", sector: "Leveraged / Inverse" },
+  { ticker: "SPXS", name: "Direxion Daily S&P 500 Bear 3X", sector: "Leveraged / Inverse" },
+  { ticker: "SSO", name: "ProShares Ultra S&P 500 (2x)", sector: "Leveraged / Inverse" },
+  { ticker: "SDS", name: "ProShares UltraShort S&P 500 (-2x)", sector: "Leveraged / Inverse" },
+  { ticker: "TNA", name: "Direxion Daily Small Cap Bull 3X", sector: "Leveraged / Inverse" },
+  { ticker: "TZA", name: "Direxion Daily Small Cap Bear 3X", sector: "Leveraged / Inverse" },
+  //   Sector / thematic 3x
+  { ticker: "SOXL", name: "Direxion Daily Semiconductor Bull 3X", sector: "Leveraged / Inverse" },
+  { ticker: "SOXS", name: "Direxion Daily Semiconductor Bear 3X", sector: "Leveraged / Inverse" },
+  { ticker: "TECL", name: "Direxion Daily Technology Bull 3X", sector: "Leveraged / Inverse" },
+  { ticker: "FAS", name: "Direxion Daily Financial Bull 3X", sector: "Leveraged / Inverse" },
+  { ticker: "FAZ", name: "Direxion Daily Financial Bear 3X", sector: "Leveraged / Inverse" },
+  { ticker: "LABU", name: "Direxion Daily S&P Biotech Bull 3X", sector: "Leveraged / Inverse" },
+  { ticker: "LABD", name: "Direxion Daily S&P Biotech Bear 3X", sector: "Leveraged / Inverse" },
+  { ticker: "YINN", name: "Direxion Daily FTSE China Bull 3X", sector: "Leveraged / Inverse" },
+  //   Commodity / miners / rates leveraged
+  { ticker: "NUGT", name: "Direxion Daily Gold Miners Bull 2X", sector: "Leveraged / Inverse" },
+  { ticker: "DUST", name: "Direxion Daily Gold Miners Bear 2X", sector: "Leveraged / Inverse" },
+  { ticker: "JNUG", name: "Direxion Daily Junior Gold Miners Bull 2X", sector: "Leveraged / Inverse" },
+  { ticker: "GUSH", name: "Direxion Daily S&P Oil & Gas E&P Bull 2X", sector: "Leveraged / Inverse" },
+  { ticker: "BOIL", name: "ProShares Ultra Bloomberg Natural Gas (2x)", sector: "Leveraged / Inverse" },
+  { ticker: "KOLD", name: "ProShares UltraShort Bloomberg Natural Gas (-2x)", sector: "Leveraged / Inverse" },
+  { ticker: "TMF", name: "Direxion Daily 20+ Year Treasury Bull 3X", sector: "Leveraged / Inverse" },
+  { ticker: "TMV", name: "Direxion Daily 20+ Year Treasury Bear 3X", sector: "Leveraged / Inverse" },
+  //   Single-stock leveraged (very liquid, extreme IV)
+  { ticker: "TSLL", name: "Direxion Daily TSLA Bull 2X", sector: "Leveraged / Inverse" },
+  { ticker: "NVDL", name: "GraniteShares 2x Long NVDA Daily ETF", sector: "Leveraged / Inverse" },
 ];
 
 async function scrapeConstituents(): Promise<Constituent[]> {

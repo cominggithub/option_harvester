@@ -78,7 +78,7 @@ async function findIbTab(preferActive) {
   return tabs[0] || null;
 }
 
-async function runSync(backend, { preferActive, source } = {}, onProgress) {
+async function runSync(backend, { preferActive, source, withGreeks } = {}, onProgress) {
   const p = (m) => onProgress?.(m);
   p("reading IB");
   const tab = await findIbTab(preferActive);
@@ -96,6 +96,15 @@ async function runSync(backend, { preferActive, source } = {}, onProgress) {
   if (d.ibOrders != null) out.orders = await post(`${backend}/api/orders`, { ibOrders: d.ibOrders });
   if (d.ibTrades?.length) out.trades = await post(`${backend}/api/trades`, { ibTrades: d.ibTrades });
   if (d.ibWatchlists?.length) out.watchlists = await post(`${backend}/api/watchlist`, { ibWatchlists: d.ibWatchlists });
+  // Per-contract greeks (Δ/Θ/Γ) for held options — batched snapshots (many conids
+  // per subscribe burst) so it's quick. Positions were just posted, so the backend
+  // knows which held conids to snapshot. Best-effort and MANUAL-only: auto-sync
+  // skips it to stay light and avoid Chrome throttling the in-page poll loop when
+  // the IB tab is backgrounded.
+  if (withGreeks) {
+    p("greeks");
+    out.greeks = await getGreeks(backend, p).catch((e) => ({ error: String(e) }));
+  }
   // Push OH watchlists back to IB. Positions were just posted above, so the OH
   // lists (Cpos/Ppos/NCcan) reflect the fresh snapshot. Failure here doesn't fail
   // the pull.
@@ -369,10 +378,16 @@ async function getOptions(backend, tickers, onProgress) {
   return { ...out, tried: targets.length };
 }
 
-// Runs IN the IB page: snapshot the greek fields for one HELD option conid.
-// 7308=Delta 7309=Gamma 7310=Theta 7311=Vega 7283=IV%. Returns { conid, optionRaw }.
-async function fetchGreekInPage(conid) {
+// Runs IN the IB page: snapshot the greek fields for a BATCH of held option
+// conids in ONE subscription burst — IB's /iserver/marketdata/snapshot accepts a
+// comma-separated conid list, so all contracts subscribe together and their greeks
+// compute in parallel server-side. Polls the whole batch, accumulating fields per
+// conid, until every conid has delta (7308) or a ~6s timeout — far faster than one
+// contract at a time. 7308=Δ 7309=Γ 7310=Θ 7311=Vega 7283=IV%. → [{conid, optionRaw}].
+async function fetchGreeksBatchInPage(conids) {
   const base = location.origin + "/portal.proxy/v1/portal";
+  const fields = "31,84,86,7283,7308,7309,7310,7311";
+  const url = `${base}/iserver/marketdata/snapshot?conids=${conids.join(",")}&fields=${fields}`;
   const j = async (u) => {
     try {
       const r = await fetch(u, { credentials: "include" });
@@ -381,28 +396,25 @@ async function fetchGreekInPage(conid) {
       return null;
     }
   };
-  const fields = "31,84,86,7283,7308,7309,7310,7311";
-  const url = `${base}/iserver/marketdata/snapshot?conids=${conid}&fields=${fields}`;
-  try {
-    // IB computes greeks server-side only after the contract is subscribed; the
-    // first reads are usually empty. Poll (accumulating fields across reads) until
-    // delta (7308) shows up, or give up after ~4s.
-    let row = {};
-    for (let i = 0; i < 8; i++) {
-      const d = await j(url);
-      const r0 = (Array.isArray(d) ? d : [])[0];
-      if (r0) row = Object.assign(row, r0);
-      if (row["7308"] != null && row["7308"] !== "") break;
-      await new Promise((s) => setTimeout(s, 500));
+  const rows = {}; // conid → accumulated fields across polls
+  const need = new Set(conids.map(String));
+  for (let i = 0; i < 12 && need.size; i++) {
+    const d = await j(url);
+    for (const r0 of Array.isArray(d) ? d : []) {
+      const c = String(r0.conid ?? "");
+      if (!c) continue;
+      rows[c] = Object.assign(rows[c] || {}, r0);
+      if (rows[c]["7308"] != null && rows[c]["7308"] !== "") need.delete(c);
     }
-    return { conid: String(conid), optionRaw: row };
-  } catch (e) {
-    return { conid: String(conid), error: String(e) };
+    if (!need.size) break;
+    await new Promise((s) => setTimeout(s, 500));
   }
+  return conids.map((c) => ({ conid: String(c), optionRaw: rows[String(c)] || {} }));
 }
 
 // Fetch per-position greeks: ask the backend which held option conids exist,
-// snapshot each in the logged-in IB page, then post to /api/greeks.
+// snapshot them in the logged-in IB page in BATCHES (one subscribe burst per
+// chunk — far faster than one contract at a time), then post to /api/greeks.
 async function getGreeks(backend, onProgress) {
   const targets = await (await fetch(`${backend}/api/greeks`)).json().catch(() => null);
   if (!Array.isArray(targets) || !targets.length) return { error: "no held option positions (sync positions first?)" };
@@ -410,20 +422,24 @@ async function getGreeks(backend, onProgress) {
   const tab = await findIbTab(false);
   if (!tab?.id) return { error: "no IB tab open — log into the IB portal" };
 
+  const conids = targets.map((t) => Number(t.conid)).filter((c) => Number.isFinite(c) && c > 0);
   const fetched = [];
-  for (let i = 0; i < targets.length; i++) {
-    const t = targets[i];
-    onProgress?.(`greeks ${i + 1}/${targets.length}`);
+  // Batch snapshots: many conids per subscribe burst. Chunked to stay well under
+  // IB's simultaneous market-data line limit (and keep request URLs sane).
+  const CHUNK = 50;
+  for (let i = 0; i < conids.length; i += CHUNK) {
+    const chunk = conids.slice(i, i + CHUNK);
+    onProgress?.(`greeks ${Math.min(i + chunk.length, conids.length)}/${conids.length}`);
     const [res] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      args: [Number(t.conid)],
-      func: fetchGreekInPage,
+      args: [chunk],
+      func: fetchGreeksBatchInPage,
     });
-    if (res?.result) fetched.push(res.result);
-    await new Promise((s) => setTimeout(s, 150));
+    if (Array.isArray(res?.result)) fetched.push(...res.result);
+    await new Promise((s) => setTimeout(s, 300));
   }
   const out = await post(`${backend}/api/greeks`, { fetched });
-  return { ...out, tried: targets.length };
+  return { ...out, tried: conids.length };
 }
 
 // Runs IN the IB page: what-if a CLOSING order for one held contract to read the
@@ -866,7 +882,7 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
     return true;
   }
   if (msg.type === "sync") {
-    handle("Syncing", (report) => runSync(msg.backend, { preferActive: true, source: "manual" }, report), fmt.sync, reply);
+    handle("Syncing", (report) => runSync(msg.backend, { preferActive: true, source: "manual", withGreeks: true }, report), fmt.sync, reply);
     return true;
   }
   if (msg.type === "deepSync") {

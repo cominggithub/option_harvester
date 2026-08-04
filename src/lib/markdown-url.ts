@@ -7,6 +7,7 @@ const STATIC_PAGE_PATHS = new Set([
   "/orders",
   "/pnl-predict",
   "/positions",
+  "/roic",
   "/sync",
   "/transactions",
   "/upload",

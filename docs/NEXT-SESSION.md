@@ -1,102 +1,83 @@
-# option_harvester — next-session recap (as of 2026-07-21)
+# option_harvester — next-session recap (as of 2026-08-04)
 
-**Status:** everything listed below is implemented, validated, built, and deployed to
-production (`114.33.62.221:19210`). This handoff is committed and pushed to
-`origin/master`. The working tree should be clean except for daily generated
-`predictions/cc-*.jsonl` files, which are intentionally untracked.
+**Status:** everything below is implemented, built, and deployed to production
+(`114.33.62.221:19210`, systemd unit `option_harvester`), and committed + pushed to
+`origin/master` in this handoff. The working tree should be clean afterward **except**
+for daily-generated `predictions/cc-*.jsonl` (intentionally untracked cron output).
 
-Ops reminder: production is the systemd unit `option_harvester`. Deploy only with
-`npm run build` immediately followed by `sudo systemctl restart option_harvester`;
-prod and test share `.next`, so a build without the restart breaks the live chunks.
-Read **CLAUDE.md** before operating the app or databases.
+Ops reminder: deploy only with `npm run build` **immediately** followed by
+`sudo systemctl restart option_harvester` — prod and the test server share one `.next`,
+so a build without the restart breaks the live chunks. Read **CLAUDE.md** first.
 
-## Shipped this session
+## Shipped this session (2026-07-30 → 08-04)
 
-1. **Extension v0.8.16 — fast Sync vs Deep sync.**
-   - **Sync now** is the short, background-safe path: positions, orders, trades,
-     watchlists, balances, OH push, and OH read-back verification. Auto-sync uses the
-     same light path.
-   - **Deep sync** is a separate button for per-contract greeks, margin what-ifs,
-     held-option underlying resolution, full conid re-resolution, then OH re-push and
-     verify. Keep the IB tab in front; Chrome throttles the in-page timers in a
-     background tab. Run Sync now first so backend position targets are fresh.
-   - The MV3 worker now persists busy/progress state, emits a 15-second heartbeat,
-     timestamps status, detects orphaned runs, and reports live steps/items in the
-     popup. Deep runs are stored with `source=deep` (`/api/sync-log`).
-   - Extension source is v0.8.16. Reload it in `chrome://extensions` to use these UI
-     and progress changes; HIVS itself does not require a new extension because OH
-     lists are fetched dynamically.
+1. **New OH watchlist: ROIC (id 990010).** High-ROIC value-quality universe —
+   `s.highRoic` (Return on Invested Capital ≥ `HIGH_ROIC_MIN` = 15 %, stocks only),
+   the same membership as the `/roic` screen; the cash-backed put-write pool. Appended
+   **last** so the OH→IB ids `990001–990009` stay stable (ROIC = `990010`). Wired through
+   `computeOhWatchlists` (`watchlists.ts`), `LIST_META` + a `reasonFor` case in
+   `ohhistory.ts`, and an additive `roic` column on `OhScreenSnapshot` (pushed to both
+   DBs) so `/wl-log` tracks it. Verified live: `/api/oh-watchlists` shows `OH:ROIC` id
+   990010; extension pushed **OH→IB 10/10 · verify ✓** with no extension change (lists
+   are fetched dynamically).
 
-2. **Test database isolation fixed.** Every `:test` script in `package.json` uses
-   `dotenv -e .env.test -o`, so `.env.test` overrides a prod `DATABASE_URL` inherited
-   from the shell/systemd environment. Verified both before and after importing Prisma.
+2. **New sector: "Leveraged / Inverse".** Added to `SECTOR_ORDER`/`SECTOR_COLORS`
+   (`sectors.ts`, placed after Fixed Income) and seeded **29 curated liquid, optionable
+   2x/3x + inverse ETFs** into `LARGE_ETFS` (`scripts/ingest-sp500.ts`): broad-index
+   (TQQQ/SQQQ/QLD/UPRO/SPXU/SPXL/SPXS/SSO/SDS/TNA/TZA), sector-3x
+   (SOXL/SOXS/TECL/FAS/FAZ/LABU/LABD/YINN), commodity/miners/rates
+   (NUGT/DUST/JNUG/GUSH/BOIL/KOLD/TMF/TMV), single-stock (TSLL/NVDL). Live on prod
+   (29 rows in the sector; ingested nightly). These carry very high IV → many flow into
+   NC/HIV as intended.
 
-3. **OTC OH watchlist + history.** `OTC` means “Option Targets, no Call”:
-   `(target || held call || held put) && no held call`. It identifies flagged/held-option
-   names where a call has not yet been written. The daily OH snapshot schema includes
-   `target`; `/wl-log` tracks OTC entries/exits with reasons. The additive column exists
-   in both owned databases.
+3. **NC / HIV lower-bound change.** Shared "has a 1/2/3/4-week option ladder" floor:
+   `NC_MIN_WEEKLY_BUCKETS` **5 → 4** (weeks 1-4). HIV now also requires that ladder
+   (`weeklyBuckets ≥ NC_MIN_WEEKLY_BUCKETS`) on top of its IV floor, cascading to
+   HIVS/HIVSC. `HIV_IV_MIN` was briefly lowered to 40 % then **restored to 50 %** (the
+   40 % list was too long); NC's IV floor stays 40 %. Net: HIV is tighter than before
+   (IV > 50 % **and** a tradable near-term ladder). Reason strings in `ohhistory.ts`
+   (`hiv`/`hivs`/`hivsc`) now explain ladder flips too.
 
-4. **HIVS OH watchlist.** `HIVS` is exactly HIV (front-month ATM IV > 50%) restricted
-   to strict spot bounds **price > $20 and price < $200**. It appears on `/watchlists`,
-   in `/wl-log`, and in the OH→IB payload as `OH:HIVS` (suggested id 990007; OTC is
-   990008). Production validation on July 21: HIV 151, HIVS 82, 0 missing conids;
-   exact live predicate and HIVS⊆HIV passed. User Sync reported `OH→IB 8/8 · verify ✓`,
-   so all eight lists were published and read back successfully.
+4. **Also committed in this handoff (accumulated prior-session work, already deployed):**
+   extension **v0.9.1** (`extension/background.js` + `manifest.json`); the `/roic`
+   value screen (`src/app/roic/`, `RoicScreen.tsx`, `lib/roic.ts`, `roic-check.ts`,
+   TopNav link); P&L Predict greeks + cumulative/earned-unearned charts
+   (`pnl-predict/page.tsx`, `CumulativePnlChart.tsx`, `charts.tsx`); the transaction
+   P/L engine work in `pnl.ts` (weekly-by-month, earned/unearned) + `transactions.ts`
+   / `txparse.ts` / trades route. Behavior/why for these lives in **CLAUDE.md** and
+   **docs/spec.md** (updated in the same commit); this recap is not their primary spec.
 
-5. **Shareable live Markdown for every UI page.** Each approved UI route has a
-   read-only, on-demand Markdown mirror:
-   - `/md/index.md`, `/md/watchlists.md`, `/md/pnl-predict.md`
-   - dynamic example: `/md/stock/NVDA.md`
-   - query parameters are preserved by the global TopNav **MD / Copy** control.
+## Verification done this session
 
-   `src/app/md/[[...path]]/route.ts` loopback-fetches only whitelisted UI routes,
-   extracts `#page-content`, converts headings/tables/lists/links with Cheerio, strips
-   scripts/styles/SVG, and returns `text/markdown`. It uses `no-store` (regenerated on
-   every fetch), `noindex`, public source links, and blocks API/arbitrary-host proxying.
-   `scripts/page-markdown-check.ts` covers URL mapping, content isolation, tables,
-   links, and script removal. All 12 mirrors returned 200 in production; unsupported
-   `/md/api/...` returned 404.
+- Prod `/api/oh-watchlists`: `OH:ROIC` id 990010; leveraged ETFs live (29 in sector).
+- HIV gate reconciled against the DB: `IV>40` = 235, `IV>40 ∧ buckets≥4` = 154 (matched
+  live count at the time); after restoring IV>50 + ladder, HIV = 98 (vs 137 old IV-only).
+- Two live syncs confirmed **OH→IB 10/10 · verify ✓** (525–611 conids matched, 0 mismatched).
+- Production build compiled clean each deploy; systemd restart + HTTP 200 smoke checks.
 
-   **Security/behavior note:** these URLs expose the same current data as their web
-   pages; `noindex` is not authentication. Client-only tab/filter changes that do not
-   alter the URL are not represented—the mirror captures the server-rendered/default
-   page state.
+## Environment note (corrected this session)
 
-6. **P&L Predict Spot column.** Each expiry-detail table now shows current underlying
-   **Spot immediately before Strike**. `buildOptionPnlByExpiry` carries
-   `PositionGroup.price` into every `OptionPnlLeg`. Production validation: 86/86 option
-   legs populated; HTML and `/md/pnl-predict.md` both render
-   `Symbol | Type | Spot | Strike` (sample AG: spot 15.85, strike 22.00).
+- The daily ingest timer fires at **06:00 local (Asia/Taipei)** — confirmed via
+  `systemctl` (`OnCalendar=*-*-* 06:00:00`, `Persistent=true`). Prisma stores timestamps
+  as **UTC-naive**; when spot-checking freshness, convert with
+  `col AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Taipei'` (NOT a bare `AT TIME ZONE
+  'Asia/Taipei'`, which double-shifts and reads 8 h early).
 
-7. **Docs and validation.** Updated `CLAUDE.md`, `docs/spec.md`,
-   `docs/watchlists.md`, and `docs/test-plan.md`. Final gates: TypeScript, diff check,
-   Prisma schema validation, extension JavaScript syntax, P/L/position/news/Markdown
-   self-checks, production build, systemd restart, route/API smoke tests.
+## Optional follow-ups (not started)
 
-## Current operating notes
-
-- Prod: `http://114.33.62.221:19210`; test: port 19211 and
-  database `option_harvester_test`.
-- Data mutations belong on test only. Additive schema DDL is pushed to both owned
-  databases. Never touch another project's database.
-- Extension changes are not installed by a web deploy. Reload unpacked extension
-  v0.8.16 manually when its Deep-sync/progress behavior is wanted.
-- Markdown is dynamic, not a stored file: opening the same URL later regenerates it
-  from current DB/page data.
-
-## Optional follow-ups
-
-- FISV → FI rename in the S&P seed (`scripts/ingest-sp500.ts`) plus conid re-resolve.
-- If exact client-selected Analyzer/watchlist/transaction tabs must be shareable,
-  encode those selections in URL query parameters and initialize the client views
-  from them; Markdown already preserves query strings.
-- Consider authentication or signed Markdown URLs before sharing account-bearing pages
-  beyond trusted AI chats; `noindex` only discourages crawlers.
+- **FISV → FI rename** in the S&P seed (`scripts/ingest-sp500.ts`) + conid re-resolve.
+- **Auto-sync greeks:** manual Sync runs a batched greeks pass; auto-sync skips it, so
+  RED/margin can lag on auto-only days. Consider a lighter periodic greeks refresh.
+- **"bad option date" auto-label** still uses `MIN_LADDER_BUCKETS = 5`, now one above
+  NC's ladder floor (4) — a name can pass NC yet still get the chip. Align to 4 if wanted.
+- **Auth / signed Markdown URLs** before sharing account-bearing pages widely (`noindex`
+  is not authentication).
 
 ## How to restart next session
 
 1. Read `CLAUDE.md`, then this file.
-2. Confirm `git status`; only generated `predictions/cc-*.jsonl` should be untracked.
-3. Reload extension v0.8.16 if Deep sync/progress UI is not present.
-4. Open any page and use **MD** to inspect or **Copy MD URL** to share current content.
+2. `git status` — only generated `predictions/cc-*.jsonl` should be untracked.
+3. Extension is **v0.9.1** — reload in `chrome://extensions` only if its behavior
+   changed; **bump `manifest.json` on any extension edit**.
+4. Check `/wl-log` for the day-over-day OH diffs (ROIC diffs began the day after its
+   `roic` snapshot column landed).

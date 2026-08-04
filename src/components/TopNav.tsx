@@ -9,6 +9,7 @@ const LINKS = [
   { href: "/", label: "Analyzer" },
   { href: "/ib", label: "IB" },
   { href: "/watchlists", label: "Watchlists" },
+  { href: "/roic", label: "ROIC" },
   { href: "/wl-log", label: "WL Log" },
   { href: "/wiki", label: "Wiki" },
   { href: "/upload", label: "IB Upload" },

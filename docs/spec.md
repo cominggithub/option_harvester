@@ -12,7 +12,7 @@ An **option-premium harvesting dashboard** for an all-cash, **naked option-selli
 strategy: sell **naked calls** on weak sectors, **naked puts** on quality in a panic —
 never holding the underlying. (Terminology: the calls are naked; the puts are
 cash-backed but the user calls them naked too. Legacy code identifiers are
-`cc`/`csp`/`ccScore`.) It screens the **S&P 500 + ~70 liquid ETFs** for naked-call
+`cc`/`csp`/`ccScore`.) It screens the **S&P 500 + ~100 liquid ETFs** for naked-call
 targets (bearish, liquid sector ETFs) and surfaces ticker, company, last price,
 change %, IV %, Harvester score, multi-window trend (1M/3M/6M/1Y), market cap, volume.
 
@@ -95,9 +95,9 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   — the extension's per-run history (`option_harvest_sync_runs`).
 - **WL Log** (`/wl-log`, `getOhChangeLog`) — OH-watchlist change log. Snapshots each
   day's screen (`option_harvest_oh_screen_snapshots`, written at the end of the daily
-  refresh) and shows, per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/OTC), what was **added** /
+  refresh) and shows, per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC), what was **added** /
   **removed** between renews and **why** — the predicate input that flipped (IV crossing
-  50/40%, a trend window turning, a weekly-ladder gap, a position open/close, |Δ| past
+  40/50%, a trend window turning, a weekly-ladder gap, a position open/close, |Δ| past
   0.30). Current membership counts at top; diffs are day-over-day.
 - **Orders** (`/orders`) — live IB working orders. Each protective **buy-stop** is
   matched to the short call it covers (same underlying, trigger = strike) and shows the
@@ -128,9 +128,18 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   off-index ticker into the universe immediately (`addNewHoldings`, via `enrich.ts`).
 - **Wiki** (`/wiki`) — static field-manual page (strategy, screens, formulas).
 - **Watchlists** (`/watchlists`, `WatchlistBrowser.tsx`) — left-nav tabs over two
-  groups: **OH** (computed NC / NCcan / Cpos / Ppos / RED / HIV / HIVS / OTC) and
+  groups: **OH** (computed NC / NCcan / Cpos / Ppos / RED / HIV / HIVS / HIVSC / OTC / ROIC) and
   **IB** (the user's Interactive Brokers lists, synced by the extension). Each tab
   renders the Analyzer's wide table view (`WideStockList`) for its members. Full spec: **docs/watchlists.md**.
+- **High ROIC** (`/roic`, `RoicScreen.tsx`) — value-investment quality screen. Lists
+  S&P 500 stocks whose Return on Invested Capital ≥ **`HIGH_ROIC_MIN` (15%)**, sorted by
+  ROIC (a sortable, read-only fundamentals table: ROIC / P·E / Fwd P·E / margin / div /
+  price / cap, the **FY** (fiscal year of the figure), and a **ROIC-by-year** bar chart per
+  row; click a ticker → stock detail, which also shows the ROIC-by-year chart). ROIC = NOPAT ÷ invested capital, computed
+  at ingest (`src/lib/roic.ts`); the same threshold drives the "high roic" auto-label
+  chip shown across the Analyzer/Watchlists. Rationale: ROIC sustained above the ~8–10%
+  cost of capital signals efficient capital use / a durable moat (Greenblatt/Buffett-style
+  quality). Stocks only — ETFs have no invested capital.
 - **IB vs Yahoo** (`/ib`) — compares the IB-sourced option snapshot (price / IV / DTE /
   bid-ask spread, from the extension) against the Yahoo-sourced values per ticker, so
   the two feeds can be eyeballed before a screen switches source.
@@ -180,6 +189,14 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   `[{d,dte}]`). **Fundamentals** (same `quoteSummary` call as description/earnings —
   no extra request): trailing_pe, forward_pe, peg_ratio, dividend_yield, beta,
   week52_low/high, profit_margins, analyst_rec, target_mean_price; ETFs leave most null.
+  **roic** — Return on Invested Capital (a FRACTION, 0.185 = 18.5%): NOPAT ÷ (total
+  debt + equity − cash), from the latest annual `fundamentalsTimeSeries` (its own
+  isolated request — the old incomeStatement/balanceSheet quoteSummary modules went
+  empty in Nov 2024; see `src/lib/roic.ts`). Stocks only; null for ETFs / when the
+  statement line items are unavailable. Drives the "high roic" auto-label + `/roic` page.
+  **roic_history** (JSONB `[{year,roic}]`, newest last) — ROIC per reported fiscal year
+  (up to ~5y from the annual `fundamentalsTimeSeries`); powers the ROIC-by-year chart and
+  the "company year" (latest fiscal year) shown on `/roic` and the stock page.
   **IB-sourced (parallel, on-demand from the extension):** ib_price, ib_iv_pct,
   ib_iv_dte, ib_expiry, ib_atm_strike/bid/ask/mid/spread_pct, ib_delta, ib_at — the
   ~30-DTE ATM call snapshot, kept separate from the Yahoo fields for the `/ib`
@@ -246,7 +263,7 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   nc, target, held, posCall, posPut, max_opt_abs_delta + the NC criteria (volume, price,
   weekly_buckets, iv_pct, trend_m1/m3/m6). Written by `scripts/snapshot-oh.ts` at the end
   of the daily refresh; the **WL Log** (`/wl-log`) diffs consecutive days per OH list
-  (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/OTC) and explains each add/remove (`lib/ohhistory.ts`).
+  (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC) and explains each add/remove (`lib/ohhistory.ts`).
 
 ### IB parsers
 - **ibparse.ts** (positions): IB Activity Statements are multi-section CSVs;
@@ -298,8 +315,9 @@ Rough but free; a "look here" prompt, not a verdict.
    `quoteSummary(assetProfile+calendarEvents+summaryDetail+defaultKeyStatistics+
    financialData)` (description/earnings/fundamentals), and `getAtmIv()` (IV +
    weekly_buckets + ATM strike/mid/spread + ladder). ~4 Yahoo calls/ticker.
-3. Add ~70 curated liquid ETFs (sector-tagged; broad/foreign/commodity/bond get their
-   own buckets — `SECTOR_ORDER` in `sectors.ts`). Edit `LARGE_ETFS` to change them.
+3. Add ~100 curated liquid ETFs (sector-tagged; broad/foreign/commodity/bond and
+   **leveraged/inverse 2x-3x** funds get their own buckets — `SECTOR_ORDER` in
+   `sectors.ts`). Edit `LARGE_ETFS` to change them.
    3b. Add the user's **held instruments** not already in the universe
    (`getPositionConstituents()`) under sector **"Off-Index"**; non-US via `YF_ALIAS`
    (e.g. `UBSG → UBSG.SW`).

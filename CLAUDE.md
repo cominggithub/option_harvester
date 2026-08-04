@@ -2,7 +2,7 @@
 
 An **option-premium harvesting dashboard** for an all-cash, **naked option-selling**
 strategy (sell naked calls on weak sectors, naked puts on quality in a panic; never
-hold the underlying). Screens the S&P 500 + ~70 liquid ETFs and tracks the user's IB
+hold the underlying). Screens the S&P 500 + ~100 liquid ETFs and tracks the user's IB
 positions, trades, and P/L.
 
 This file is the **operational map** — how to run the repo safely. Everything else
@@ -62,13 +62,11 @@ Windows reboot → "WSL Autostart" task → systemd (PID 1) → this unit runs
 - **Manage prod with systemctl**: `sudo systemctl {restart|stop|status} option_harvester`.
 - **Do NOT** `scripts/server.sh {start|stop|restart} prod` while the unit is active —
   it detaches its own copy and fights `Restart=always`. `server.sh` is for **test** + dev.
-- After a code change: `npm run build` then `sudo systemctl restart option_harvester`.
-- **`npm run build` breaks live prod until you restart it** — prod **and** the test
-  server share one `.next` dir, so any build (even one done just to verify on test)
-  swaps the on-disk chunks under the running prod process; its served HTML then points
-  at chunk hashes that no longer exist → "Application error: a client-side exception".
-  **Always pair a build with `sudo systemctl restart option_harvester` immediately**,
-  or don't rebuild while prod is serving.
+- After any code change, **deploy it yourself**: `npm run build && sudo systemctl restart option_harvester`.
+  Run the two as one paired step — never a build without the restart. (prod **and** the
+  test server share one `.next` dir, so any build swaps the on-disk chunks under the
+  running prod process; until the restart its served HTML points at chunk hashes that no
+  longer exist → "Application error: a client-side exception".) So: build, restart, verify, done.
 
 ### Timers (systemd)
 
@@ -134,8 +132,11 @@ Pages (all `force-dynamic`):
 - `src/app/stock/[ticker]/page.tsx` — per-symbol detail page (7 sections).
 - `src/app/watchlists/page.tsx` — watchlists browser (`<WatchlistBrowser>`): OH
   (computed) + IB (synced) lists in the Analyzer table view. See docs/watchlists.md.
+- `src/app/roic/page.tsx` — **High ROIC** value screen (`<RoicScreen>`): S&P 500 stocks
+  with Return on Invested Capital ≥ `HIGH_ROIC_MIN` (15%), sorted by ROIC. ROIC computed
+  at ingest (`lib/roic.ts`); see docs/spec.md.
 - `src/app/wl-log/page.tsx` — **WL Log**: OH-watchlist change log. Diffs the daily
-  `option_harvest_oh_screen_snapshots` per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/OTC) and
+  `option_harvest_oh_screen_snapshots` per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC) and
   explains each add/remove by the predicate input that flipped (IV crossing a
   threshold, a trend window, a ladder gap, a position open/close, |Δ| past 0.30, a
   target flag toggled). Built by `getOhChangeLog` (`lib/ohhistory.ts`).
@@ -149,7 +150,7 @@ Pages (all `force-dynamic`):
 - `src/app/transactions/page.tsx` — **Trans** (`<PnlDashboard>`; top-nav "Trans").
   Overview (equity + monthly-P/L charts, `PnlCharts.tsx`, + option win-rate matrix),
   **Weekly · Monthly** (transaction ledger bucketed by trade date → Mon–Sun weeks
-  grouped by month: credit/earned%/unearned/wins/losses/P/L + earned-vs-unearned chart;
+  grouped by month: credit/earned%/unearned/wins/losses/**# opt/win%**/P/L + earned-vs-unearned chart;
   expand to per-fill detail with a transaction-type column), By Symbol, Short/​Puts,
   Rolls, All Contracts.
 - `src/app/pnl-predict/page.tsx` — **P&L Predict**: open option book grouped by expiry
@@ -201,7 +202,8 @@ of six tall **1W/2W/1M/3M/6M/1Y** charts; each chart header sorts by that window
 net-move trend; charts are tinted by net move via `moveLabel` (green/red/grey), not the
 regression label; used by the Analyzer **and** Watchlists), `DataTable.tsx`
 (now the shared row sub-components: `OptionDetail`/`PositionDetail`/`LabelEditor`/`RatingCell`),
-`WatchlistBrowser.tsx` (watchlists page: left-nav tabs + `WideStockList`), `PnlDashboard.tsx`,
+`WatchlistBrowser.tsx` (watchlists page: left-nav tabs + `WideStockList`), `RoicScreen.tsx`
+(the `/roic` high-ROIC value table — sortable, read-only), `PnlDashboard.tsx`,
 `charts.tsx` (server SVG charts: `EquityLine`/`VBars`/`DivergingBar`/`Histogram`/`Scatter`),
 `PnlCharts.tsx` (**client**, interactive: `EquityChart` + `MonthlyBars` for the P/L overview,
 `WeeklyBars` + `EarnUnearnBars` for the Weekly·Monthly section),
@@ -218,6 +220,7 @@ Libs (`src/lib`): `securities.ts` (`getDashboardData`, `getIvSeries`, screens),
 the option book by expiry with cumulative P/L/credit + net greeks for P&L Predict),
 `news.ts` (headlines + lexicon), `score.ts` (Signal), `ccscore.ts` (Δ0.30 Call-Edge
 `E`, read from `option_harvest_cc_scores`), `harvester.ts`, `ivstats.ts` (IV rank),
+`roic.ts` (pure `computeRoic` NOPAT÷invested-capital + `HIGH_ROIC_MIN`/`isHighRoic` — the "high roic" value screen),
 `trend.ts` (windows incl. `w1`/`w2`; `moveLabel` = net-move tint; `WINDOW_BARS`),
 `view.ts` (sort; per-window `trendW1..trendY1` keys, `TrendWindowKey` w1/w2),
 `labels.ts` (derived stock-label catalog),
@@ -246,7 +249,7 @@ Scripts (`scripts/`):
   `backtest-cc.py`, `calibrate-cc.py`, `validate-cc.py`, `iv-rv-screen.py` — see
   `docs/cc-target-strategy.md`. Predictions written to `predictions/cc-*.jsonl`.
 - Entrypoints: `daily.sh`, `spreads.sh`, `server.sh`.
-- Self-checks: `*-check.ts` (`pnl`, `posanalysis`, `positions`, `trades`, `news`) —
+- Self-checks: `*-check.ts` (`pnl`, `posanalysis`, `positions`, `trades`, `news`, `roic`) —
   see test plan.
 
 Chrome extension (`extension/`): runs in the logged-in IB portal tab. **Sync now**
@@ -255,8 +258,12 @@ account-balance summary (`/portfolio/{acct}/summary` → `balances`) → the wri
 (IB→web, full replace), then pushes OH watchlists → IB (`OH:*`) and **reads them back
 to verify** the pushed conids (`/api/oh-verify`, shown on `/sync`). It's just parallel
 fetches (no per-contract timers), so it finishes in a few seconds and survives
-switching tabs / a backgrounded window. **Auto-sync** runs this same light pull on a
-timer. **Deep sync** (separate button) runs the **heavy** passes: per-position greeks
+switching tabs / a backgrounded window. A **manual** Sync now also runs the
+**batched greeks** pass (Δ/Θ/Γ, many conids per snapshot — quick, best-effort) so
+held-option greeks refresh without a separate step; **Auto-sync** runs the same
+light pull on a timer but **skips greeks** (it may be backgrounded → the in-page
+poll loop would be throttled). **Deep sync** (separate button) runs the **heavy**
+passes: per-position greeks
 (Δ/Θ/Γ) → `greeks`, exact maintenance margin per held contract (what-if) → `margin`,
 **resolves the true underlying conid for held option-only names** (a naked book holds
 options not the stock, so IB's per-symbol `/trsrv` pick can be wrong — the option's
@@ -272,14 +279,15 @@ keepalive); the popup uses it to tell a live run from an orphaned "busy" flag an
 timestamp every log line. While an op runs the worker pushes live step/item progress
 to the popup log (e.g. `greeks 12/97`, `margin 5/97`, `conids…`, `OH push`). Other popup actions: **Resolve conids** (backfill
 `securities.conid` via `/trsrv/stocks`), **Get options (IB)** (per-ticker ATM option
-snapshot → `ib_*`), **Get greeks (IB)** (per held-contract snapshot →
-`option_harvest_option_greeks`), **Get margin (IB)** (per held-contract what-if close
+snapshot → `ib_*`), **Get greeks (IB)** (held-contract greek snapshot →
+`option_harvest_option_greeks`; **batched** — many conids per `/iserver/marketdata/snapshot`
+subscribe burst, so it's fast rather than one contract at a time), **Get margin (IB)** (per held-contract what-if close
 order → `option_harvest_position_margin`), **Push OH → IB**, **Verify OH lists (read
 back)**, **Fix conids from held options**, and **Send page (dev)** capture →
 `ib-capture`. Every Sync (manual/auto/deep) posts its run summary to `sync-log` (the
 `/sync` page, `source` = `manual` | `auto` | `deep`). Full flows in **docs/watchlists.md**.
 **Bump `manifest.json` `version` on every edit** (see
-`[[bump-extension-version]]`; currently 0.8.16).
+`[[bump-extension-version]]`; currently 0.9.0).
 
 ## Local dev gotchas (WSL on `/mnt/d`)
 

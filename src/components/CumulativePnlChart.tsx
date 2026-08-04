@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 // Client chart: cumulative option P/L (or credit) by expiry, two stacked panels
 // (line + gridded value axis on top, per-expiry bars on their own scale below),
@@ -250,13 +250,14 @@ export function CumulativePnlByExpiry({
 // own top panel. mode="pct": each as a share of credit (100% reference line);
 // cumulative doesn't apply to a ratio, so the % view is bars only.
 const AMBER = "#c98a1a";
+const SOFT_RED = "#d98a8a"; // closed (realized) P/L — muted so it reads as context
 export function EarnUnearnByExpiry({
   points,
   mode = "amount",
   w = 1180,
   h = 340,
 }: {
-  points: { date: string; earned: number; unearned: number; credit: number }[];
+  points: { date: string; earned: number; unearned: number; credit: number; closed?: number }[];
   mode?: "amount" | "pct";
   w?: number;
   h?: number;
@@ -268,16 +269,21 @@ export function EarnUnearnByExpiry({
   const showLines = !isPct;
   const eVal = (p: { earned: number; credit: number }) => (isPct ? (p.credit ? p.earned / p.credit : 0) : p.earned);
   const uVal = (p: { unearned: number; credit: number }) => (isPct ? (p.credit ? p.unearned / p.credit : 0) : p.unearned);
+  // Closed (realized) P/L — amount view only (a ratio to credit doesn't apply).
+  const cVal = (p: { closed?: number }) => p.closed ?? 0;
+  const hasClosed = !isPct && points.some((p) => (p.closed ?? 0) !== 0);
   const fmtV = (v: number) => (isPct ? `${Math.round(v * 100)}%` : k(v));
   const fmtValSigned = (v: number) => (isPct ? `${v >= 0 ? "+" : "−"}${Math.abs(Math.round(v * 100))}%` : fmtSigned(v));
 
   const n = points.length;
   const eV = points.map(eVal);
   const uV = points.map(uVal);
+  const clV = points.map(cVal);
   // cumulative running totals (amount mode only)
-  let ce = 0, cu = 0;
+  let ce = 0, cu = 0, cc = 0;
   const cumE = eV.map((v) => (ce += v));
   const cumU = uV.map((v) => (cu += v));
+  const cumC = clV.map((v) => (cc += v));
 
   const pad = { l: 54, r: 20, t: 18 };
   const AXIS = 52;
@@ -291,16 +297,20 @@ export function EarnUnearnByExpiry({
   const barPanelH = barBottom - barTop;
   const band = innerW / n;
   const X = (i: number) => pad.l + (i + 0.5) * band;
-  const BAR_W = Math.min(band * 0.3, 20);
+  const nBars = hasClosed ? 3 : 2;
+  const BAR_W = Math.min(band * (nBars === 3 ? 0.24 : 0.3), 20);
+  const BAR_GAP = 1;
+  const groupW = nBars * BAR_W + (nBars - 1) * BAR_GAP;
+  const barOff = (idx: number) => -groupW / 2 + idx * (BAR_W + BAR_GAP); // left edge of bar #idx
 
   // bar-panel scale (own range; include 0, and 1 for the % reference)
-  const bLo = Math.min(0, ...eV, ...uV);
-  const bHi = Math.max(0, ...eV, ...uV, isPct ? 1 : 0);
+  const bLo = Math.min(0, ...eV, ...uV, ...(hasClosed ? clV : []));
+  const bHi = Math.max(0, ...eV, ...uV, ...(hasClosed ? clV : []), isPct ? 1 : 0);
   const bRange = bHi - bLo || 1;
   const YB = (v: number) => barTop + barPanelH * (1 - (v - bLo) / bRange);
   // line-panel scale (cumulative)
-  const cLo = Math.min(0, ...cumE, ...cumU);
-  const cHi = Math.max(0, ...cumE, ...cumU);
+  const cLo = Math.min(0, ...cumE, ...cumU, ...(hasClosed ? cumC : []));
+  const cHi = Math.max(0, ...cumE, ...cumU, ...(hasClosed ? cumC : []));
   const cRange = cHi - cLo || 1;
   const YL = (v: number) => plotTop + lineH * (1 - (v - cLo) / cRange);
 
@@ -319,8 +329,8 @@ export function EarnUnearnByExpiry({
     if (hover == null) return null;
     const p = points[hover];
     const x = X(hover);
-    const boxW = 196;
-    const boxH = showLines ? 96 : 78;
+    const boxW = 200;
+    const boxH = showLines ? (hasClosed ? 130 : 96) : 78;
     const bx = Math.min(Math.max(x - boxW / 2, pad.l), w - pad.r - boxW);
     const by = plotTop + 4;
     return { p, i: hover, x, boxW, boxH, bx, by };
@@ -337,6 +347,12 @@ export function EarnUnearnByExpiry({
           <svg width="14" height="12" aria-hidden><rect x="4" y="1" width="6" height="11" rx="1" fill={AMBER} fillOpacity={0.75} /></svg>
           Unearned (at risk)
         </span>
+        {hasClosed && (
+          <span className="inline-flex items-center gap-1.5">
+            <svg width="14" height="12" aria-hidden><rect x="4" y="1" width="6" height="11" rx="1" fill={SOFT_RED} fillOpacity={0.85} /></svg>
+            Closed (realized)
+          </span>
+        )}
         {showLines && (
           <span className="inline-flex items-center gap-1.5">
             <svg width="20" height="10" aria-hidden><line x1="0" y1="5" x2="20" y2="5" stroke={GREEN} strokeWidth="2.2" /></svg>
@@ -360,14 +376,23 @@ export function EarnUnearnByExpiry({
             ))}
             <path d={path(cumU, YL)} fill="none" stroke={AMBER} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
             <path d={path(cumE, YL)} fill="none" stroke={GREEN} strokeWidth={2.2} strokeLinejoin="round" strokeLinecap="round" />
+            {hasClosed && (
+              <path d={path(cumC, YL)} fill="none" stroke={SOFT_RED} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" strokeDasharray="5 3" />
+            )}
             {points.map((p, i) => (
               <g key={`ld-${i}`}>
                 <circle cx={X(i)} cy={YL(cumU[i])} r={hover === i ? 3.6 : 1.8} fill={AMBER} stroke={hover === i ? "#fff" : "none"} strokeWidth={hover === i ? 1 : 0} />
                 <circle cx={X(i)} cy={YL(cumE[i])} r={hover === i ? 3.6 : 1.8} fill={GREEN} stroke={hover === i ? "#fff" : "none"} strokeWidth={hover === i ? 1 : 0} />
+                {hasClosed && (
+                  <circle cx={X(i)} cy={YL(cumC[i])} r={hover === i ? 3.6 : 1.8} fill={SOFT_RED} stroke={hover === i ? "#fff" : "none"} strokeWidth={hover === i ? 1 : 0} />
+                )}
               </g>
             ))}
             <text x={X(n - 1)} y={YL(cumE[n - 1]) - 7} textAnchor="end" className="tnum" fontSize={13} fill={GREEN} fontWeight={600}>{fmtSigned(cumE[n - 1])}</text>
             <text x={X(n - 1)} y={YL(cumU[n - 1]) + 14} textAnchor="end" className="tnum" fontSize={13} fill={AMBER} fontWeight={600}>{fmtSigned(cumU[n - 1])}</text>
+            {hasClosed && (
+              <text x={X(n - 1)} y={YL(cumC[n - 1]) - 7} textAnchor="end" className="tnum" fontSize={12} fill={SOFT_RED} fontWeight={600}>{fmtSigned(cumC[n - 1])}</text>
+            )}
           </>
         )}
 
@@ -392,8 +417,9 @@ export function EarnUnearnByExpiry({
           };
           return (
             <g key={`b-${i}`}>
-              {bar(eVal(p), -BAR_W - 1, GREEN)}
-              {bar(uVal(p), 1, AMBER)}
+              {bar(eVal(p), barOff(0), GREEN)}
+              {bar(uVal(p), barOff(1), AMBER)}
+              {hasClosed && bar(cVal(p), barOff(2), SOFT_RED)}
             </g>
           );
         })}
@@ -423,27 +449,60 @@ export function EarnUnearnByExpiry({
           <g pointerEvents="none">
             <line x1={tip.x} x2={tip.x} y1={plotTop} y2={plotBottom} stroke={GREY} strokeWidth={1} strokeDasharray="3 3" opacity={0.6} />
             <rect x={tip.bx} y={tip.by} width={tip.boxW} height={tip.boxH} rx={5} fill="#1a1d21" opacity={0.94} />
-            <text x={tip.bx + 11} y={tip.by + 19} fill="#ffffff" fontSize={12.5} fontWeight={600}>{fmtFull(tip.p.date)}</text>
-            <text x={tip.bx + 11} y={tip.by + 37} fill="#cbd2da" fontSize={11.5}>
-              Earned <tspan className="tnum" fill="#6ee7a8" fontWeight={600}>{fmtValSigned(eVal(tip.p))}</tspan>
-            </text>
-            <text x={tip.bx + 11} y={tip.by + 53} fill="#cbd2da" fontSize={11.5}>
-              Unearned <tspan className="tnum" fill="#f6c667" fontWeight={600}>{fmtValSigned(uVal(tip.p))}</tspan>
-            </text>
-            {showLines ? (
-              <>
-                <text x={tip.bx + 11} y={tip.by + 71} fill="#cbd2da" fontSize={11.5}>
-                  Σ earned <tspan className="tnum" fill="#6ee7a8" fontWeight={600}>{fmtSigned(cumE[tip.i])}</tspan>
-                </text>
-                <text x={tip.bx + 11} y={tip.by + 87} fill="#cbd2da" fontSize={11.5}>
-                  Σ unearned <tspan className="tnum" fill="#f6c667" fontWeight={600}>{fmtSigned(cumU[tip.i])}</tspan>
-                </text>
-              </>
-            ) : (
-              <text x={tip.bx + 11} y={tip.by + 69} fill="#cbd2da" fontSize={11.5}>
-                Credit <tspan className="tnum" fill="#e5e9ee" fontWeight={600}>{Math.round(tip.p.credit).toLocaleString("en-US")}</tspan>
-              </text>
-            )}
+            {(() => {
+              const rows: ReactNode[] = [];
+              let y = tip.by + 19;
+              rows.push(<text key="date" x={tip.bx + 11} y={y} fill="#ffffff" fontSize={12.5} fontWeight={600}>{fmtFull(tip.p.date)}</text>);
+              y += 18;
+              rows.push(
+                <text key="earned" x={tip.bx + 11} y={y} fill="#cbd2da" fontSize={11.5}>
+                  Earned <tspan className="tnum" fill="#6ee7a8" fontWeight={600}>{fmtValSigned(eVal(tip.p))}</tspan>
+                </text>,
+              );
+              y += 16;
+              rows.push(
+                <text key="unearned" x={tip.bx + 11} y={y} fill="#cbd2da" fontSize={11.5}>
+                  Unearned <tspan className="tnum" fill="#f6c667" fontWeight={600}>{fmtValSigned(uVal(tip.p))}</tspan>
+                </text>,
+              );
+              y += 16;
+              if (hasClosed) {
+                rows.push(
+                  <text key="closed" x={tip.bx + 11} y={y} fill="#cbd2da" fontSize={11.5}>
+                    Closed <tspan className="tnum" fill="#f2b0b0" fontWeight={600}>{fmtSigned(cVal(tip.p))}</tspan>
+                  </text>,
+                );
+                y += 16;
+              }
+              if (showLines) {
+                rows.push(
+                  <text key="cume" x={tip.bx + 11} y={y} fill="#cbd2da" fontSize={11.5}>
+                    Σ earned <tspan className="tnum" fill="#6ee7a8" fontWeight={600}>{fmtSigned(cumE[tip.i])}</tspan>
+                  </text>,
+                );
+                y += 16;
+                rows.push(
+                  <text key="cumu" x={tip.bx + 11} y={y} fill="#cbd2da" fontSize={11.5}>
+                    Σ unearned <tspan className="tnum" fill="#f6c667" fontWeight={600}>{fmtSigned(cumU[tip.i])}</tspan>
+                  </text>,
+                );
+                y += 16;
+                if (hasClosed) {
+                  rows.push(
+                    <text key="cumc" x={tip.bx + 11} y={y} fill="#cbd2da" fontSize={11.5}>
+                      Σ closed <tspan className="tnum" fill="#f2b0b0" fontWeight={600}>{fmtSigned(cumC[tip.i])}</tspan>
+                    </text>,
+                  );
+                }
+              } else {
+                rows.push(
+                  <text key="credit" x={tip.bx + 11} y={y} fill="#cbd2da" fontSize={11.5}>
+                    Credit <tspan className="tnum" fill="#e5e9ee" fontWeight={600}>{Math.round(tip.p.credit).toLocaleString("en-US")}</tspan>
+                  </text>,
+                );
+              }
+              return rows;
+            })()}
           </g>
         )}
 

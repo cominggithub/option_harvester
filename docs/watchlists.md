@@ -15,20 +15,54 @@ user's Interactive Brokers lists, *synced* in by the extension.
 Derived live at read time from the dashboard data (`getDashboardData`) — they
 always reflect the latest ingest + synced positions. Defined in
 **`src/lib/watchlists.ts`** (`computeOhWatchlists`), shared by the page and the
-OH→IB push so membership has one source of truth.
+OH→IB push so membership has one source of truth. There are **10 OH lists** in a
+fixed order (NC, NCcan, Cpos, Ppos, RED, HIV, HIVS, HIVSC, OTC, ROIC) — that order sets
+the OH→IB suggested ids **990001–990010** (`OH_ID_BASE` in `ohpush.ts`), so **only
+append new lists at the end** to keep existing ids stable.
 
-| Key    | Name    | Membership rule |
-| ------ | ------- | --------------- |
-| `nc`   | NC      | `s.nc` — the Analyzer "Naked Call" screen (`isNcTarget`): 1M/3M/6M all not-up, volume > 3M, price $20–180, weekly buckets ≥ 5, IV > 40%, stocks **and** ETFs. |
-| `nccan`| NCcan   | `s.nc && !s.held` — short-call candidates: in NC but no position held yet. |
-| `cpos` | Cpos    | `s.position.call !== 0` — underlyings you hold a **call** option on. |
-| `ppos` | Ppos    | `s.position.put !== 0` — underlyings you hold a **put** option on. |
-| `red`  | RED     | `s.position && maxOptAbsDelta > 0.30` — high assignment risk: held names whose largest option leg (call or put) has \|Δ\| > 0.30. Needs synced greeks. |
-| `hiv`  | HIV     | `s.ivPct > 50` — high implied vol: any tracked name (stock or ETF) with front-month ATM IV above 50%. |
-| `hivs` | HIVS    | `hiv && 20 < s.price < 200` — high implied vol, restricted to the mid price band ($20–$200). |
-| `otc`  | OTC     | `(s.target \|\| s.position.call !== 0 \|\| s.position.put !== 0) && s.position.call === 0` — "Option Targets, no Call": names shown in the Analyzer's Option Targets (flagged bullseye **or** any held option leg) that you don't yet hold a **call** on. Your call-writing candidates; excludes anything already in Cpos. |
+**Shared thresholds** — one source of truth, all exported constants; never inline a
+magic number:
 
-(NC = the doctrine's naked-call screen; see docs/spec.md §3 and docs/strategy.md.)
+| Constant | Value | Where | Used by |
+| --- | --- | --- | --- |
+| `NC_MIN_VOLUME` | 3,000,000 sh/day | `securities.ts` | NC, NCcan |
+| `NC_PRICE_MIN` / `NC_PRICE_MAX` | $20 / $180 | `securities.ts` | NC, NCcan |
+| `NC_IV_MIN` | 40 % | `securities.ts` | NC, NCcan |
+| `NC_MIN_WEEKLY_BUCKETS` | 4 (7/14/21/28-DTE ladder — weeks 1-4) | `securities.ts` | NC, NCcan, HIV, HIVS, HIVSC |
+| `HIV_IV_MIN` | 50 % | `watchlists.ts` | HIV, HIVS, HIVSC |
+| `HIVS_PRICE_MIN` / `HIVS_PRICE_MAX` | $20 / $200 | `watchlists.ts` | HIVS, HIVSC |
+| `HIGH_ROIC_MIN` | 15 % | `roic.ts` | ROIC |
+| assignment-risk delta | \|Δ\| > 0.30 (inline) | `watchlists.ts` | RED |
+
+**The lists**, grouped by family. "Requires" is the data a list needs to be
+correct — a list silently under-populates if its inputs are stale/unsynced.
+
+| Key | Name | Family | Membership rule | Requires |
+| --- | --- | --- | --- | --- |
+| `nc`   | NC     | screen   | `s.nc` — the Analyzer "Naked Call" screen (`isNcTarget`): 1M **and** 3M **and** 6M trend all *not-up*, volume > `NC_MIN_VOLUME`, `NC_PRICE_MIN` < price < `NC_PRICE_MAX`, weekly buckets ≥ `NC_MIN_WEEKLY_BUCKETS`, IV > `NC_IV_MIN`%. Stocks **and** ETFs. | ingest (trend/vol/price/IV/ladder) |
+| `nccan`| NCcan  | screen   | `s.nc && !s.held` — short-call candidates: in NC but no position held yet. | ingest + position sync |
+| `cpos` | Cpos   | position | `s.position.call !== 0` — underlyings you hold a **call** option on. | position sync |
+| `ppos` | Ppos   | position | `s.position.put !== 0` — underlyings you hold a **put** option on. | position sync |
+| `red`  | RED    | position | `s.position && maxOptAbsDelta > 0.30` — high assignment risk: held names whose largest option leg (call or put) has \|Δ\| > 0.30. Names without a synced delta are **excluded** (not assumed safe). | position sync + **deep-sync greeks** |
+| `hiv`  | HIV    | IV       | `s.ivPct > HIV_IV_MIN && weeklyBuckets ≥ NC_MIN_WEEKLY_BUCKETS` — high implied vol **with a tradable 1/2/3/4-week option ladder**: any tracked name (stock or ETF) with front-month ATM IV above 50 % and ≥4 near-term weekly expiries. | ingest (IV + ladder) |
+| `hivs` | HIVS   | IV       | `hiv && HIVS_PRICE_MIN < s.price < HIVS_PRICE_MAX` — HIV restricted to the mid price band ($20–$200). `hivs ⊆ hiv`. | ingest (IV + price) |
+| `hivsc`| HIVSC  | IV       | `hivs && s.position.call === 0 && s.position.put === 0` — HIVS **candidates**: HIVS names you hold **no call and no put** on yet. `hivsc ⊆ hivs`. | ingest + position sync |
+| `otc`  | OTC    | target   | `(s.target \|\| s.position.call !== 0 \|\| s.position.put !== 0) && s.position.call === 0` — "Option Targets, no Call": names in the Analyzer's Option Targets (flagged bullseye **or** any held option leg) that you don't yet hold a **call** on. Your call-writing candidates; excludes anything already in Cpos. | marks (target) + position sync |
+| `roic` | ROIC   | value    | `s.highRoic` — value-quality names with Return on Invested Capital ≥ `HIGH_ROIC_MIN` (15 %). Same membership as the `/roic` screen; stocks only (ETFs have no ROIC). The cash-backed put-write quality universe. | ingest (fundamentals → ROIC) |
+
+Family notes / invariants:
+- **screen** — the doctrine's naked-call funnel. `NCcan = NC − held`; see docs/spec.md §3 and docs/strategy.md.
+- **position** — mirror the IB book. Cpos/Ppos are per-side; RED is the risk overlay and is the **only** list that needs Deep sync (greeks by conid).
+- **IV** — volatility funnel: `HIVSC ⊆ HIVS ⊆ HIV`. HIV is the high-IV universe that also has a tradable 1/2/3/4-week option ladder (so there's near-term premium to sell), HIVS narrows to a tradable price band, HIVSC removes anything you already have an option position on (so it's the actionable "write here next" IV list — the IV analogue of NCcan).
+- **target** — OTC is the flag/hold-driven call-writing queue; a name leaves OTC the moment a call is written on it (it becomes Cpos).
+- **value** — ROIC is the standalone value-quality universe (the `/roic` screen), independent of positions/IV; it's the pool you'd sell cash-backed puts into on a panic. ETFs are excluded (no ROIC).
+
+**Adding a new OH list** (requirement checklist): add it to `computeOhWatchlists`
+(`watchlists.ts`) **and** to `LIST_META` + a `reasonFor` case in
+`ohhistory.ts` (so `/wl-log` tracks its day-over-day add/remove with a reason),
+append it **last** (id stability), then update this table, docs/spec.md, and
+CLAUDE.md. The `/watchlists` page and the OH→IB push pick it up automatically
+(both iterate `computeOhWatchlists`), so no extension change is needed.
 
 ### IB — synced, stored
 The user's IB lists, pulled in by the extension and stored in
@@ -47,8 +81,10 @@ Columns: `watchlist_id`, `watchlist_name`, `position` (order in list), `conid`,
 
 `src/app/watchlists/page.tsx` → `WatchlistBrowser` (client). Mirrors the Analyzer:
 
-- **Left-nav tabs** in two groups — **Option Harvester** (NC, NCcan, Cpos, Ppos)
-  and **Interactive Brokers** (the synced lists) — each with a member count.
+- **Left-nav tabs** in two groups — **Option Harvester** (all 10 computed lists:
+  NC, NCcan, Cpos, Ppos, RED, HIV, HIVS, HIVSC, OTC, ROIC — built dynamically from
+  `computeOhWatchlists`, so a new OH list appears here automatically) and
+  **Interactive Brokers** (the synced lists) — each with a member count.
 - **Table view** = the Analyzer's wide table (`WideStockList`): a three-line left
   block per name (basic / sortable stats — Last/Chg%/IV/rank/Harvester/Vol/Cap/Record
   + highlighted **Pos** / option-meta + a per-instrument "last updated" freshness
@@ -119,8 +155,11 @@ manifest v3; **bump `manifest.json` version on every edit**.
 **deleteMany + createMany** — a full replace. It runs alongside positions/orders/
 trades/balances, then pushes OH → IB (4b) and reads the result back (4f). **Sync now is
 intentionally fast and background-safe**: no per-contract timers, so switching tabs
-or closing the popup does not strand a long heavy run. Auto-sync uses this same light
-path.
+or closing the popup does not strand a long heavy run. A **manual** Sync now also runs
+the **batched greeks** pass (§ greeks endpoint — many conids per snapshot, quick and
+best-effort) so held-option Δ/Θ/Γ refresh without a separate Deep sync. **Auto-sync**
+uses the same light path but **skips greeks** (a backgrounded tab would throttle the
+in-page poll loop).
 
 ### 4e. Deep sync  (popup: **Deep sync (greeks/margin/conids)**)
 The heavy passes are separate: per-held-contract greeks, per-contract margin what-if,
@@ -135,9 +174,9 @@ step/item count (`greeks 12/97`, `margin 5/97`, etc.); a stale heartbeat clears 
 orphaned busy flag. Deep runs post `source: "deep"` to `/api/sync-log`.
 
 ### 4b. web → IB  (popup: **Push OH → IB watchlists**, and part of Sync now)
-Publishes the OH lists to IB as **`OH:NC`, `OH:NCcan`, `OH:Cpos`, `OH:Ppos`, `OH:RED`, `OH:HIV`, `OH:HIVS`**.
+Publishes the OH lists to IB as **`OH:NC`, `OH:NCcan`, `OH:Cpos`, `OH:Ppos`, `OH:RED`, `OH:HIV`, `OH:HIVS`, `OH:HIVSC`, `OH:OTC`, `OH:ROIC`**.
 
-- `GET /api/oh-watchlists` → each list with a suggested id (990001–990008), `OH:`-prefixed
+- `GET /api/oh-watchlists` → each list with a suggested id (990001–990010), `OH:`-prefixed
   name, and IB-ready `rows:[{C: conid}]` (conids from `securities.conid`; names
   without one are reported in `missing` and skipped).
 - IB has **no in-place edit**, so push = **delete + recreate**. The extension deletes
@@ -218,11 +257,13 @@ Backend (`src/app/api`):
   into the `ib_*` quote columns (see docs/spec.md; drives the `/ib` compare page).
 - `greeks` — `GET` → held option conids `[{conid,ticker,desc}]`; `POST { fetched }` →
   per-contract greeks into `option_harvest_option_greeks` (upsert by conid, non-null
-  fields only). In-page: for each held conid the extension polls
-  `/iserver/marketdata/snapshot?fields=…,7308,7309,7310,7311` until delta appears
-  (greeks compute server-side after subscribe; best coverage during US market hours).
-  Run by **Deep sync** or the standalone **Get greeks (IB)** button. Drives the P&L
-  Predict Δ/Θ/Γ columns.
+  fields only). In-page: the extension snapshots held conids in **batches** — a
+  comma-separated conid list to `/iserver/marketdata/snapshot?conids=…&fields=…,7308,7309,7310,7311`,
+  polling the whole batch until each conid's delta appears (greeks compute
+  server-side after subscribe; best coverage during US market hours). Batching all
+  conids per subscribe burst is much faster than one contract at a time (chunked to
+  stay under IB's market-data line limit). Run by **Deep sync** or the standalone
+  **Get greeks (IB)** button. Drives the P&L Predict Δ/Θ/Γ columns.
 - `margin` — `GET` → held option conids with the closing order params
   `[{conid,ticker,desc,side,quantity}]`; `POST { fetched }` → per-contract margin into
   `option_harvest_position_margin` (upsert by conid, non-null only). In-page: for each

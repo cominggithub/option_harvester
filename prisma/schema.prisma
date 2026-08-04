@@ -49,6 +49,7 @@ model OhScreenSnapshot {
   price          Decimal?
   weeklyBuckets  Int?     @map("weekly_buckets")
   ivPct          Decimal? @map("iv_pct")
+  roic           Decimal? // Return on Invested Capital (fraction) — for the ROIC list
   trendM1        String?  @map("trend_m1") // up|down|sideways
   trendM3        String?  @map("trend_m3")
   trendM6        String?  @map("trend_m6")
@@ -158,6 +159,15 @@ model Quote {
   profitMargins   Decimal? @map("profit_margins")  // fraction
   analystRec      String?  @map("analyst_rec")      // e.g. "strong_buy"
   targetMeanPrice Decimal? @map("target_mean_price")
+  // Return on Invested Capital (value-quality screen), stored as a FRACTION
+  // (0.185 = 18.5%). NOPAT / invested capital, from the latest annual
+  // fundamentalsTimeSeries (see src/lib/roic.ts). Stocks only; null for ETFs /
+  // when statement inputs are unavailable.
+  roic            Decimal? @map("roic")
+  // ROIC per fiscal year (value-quality trend), newest last:
+  // [{ "year": 2024, "roic": 0.71 }, …]. From the annual fundamentalsTimeSeries;
+  // drives the ROIC-by-year chart + the "company year" (latest fiscal year).
+  roicHistory     Json?    @map("roic_history")
   currency  String   @default("USD")
   asOf      DateTime @default(now()) @map("as_of")
   updatedAt DateTime @updatedAt @map("updated_at")

@@ -16,6 +16,7 @@ export const SEED_LABELS = [
 // They're auto-derived, so they're not user-editable — the editor hides them.
 export const AUTO_LABELS = [
   "NC",
+  "high roic",
   "low vol",
   "no option",
   "bad option date",
@@ -40,6 +41,7 @@ export type LabelColor = { bg: string; fg: string };
 
 const LABEL_COLORS: Record<string, LabelColor> = {
   NC: { bg: "#fde2e2", fg: "#b91c1c" }, // auto naked-call target — RED
+  "high roic": { bg: "#dcf3ea", fg: "#0f766e" }, // value-quality — teal
   nc: { bg: "#e3f1e9", fg: "#1f7a44" }, // call green (matches Signal NC)
   np: { bg: "#e7e9fb", fg: "#4f46e5" }, // put indigo (matches Signal NP)
   "value invest": { bg: "#e4eefb", fg: "#1d4ed8" },
