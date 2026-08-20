@@ -23,10 +23,18 @@ Each pure engine ships one `assert`-based `_selfCheck`, run via a tiny script. A
 must print `... self-check OK`:
 
 ```bash
+npm run check                         # the short-call suite in one go (369 assertions, six scripts)
+npm run check:sc                      # just the analyzer engines (rules, lifecycle, pages)
 npx tsx scripts/pnl-check.ts          # P/L engine
 npx tsx scripts/posanalysis-check.ts  # position action suggestions
 npx tsx scripts/news-check.ts         # news sentiment lexicon
 npx tsx scripts/roic-check.ts         # ROIC math + high-roic threshold
+npx tsx scripts/sc-rules-check.ts     # rule registry ↔ docs/short-call-strategy.md, versionAt, margins
+npx tsx scripts/sc-lifecycle-check.ts # roll chains: linkage rules, confidence, Σ chain == Σ leg
+npx tsx scripts/sc-analyzer-check.ts  # loss anatomy, timeline weeks, roll targets, candidate gates
+npx tsx scripts/leveraged-check.ts    # LEV list: 2x/3x long ETFs, inverse/short excluded
+npx tsx scripts/bookrisk-check.ts     # /risk engine: σ cushion, themes, HHI, shock, verdicts
+npx tsx scripts/shortcall-check.ts    # /short-call: BS implied vol/Δ, path, attribution, zones
 npx tsx scripts/page-markdown-check.ts # Markdown route mapping + HTML conversion
 ```
 
@@ -47,6 +55,41 @@ What they cover:
   (AAPL ≈ 82%, KO ≈ 22%, negative-EBIT year stays negative), `operatingIncome` EBIT
   fallback, null on negative/zero invested capital or missing EBIT/equity, effective
   tax rate (direct → derived → 21% default), and the `HIGH_ROIC_MIN` (15%) threshold.
+- **leveraged-check** — the LEV watchlist classifier (`lib/leveraged.ts`): every 2x/3x
+  **long** fund in the universe is IN (BOIL/FAS/…/YINN, factor 2 or 3 parsed from the
+  name), every inverse/short fund is OUT (Bear/UltraShort/UltraPro Short, `-2x`/`-3x`),
+  no false positives on plain ETFs or stocks, the word forms (Ultra = 2x, UltraPro = 3x),
+  fractional leverage below `LEV_MIN_FACTOR` (1.5x → out), and degenerate input.
+- **bookrisk-check** — the `/risk` engine (`lib/bookrisk.ts`): DTE/Δ buckets, σ-to-strike
+  (20% OTM is >3σ at IV 20 but <1.2σ at IV 130), trend read, the full verdict ladder
+  (ITM/give-up → defend, 70% captured → close, cheap+near → let-expire, drifted or thin
+  σ cushion → roll, no 1-year room → close, otherwise hold), theme clustering
+  (SOXX/SOXL/TSM → one Semiconductors bet), `tally`/HHI shares, shock signs (a +30% move
+  costs the calls and leaves the puts their credit; long legs excluded), and assembly
+  (horizon filter, exclusion counts, totals/greek signs, margin extrapolation at partial
+  coverage, empty book safe).
+- **shortcall-check** — the `/short-call` engine: Black-Scholes anchors (ATM price/delta,
+  put-call parity) and implied-vol round-trip incl. the unusable-print guards; as-of close
+  and peak-in-window lookups; the six attribution reasons; per-fill reconstruction of an
+  expired vs bought-back trade; entry-quality flags; the Δ/σ/DTE/hold buckets; per-target
+  verdicts (keep / size down / stop / too-few-trades); the expiry × delta grid incl. that a
+  2-trade fluke cell can never be laundered into a zone and that zones are trimmed to the
+  buckets actually traded; and empty-record safety.
+- **sc-rules-check** — the rule registry (`lib/sc-rules.ts`) against its own spec: every
+  rule has an id, a scope and a **spec reference**; the registry's `STRATEGY_VERSIONS`
+  match the changelog in docs/short-call-strategy.md (drift fails the build); `versionAt`
+  picks the version in force at a date and nothing for a pre-spec date; the §3 DTE envelope
+  per Δ band; and `evaluate()` returning a **margin**, not just a boolean.
+- **sc-lifecycle-check** — roll chains (`lib/sc-lifecycle.ts`): only a **bought-back** leg
+  can be rolled, the ≤4-day re-open window, later-or-higher (a same-strike-further-out or
+  a down-and-in re-open is a new bet), unequal size → `partial`, the
+  `certain|likely|guess` confidence ladder, assignment correlated from the share row, and
+  the conservation invariant **Σ chain.realized == Σ leg.realized**.
+- **sc-analyzer-check** — the section engines: loss anatomy and the avoidable-vs-market
+  split (shares sum to the total loss), ISO week boundaries (`weekStart`/`weekEnd`) and the
+  cash-vs-vintage split, the roll-target constructor (credit-positive first, no roll past
+  the 1-year wall, "none fits" is a valid answer), and the candidate gate stack naming the
+  gate that failed.
 - **page-markdown-check** — approved UI-path ↔ `.md` URL mapping, API-path rejection,
   `#page-content` isolation, front matter/source URL, heading/table/link conversion,
   and removal of global navigation, scripts, and SVG internals.
@@ -69,6 +112,11 @@ Run against prod (`psql postgresql://coming@localhost/option_harvester?host=/var
 - **Nulls sort last** in every sortable column (`sortRows` invariant).
 - **Off-index auto-pull:** after uploading positions with a never-seen symbol, it
   appears in `option_harvest_securities` immediately (no wait for nightly ingest).
+- **Leg ↔ chain reconciliation against the live book:** `npm run reconcile:sc`
+  (`scripts/sc-reconcile.ts`, read-only) prints the record both ways — contracts as
+  `/short-call` has always counted them, and lifecycle chains — and **fails if money moved
+  between the views**. Run it after any change to `pnl.ts`, `shortcall.ts` or
+  `sc-lifecycle.ts`; the offline checks pin the logic, this pins it against real fills.
 
 ## 4. Per-page manual verification (headless Chrome)
 
@@ -85,6 +133,10 @@ Routes to eyeball:
 - `/` analyzer — table dense, sticky header, Signal/Record/Pos columns.
 - `/transactions?s=overview|symbols|calls|puts|rolls|contracts` — each section.
 - `/positions` — action board + summary band.
+- `/risk` — book KPIs, doctrine conformance, flags, shock table, action board.
+- `/short-call` and each section page (`lifecycle`, `losses`, `actions`, `candidates`,
+  `weekly`, `cohorts`, `strategy`) — sub-nav highlights the current page; low-`n` cohort
+  rows render greyed rather than missing; every verdict shows a rule id and a margin.
 - `/stock/NVDA` (held + traded → all 7 sections full) and `/stock/GDX` (ETF →
   fundamentals degrade gracefully).
 

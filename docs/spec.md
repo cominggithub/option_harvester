@@ -85,6 +85,78 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   A **protective-stop** alert lists short calls not backed by a GTC buy-stop; the strategy
   rule is a **half hedge — 50 shares per short contract** (see `HEDGE_SHARES_PER_CALL`),
   and the alert shows each call's stop price, OTM $, OTM %, and shares covered/needed.
+- **Book risk** (`/risk`, `getBookRisk` in `lib/bookrisk.ts`) — portfolio-level risk read
+  on the **short premium book inside 1 year**, measured against the live doctrine
+  (docs/strategy.md § 五: sell 35–45 DTE at |Δ| ≈ 0.15 on non-rising names, spread wide,
+  roll for credit inside the 1-year wall, judge the book not the trade). Sections:
+  (1) **Book at a glance** — credit, cost-to-close, open P/L + % captured, Θ/day, exact
+  maintenance margin with the **unsynced-leg extrapolation** (the raw sum is a floor),
+  net Δ$, assignment notional; (2) **Doctrine conformance** — share of legs inside the
+  Δ band, median DTE/|Δ|/IV, legs still in the entry window, **effective names** (1/HHI)
+  and **effective themes**; (3) **Risk flags** — legs inside 1σ of their strike, short
+  calls on *rising* names, earnings before expiry, |Δ| past the roll/give-up lines, ITM,
+  tested, and legs with no roll room left; (4) **Parallel shock** — book P/L at expiry
+  under ±5/10/20% moves in every underlying, split call vs put (the asymmetry between the
+  two columns *is* the directional bet); (5) **Distributions** — by correlated **theme**,
+  sector, DTE bucket, |Δ| bucket, underlying trend, side, and name; (6) **What to do now**
+  — every leg with a verdict (close / roll / defend / let-expire / hold) and the reason;
+  (7) **Outside this analysis** — long, stock and beyond-1-year legs, listed not dropped.
+  Tactical per-leg advice stays on `/positions`; this page is the portfolio frame.
+- **Short call analyzer** (`/short-call`, `getShortCallRecord` in `lib/shortcall.ts`) — the
+  **closed-trade record** of the naked-call program, per target, with the reason each trade
+  earned or lost. Every closed short call is reconstructed from its IB fills: sold-at premium
+  plus the **IV and Δ implied by that fill** (Black-Scholes inverted against the underlying's
+  daily bar — IB exposes no greeks for a historical execution), %OTM and cushion in σ, the
+  **peak the underlying printed while the trade was on** (daily highs → breach or not), and
+  the closing fill's price/IV/Δ with the IV change. Sections: (1) program scorecard —
+  realized, **credit kept %**, win rate, avg Δ at sale vs the 0.15 target, strike-reached
+  rate; (2) attribution — thesis worked / cushion held / escaped a breach / trend wrong /
+  vol expansion / management cost, with $ per reason; (3) **what actually paid** — the same
+  trades cohorted by Δ at sale, σ cushion, DTE at sale, hold length, exit type and theme;
+  (4) **record by target** — per name trades/realized/win/kept/avg Δ/avg σ/breach rate and a
+  **keep selling / size down / stop selling** verdict (≥3 closed trades), expandable to its
+  trades; (5) every closed trade. Doctrine and the evidence behind it:
+  **docs/short-call-strategy.md**.
+- **Short Call Analyzer section** (`/short-call/*`) — seven further pages under the same
+  TopNav entry, with a sub-nav (`components/SectionNav.tsx`, map in `lib/sc-nav.ts`) and
+  **one shared load** (`lib/sc-data.ts:getScAnalyzer` — record + chains + bars + P/L report,
+  read-only). Shared formatters and the KPI/cohort/trade tables live in
+  `components/ScShared.tsx` so the Scorecard and Cohorts render the *same* numbers.
+  Two units of account are stated on every page that uses them and never mixed in one
+  table: a **leg** is a contract as executed (what the Scorecard has always counted), a
+  **chain** is one economic bet including its rolls.
+  - **Lifecycle** (`/short-call/lifecycle`, `lib/sc-lifecycle.ts`) — one row per chain,
+    `sold → rolled ×n → closed | expired | assigned | open`, expandable to its legs. Per
+    roll: was it credit-positive, did it go **up as well as out** (§4.3 — same strike
+    further out is not a defence), did the new expiry stay inside 365 days. Each link
+    carries a `certain | likely | guess` confidence, because IB never labels a roll.
+  - **Loss lab** (`/short-call/losses`, `lib/sc-loss.ts`) — every losing chain with the
+    loss as a multiple of its credit, the **rule audit** (which entry rule was broken at
+    open, which management rule at exit), the **avoidable-vs-market** split by rule id, a
+    held-to-expiry **counterfactual** from daily bars (labelled inferred), and repeat
+    offenders.
+  - **Open book** (`/short-call/actions`, `lib/sc-actions.ts`) — the live book as
+    instructions, sorted by priority then credit at risk; each row cites a rule id and its
+    **margin** (`0.82σ vs 1.00 floor`), plus a constructed **roll target** or a statement
+    that none fits. The §6.2 book gates sit at the top and, when breached, say *stop
+    opening* — the banner the candidates page inherits.
+  - **What to sell** (`/short-call/candidates`, `lib/sc-candidates.ts`) — the NC universe
+    as a **gate stack**: every §2 selection and §3 entry rule as pass/fail with margin, the
+    name's own verdict, theme headroom, the proposed Δ0.15 strike/expiry with its
+    Black-Scholes credit and the Δ×DTE cell it lands in. The row names the gate it failed;
+    `ccScore` Edge appears only as a labelled reference column (a separate Δ0.30 model).
+  - **Timeline** (`/short-call/weekly`, `lib/sc-timeline.ts`) — ISO weeks two ways: **cash**
+    (realization week, what hit the account) and **vintage** (sale week, how those trades
+    ended), plus a per-week entry-discipline strip (avg Δ / σ / DTE, share inside the
+    envelope). Weeks follow `pnl.ts:weeklyByMonth` so the two reconcile.
+  - **Cohorts** (`/short-call/cohorts`) — every slice in one place (Δ, σ cushion, DTE, hold,
+    exit, theme, instrument class, sector, IV bucket, rule version, and the Δ×DTE grid).
+    Rows below the `n` threshold are **greyed, not omitted** — absence of evidence is
+    information.
+  - **Strategy & revisions** (`/short-call/strategy`, `lib/sc-rules.ts`) — the rules in
+    force rendered from the registry with their spec §, the version history with each
+    revision's hypothesis/test/measured effect (or an explicit *not yet testable, n < 12*),
+    and the open-questions register.
 - **Sync** (`/sync`, `getSyncSummary`/`getBalanceSeries`) — IB sync status hub:
   (1) **Account balances** — latest daily snapshot tiles (NLV, cash, RegT equity/margin,
   init/maint margin, gross/stock/option value, cushion) with day-over-day + **MTD** NAV
@@ -95,7 +167,7 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   — the extension's per-run history (`option_harvest_sync_runs`).
 - **WL Log** (`/wl-log`, `getOhChangeLog`) — OH-watchlist change log. Snapshots each
   day's screen (`option_harvest_oh_screen_snapshots`, written at the end of the daily
-  refresh) and shows, per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC), what was **added** /
+  refresh) and shows, per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC/LEV), what was **added** /
   **removed** between renews and **why** — the predicate input that flipped (IV crossing
   40/50%, a trend window turning, a weekly-ladder gap, a position open/close, |Δ| past
   0.30). Current membership counts at top; diffs are day-over-day.
@@ -118,6 +190,11 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   your favour) with gross winning/losing/net columns. Sticky section nav throughout. Data:
   `buildOptionPnlByExpiry` (`positions.ts`); greeks from `option_harvest_option_greeks`.
   Each expiry-detail row shows current underlying **Spot immediately before Strike**.
+  The **closed** (realized) P/L chart is windowed to the last `CLOSED_WINDOW_MONTHS` (2) of
+  expiries and is **bounded at both ends**: a contract exited early keeps its own expiry,
+  which can be years in the future, so a lower bound alone let one LEAP realization
+  (−$73.6k at 2028-01-21) set the y-scale and flatten every recent bar. The open book below
+  it is *not* windowed; the full realized ledger lives on `/transactions`.
 - **Markdown mirrors** (`/md/[[...path]]`) — every approved UI page has a dynamic,
   read-only `.md` URL (for example `/md/pnl-predict.md` and `/md/stock/NVDA.md`). The
   global TopNav MD/Copy control preserves query parameters. Each fetch rerenders current
@@ -128,7 +205,7 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   off-index ticker into the universe immediately (`addNewHoldings`, via `enrich.ts`).
 - **Wiki** (`/wiki`) — static field-manual page (strategy, screens, formulas).
 - **Watchlists** (`/watchlists`, `WatchlistBrowser.tsx`) — left-nav tabs over two
-  groups: **OH** (computed NC / NCcan / Cpos / Ppos / RED / HIV / HIVS / HIVSC / OTC / ROIC) and
+  groups: **OH** (computed NC / NCcan / Cpos / Ppos / RED / HIV / HIVS / HIVSC / OTC / ROIC / LEV) and
   **IB** (the user's Interactive Brokers lists, synced by the extension). Each tab
   renders the Analyzer's wide table view (`WideStockList`) for its members. Full spec: **docs/watchlists.md**.
 - **High ROIC** (`/roic`, `RoicScreen.tsx`) — value-investment quality screen. Lists
@@ -246,8 +323,14 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   extension on every sync; stock-vs-option value computed from positions. Feeds the
   `/sync` balances panel + history chart (`lib/balances.ts`).
 - **sync_runs** — audit log of each IB→web sync (Chrome extension): at, source
-  (manual/auto/deep), acct, per-dataset counts (positions/orders/trades/watchlists/greeks/
+  (manual/auto/login/deep), acct, per-dataset counts (positions/orders/trades/watchlists/greeks/
   margin/oh_push), error, raw. Powers the `/sync` run history (`lib/synclog.ts`).
+- **ext_logs** — the extension's own lifecycle log (`/api/ext-log`): at, ext_id, version,
+  event (`status` | `login-watch` | `alarm` | `rearm` | …), level, status line, `state`
+  (the chrome.storage snapshot: autoOn/loginSyncOn/ibAuthed/loginTries/busy) and an
+  event-specific `raw`. Where `sync_runs` records a run that finished, this records what the
+  extension *decided* — including attempts that die before posting a run summary. Retained
+  14 days; diagnostics only.
 - **oh_verify** — read-back check of the OH→IB push (Chrome extension re-fetches the
   pushed `OH:*` lists from IB): at, ok, lists, matched, mismatched, detail (per-list
   conid diff: intended/actual/missing/extra), error, raw. The `OH:*` lists are excluded
@@ -263,7 +346,7 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   nc, target, held, posCall, posPut, max_opt_abs_delta + the NC criteria (volume, price,
   weekly_buckets, iv_pct, trend_m1/m3/m6). Written by `scripts/snapshot-oh.ts` at the end
   of the daily refresh; the **WL Log** (`/wl-log`) diffs consecutive days per OH list
-  (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC) and explains each add/remove (`lib/ohhistory.ts`).
+  (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC/LEV) and explains each add/remove (`lib/ohhistory.ts`).
 
 ### IB parsers
 - **ibparse.ts** (positions): IB Activity Statements are multi-section CSVs;
@@ -302,6 +385,120 @@ The equity curve is the running Σ of realized P/L, unchanged by the P/L-neutral
 **harvest** (≥70% premium captured) / **let-expire** (near expiry, pennies) /
 **roll** (ITM/tested) / **defend** (ITM/tested short call → buy 100×|qty| shares) /
 **watch** (underwater but far OTM = IV) / **hold**.
+
+### Book risk (`src/lib/bookrisk.ts`, pure + `scripts/bookrisk-check.ts`)
+`buildBookRisk(groups, securities, balance, asOf, horizon)` — the `/risk` engine.
+Filters to **short option legs with DTE ≤ `BOOK_HORIZON_DAYS` (365)**, reuses
+`analyzeShortOption` for the per-leg economics, then adds what a portfolio read needs:
+
+- **σ cushion** — `sigmaMove(iv, dte) = IV·√(dte/365)` and `sigmasToStrike()`: distance
+  from spot to strike in expected moves. This is why 30% OTM on SOXL (IV 129) is riskier
+  than 12% OTM on GDX (IV 43) — %OTM alone ranks them backwards.
+- **themes** — `themeOf()` maps a name to its correlated cluster (Semiconductors,
+  Precious metals, Crypto-linked, China, Energy & oil, Biotech, Broad index,
+  Copper & materials), falling back to the sector. Sector labels split one bet across
+  three buckets (SOXX = Info Tech, SOXL = Leveraged, TSM = Off-Index), so theme HHI is
+  the honest diversification measure.
+- **verdict ladder** (`verdictFor`, in order): ITM or |Δ| > `DELTA_GIVE_UP` (0.45) →
+  **defend/close**; ≥ `HARVEST_CAPTURED` (70%) of credit kept → **close** (or
+  **let-expire** when ≤14 DTE and ≤10% of the credit is left); ≥50% kept inside 14 DTE →
+  **close**; |Δ| > `DELTA_WATCH` (0.30), spot within 5% of the strike, or under 0.75σ of
+  cushion on a ≤30-DTE leg → **roll** — downgraded to **close** when under
+  `ROLL_MIN_ROOM_DAYS` (30) of 1-year room remains; otherwise **hold**.
+- **`tally`/`hhi`** for the distributions, and **`shockBook`** for the parallel shock
+  (credit − at-expiry intrinsic; long legs excluded).
+- margin coverage: legs without a synced IB what-if are extrapolated at the observed
+  average, so utilisation isn't understated.
+
+### Short-call record (`src/lib/shortcall.ts` + `blackscholes.ts`, pure + `scripts/shortcall-check.ts`)
+`buildScRecord(contracts, bars, asOf, sectors)` — the `/short-call` engine. Takes the
+closed **short_call** contracts from the cash-flow engine (`computePnl`) and reconstructs,
+for each one, the state at both ends of the trade:
+
+- **Δ and IV at the fill** — `volAndDelta()` inverts Black-Scholes (bisection on σ over
+  [0.5%, 500%], r = 4%) on the *traded* option price against the underlying's daily close.
+  IB exposes no greeks for a historical execution, so the print is the only honest source;
+  a price below intrinsic or above the ceiling yields `null` rather than a fabricated delta.
+- **cushion in σ** — `moneyness ÷ (IV·√(DTE/365))` at entry, the same comparable-risk
+  measure `/risk` uses on open legs.
+- **the path** — `peakBetween()` takes the highest daily high while the trade was on, so
+  "did it ever reach the strike" is a fact (intraday spikes count) rather than a guess.
+- **attribution** — one reason per trade (thesis worked / cushion held / escaped a breach /
+  trend wrong / vol expansion / management cost) from win-or-loss × breach × IV change.
+- **cohorts + the profitable zone** — trades sliced by Δ at sale, σ cushion, DTE at sale,
+  hold length, exit type and theme, plus `buildGrid()`: the DTE × Δ matrix and the best/worst
+  **contiguous envelope** (≥`MIN_ZONE_TRADES` = 12 trades, no cell under `MIN_CELL_TRADES` = 3,
+  ranked by realized per trade, trimmed to the buckets actually traded so an envelope can't
+  claim range it never used).
+- **per-target verdicts** — keep selling / size down / stop selling once a name has
+  ≥3 closed trades (`MIN_TRADES_FOR_VERDICT`), which feeds back into target selection.
+
+### Short-call rule registry (`src/lib/sc-rules.ts`, pure + `scripts/sc-rules-check.ts`)
+The **machine mirror of docs/short-call-strategy.md**. Doctrine numbers used to live in
+three libs (`bookrisk.ts` management + book limits, `shortcall.ts` entry quality,
+`securities.ts` NC screen) with no way to answer the analyzer's two questions:
+
+- *Which rule did this trade break, and by how much?* — 21 rules (`SC-S*` selection,
+  `SC-E*` entry, `SC-M*` management, `SC-B*` book), each with a spec reference and an
+  `evaluate(ctx)` returning **pass plus margin**, so a page shows `0.82σ vs 1.00 floor`
+  instead of a red dot. `evaluateRules(scope, ctx)` / `breachedRules()` run a scope.
+- *Which version of the strategy governed this trade?* — `STRATEGY_VERSIONS[]` carries
+  `effectiveFrom`, the change, the hypothesis and the test; `versionAt(date)` stamps each
+  trade with the version in force at its **open**, and rules carry `since`/`until`. Judging
+  a June trade by an August rule is hindsight, not evidence, so the two lenses (*as opened*
+  vs *current*) are always labelled. `allowedDteFor(delta)` encodes the §3 envelope.
+
+Git is the version control: the registry and the spec's changelog **must agree** or
+`scripts/sc-rules-check.ts` fails, and no rule may exist in code without a spec reference.
+Existing consts are re-exported, so nothing else had to change.
+
+### Short-call lifecycle (`src/lib/sc-lifecycle.ts`, pure + `scripts/sc-lifecycle-check.ts`)
+`buildChains()` regroups legs into **chains** — the sale, every roll, and the ending. The
+invariant is that regrouping cannot create or destroy money: `Σ chain.realized == Σ leg.realized`
+(pinned in the check, and again against the live book by `npm run reconcile:sc`).
+IB does not label a roll, so linkage is a heuristic, tightened over `pnl.ts:buildRolls`:
+the previous leg must have been **bought back**, the re-open within ≤4 calendar days, the
+new leg **later or higher** (not merely further out), and the size equal — else `partial`.
+Confidence is emitted and shown: gap ≤1d + same size → `certain`, ≤3d + same size →
+`likely`, else `guess`. Assignment is correlated from the share-side row, because IB never
+books it on the option leg. Open chains are included and marked unrealized.
+
+### Loss anatomy (`src/lib/sc-loss.ts`, pure + `scripts/sc-analyzer-check.ts`)
+Per losing chain: loss ÷ credit (`ACCEPTABLE_LOSS_MULTIPLE` = 2 marks the §6.1 line), the
+reason, breach and first-breach date, IV change, and the **rule audit** — entry rules
+evaluated under the version in force at open, exit rules at close, with `PANIC_EXIT_DAYS`
+= 7 flagging the record's worst cohort. The number the module exists for is the
+**avoidable-vs-market split**: what share of total loss came from breaking rules that
+already existed, by rule id. Held-to-expiry counterfactuals come from daily bars and are
+produced only when the expiry has passed and a bar exists near it — labelled inferred.
+
+### Open-book actions (`src/lib/sc-actions.ts`, pure + `scripts/sc-analyzer-check.ts`)
+`buildActions(book)` turns each live short call into a sentence (*Close it and free the
+margin*, *Roll out and up for credit*, *Leave it to lapse*, *Hold — theta is doing the
+work*) from `bookrisk.verdictFor`, attaches the management rules with their margins, and
+sorts by `priority` then credit. `rollTarget(leg)` constructs the §4.3-legal roll — out
+*and* up, credit-positive, ≥30 days room, inside the 1-year wall — from a
+Black-Scholes price (inferred; there is no live chain), and says when no such roll exists;
+**credit-positive comes before the entry cushion floor**, since a 1.5σ strike almost never
+funds a buy-back. `buildGates(book)` renders the §6.2 limits as pass/fail with the distance
+to each line, and `openingBlocked(gates)` is what makes the limits bite on the candidates
+page.
+
+### Candidate gate stack (`src/lib/sc-candidates.ts`, pure + `scripts/sc-analyzer-check.ts`)
+Combines three things that lived apart: the **screen** (`securities.ts` NC gates), the
+**name's own record** (per-target verdict) and the **book's shape** (theme headroom from
+`bookrisk.ts`) — a name that clears the screen but sits in a theme at its credit limit is
+not a candidate. Output names the **gate that failed** rather than hiding components in a
+score; inverse/short ETFs are excluded by pattern. The proposed strike/expiry and credit
+are Black-Scholes constructions from the underlying's IV — indicative, to be checked
+against the chain before selling.
+
+### Short-call timeline (`src/lib/sc-timeline.ts`, pure + `scripts/sc-analyzer-check.ts`)
+Two lenses over the same ISO weeks, never combined: **cash** (the week a trade realized —
+what hit the account, but mixing vintages) and **vintage** (the week it was sold — how
+those entries ended, the only lens that can judge entry quality). Discipline columns are
+vintage-side on purpose: drift shows up there weeks before it shows up in P&L. Weeks are
+Mon–Sun rolling into the month of their Monday, matching `pnl.ts:weeklyByMonth`.
 
 ### News (`src/lib/news.ts`, lexicon + `_selfCheck`)
 `getNews(ticker)` — live `yf.search` headlines (cached 30 min). `flagNegative()`

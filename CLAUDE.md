@@ -16,6 +16,10 @@ lives in the knowledge map below; read the row that matches your task before div
 | Understand a page, metric, formula, or table column | **`docs/spec.md`** — product & domain spec, data dictionary, P/L & position engines |
 | Verify a change before shipping | **`docs/test-plan.md`** — static gates, `*-check.ts` self-checks, manual steps |
 | Know *why* the strategy trades what it does | **`docs/strategy.md`** — trading rationale |
+| Work on short calls: entry rules, management, the per-target record | **`docs/short-call-strategy.md`** — the formal, versioned short-call spec (+ what the record proves) |
+| Work on the `/short-call/*` analyzer section (why each page exists, what was deliberately not built) | **`docs/short-call-analyzer-plan.md`** — the build plan, shipped 2026-08-20 |
+| Audit the strategy against its own record / propose a revision | **`docs/adviser-playbook.md`** + the `option-adviser` role (`.kiro/agents/option-adviser.json`) — evidence rules, `n` thresholds, proposals go to `docs/` only |
+| Need IBKR data (positions, expiries, quotes) from code or by hand | **`docs/ib-agent-integration.md`** — route everything through the read-only `ib-agent` CLI; **never** call the IB Client Portal / TWS API from this repo |
 | Work on the Δ0.30 naked-call model / `ccscore` / predictions | **`docs/cc-target-strategy.md`** — model, backtest, predict→validate loop |
 | Work on watchlists (OH + IB), conid backfill, IB option fetch, plugin sync | **`docs/watchlists.md`** — sources, `/watchlists` page, IB↔web sync flows |
 | Find where code lives | **File map** (below) |
@@ -136,7 +140,7 @@ Pages (all `force-dynamic`):
   with Return on Invested Capital ≥ `HIGH_ROIC_MIN` (15%), sorted by ROIC. ROIC computed
   at ingest (`lib/roic.ts`); see docs/spec.md.
 - `src/app/wl-log/page.tsx` — **WL Log**: OH-watchlist change log. Diffs the daily
-  `option_harvest_oh_screen_snapshots` per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC) and
+  `option_harvest_oh_screen_snapshots` per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC/LEV) and
   explains each add/remove by the predicate input that flipped (IV crossing a
   threshold, a trend window, a ladder gap, a position open/close, |Δ| past 0.30, a
   target flag toggled). Built by `getOhChangeLog` (`lib/ohhistory.ts`).
@@ -161,6 +165,43 @@ Pages (all `force-dynamic`):
   `CumulativePnlChart.tsx`), and an open-book win/loss matrix (inferred from unrealized
   P/L). Built by `buildOptionPnlByExpiry` in `positions.ts`.
 - `src/app/upload/page.tsx` — IB CSV upload; `src/app/wiki/page.tsx`.
+- `src/app/risk/page.tsx` — **Book risk**: portfolio read on the short premium book
+  inside 1 year, measured against the strategy doctrine (docs/strategy.md § 五) —
+  credit/margin/Θ/net-Δ$ KPIs, doctrine conformance (Δ band, median DTE, effective
+  names/themes), risk flags (inside 1σ of the strike, short calls on rising names,
+  earnings before expiry, Δ past the roll/give-up lines), a ±20% parallel shock table,
+  distributions by theme/sector/DTE/Δ/trend/side/name, and a per-leg
+  close/roll/defend/let-expire/hold action board. Built by `getBookRisk` (`lib/bookrisk.ts`).
+- `src/app/short-call/page.tsx` — **Short call analyzer**: the closed-trade record of the
+  naked-call program. Each trade is reconstructed from the IB fills — sold-at price, and
+  the **IV/Δ implied by that fill** (Black-Scholes inverted against the underlying's bar,
+  `lib/blackscholes.ts`), the cushion in σ, the **path** (daily highs → did price reach the
+  strike), the closing fill's price/IV/Δ — then labelled with one reason (thesis worked /
+  cushion held / escaped a breach / trend wrong / vol expansion / management cost).
+  Sections: program scorecard, why-it-earned-vs-lost attribution, cohorts by Δ/σ/DTE/hold/
+  exit/theme ("what actually paid"), per-target record with a keep / size-down / stop-selling
+  verdict (expand a row for its trades), and every closed trade. Built by `getShortCallRecord`
+  (`lib/shortcall.ts`); doctrine in **docs/short-call-strategy.md**.
+- **`src/app/short-call/*` — the Short Call Analyzer section.** One TopNav entry, a sub-nav
+  inside it (`components/SectionNav.tsx`, map in `lib/sc-nav.ts`), shared tables and
+  formatters (`components/ScShared.tsx`), one data load shared by
+  every page (`lib/sc-data.ts:getScAnalyzer`). Beyond the Scorecard above:
+  - `lifecycle/` — the position as a **chain** (sale → rolls → close/expiry/assignment),
+    per-roll credit/up-and-out/1-year-wall audit and a link confidence, since IB does not
+    label rolls. `lib/sc-lifecycle.ts`.
+  - `losses/` — every losing chain with a rule audit, the **avoidable-vs-market** split, and
+    a held-to-expiry counterfactual from daily bars. `lib/sc-loss.ts`.
+  - `actions/` — the open book as instructions with the rule id and margin behind each, a
+    constructed roll target (credit-positive first, cushion second), and the §6.2 gates that
+    block new selling. `lib/sc-actions.ts`.
+  - `candidates/` — what to sell, as a **gate stack** (§2 + §3 + theme headroom + own
+    record); the row names the gate it failed. `lib/sc-candidates.ts`.
+  - `weekly/` — ISO weeks two ways: **cash** (realization week) and **vintage** (sale week),
+    plus entry-discipline drift. `lib/sc-timeline.ts`.
+  - `cohorts/` — every slice incl. instrument class, IV bucket and rule version.
+  - `strategy/` — the **versioned rule registry** rendered: rules in force, revision history
+    with measured effect and n-sufficiency, open questions. `lib/sc-rules.ts`.
+  Plan and rationale: **docs/short-call-analyzer-plan.md**. Checks: `npm run check`.
 - `src/app/sync/page.tsx` — **Sync** status: latest IB account balances (cash / NLV /
   RegT / init+maint margin / stock+option value), per-dataset synced-row counts + freshness
   (positions/orders/transactions/watchlists/greeks/margin/IB-options) and the extension's
@@ -175,7 +216,14 @@ API (`src/app/api/…`, mutations + on-demand data):
   off-index tickers.
 - `ib-capture` — receives positions/orders/trades pushed by the Chrome extension.
 - `sync-log` — POST a sync-run summary from the extension → `option_harvest_sync_runs`
-  (powers the `/sync` run history).
+  (powers the `/sync` run history; `source` = `manual` | `auto` | `login` | `deep`).
+- `ext-log` — extension **self-diagnostics** channel: POST `{extId, version, event, level,
+  status, state, raw}` → `option_harvest_ext_logs`, GET `?limit=&event=&sinceMin=` reads it
+  back. It exists because a failing login sync used to live only in the popup (making the
+  user the transport for their own diagnostics), and `runSync` returns before its
+  `sync-log` POST on early errors, so those attempts left no trace at all. Rows age out
+  (14 days, pruned amortised); `state`/`raw` are stored verbatim and **not trusted**.
+  Diagnostics only — nothing here drives a trading decision.
 - `balances` — POST the IB `/portfolio/{acct}/summary` from the extension → daily
   snapshot in `option_harvest_account_balances` (cash / NLV / RegT / init+maint margin;
   stock-vs-option value computed from positions). Powers the `/sync` balances panel.
@@ -214,7 +262,22 @@ earned/unearned by expiry — amount with cumulative lines, or % — for P&L Pre
 
 Libs (`src/lib`): `securities.ts` (`getDashboardData`, `getIvSeries`, screens),
 `pnl.ts` (cash-flow P/L engine + `ledger`/`weeklyByMonth` time analysis with earned/unearned), `transactions.ts` (`getPnlReport`), `posanalysis.ts`
-(action suggestions), `positions.ts` (positions/orders/trades views + `analyzeOrders`;
+(action suggestions), `bookrisk.ts` (`getBookRisk`/`buildBookRisk` — the `/risk`
+portfolio engine for the <1y short book: σ-to-strike cushion, correlated themes,
+distributions + HHI, parallel shock, and the close/roll/hold verdict ladder; doctrine
+constants live here), `shortcall.ts` (`getShortCallRecord`/`buildScRecord` — the
+`/short-call` closed-trade record: per-fill Δ/IV reconstruction, path/breach detection,
+win-loss attribution, entry cohorts, per-target verdicts; each trade stamped with the
+strategy `ruleVersion` in force at its open), **`sc-rules.ts`** (the versioned rule registry —
+21 ids `SC-S*/E*/M*/B*` mirroring docs/short-call-strategy.md, `versionAt`/`rulesAt`/
+`evaluateRules` returning pass **and margin**; the doc's changelog and this registry must
+agree or `scripts/sc-rules-check.ts` fails), **`sc-lifecycle.ts`** (roll chains — tightened
+linkage with `certain|likely|guess` confidence, assignment correlated from the share-side row
+because IB never books it on the option leg; invariant Σ chain realized = Σ leg realized),
+**`sc-loss.ts`**, **`sc-actions.ts`**, **`sc-candidates.ts`**, **`sc-timeline.ts`**,
+**`sc-data.ts`** (one section-wide load), `blackscholes.ts`
+(`bsPrice`/`bsDelta`/`impliedVol`/`volAndDelta` — pure BS + bisection IV, the only way to
+recover the greeks of a historical fill), `positions.ts` (positions/orders/trades views + `analyzeOrders`;
 `getPositionGroups` joins per-contract greeks + exact IB margin by conid;
 `buildOptionPnlByExpiry` groups
 the option book by expiry with cumulative P/L/credit + net greeks for P&L Predict),
@@ -225,6 +288,8 @@ the option book by expiry with cumulative P/L/credit + net greeks for P&L Predic
 `view.ts` (sort; per-window `trendW1..trendY1` keys, `TrendWindowKey` w1/w2),
 `labels.ts` (derived stock-label catalog),
 `watchlists.ts` (OH watchlist definitions + IB reader — see docs/watchlists.md),
+`leveraged.ts` (`isLongLeveragedEtf`/`leverageFactor`/`LEV_MIN_FACTOR` — name-based
+2x/3x **long** ETF classifier behind the LEV watchlist; inverse/short funds excluded),
 `ohpush.ts` (`buildOhPushLists` — intended OH→IB push payload: conid priority
 `SecurityConid` pin → held-stock position → `/trsrv`; shared by the `oh-watchlists`
 push route + the `oh-verify` read-back diff),
@@ -249,8 +314,12 @@ Scripts (`scripts/`):
   `backtest-cc.py`, `calibrate-cc.py`, `validate-cc.py`, `iv-rv-screen.py` — see
   `docs/cc-target-strategy.md`. Predictions written to `predictions/cc-*.jsonl`.
 - Entrypoints: `daily.sh`, `spreads.sh`, `server.sh`.
-- Self-checks: `*-check.ts` (`pnl`, `posanalysis`, `positions`, `trades`, `news`, `roic`) —
-  see test plan.
+- Self-checks: `*-check.ts` (`pnl`, `posanalysis`, `positions`, `trades`, `news`, `roic`,
+  `leveraged`, `bookrisk`, `shortcall`, `sc-rules`, `sc-lifecycle`, `sc-analyzer`) —
+  see test plan. **`npm run check`** runs the short-call suite (369 assertions over six
+  scripts) and is the gate for any change under `/short-call` or `/risk`; `npm run check:sc`
+  is the analyzer-only subset. **`npm run reconcile:sc`** (`sc-reconcile.ts`) is the one
+  that touches the DB — read-only — and fails if leg totals and chain totals disagree.
 
 Chrome extension (`extension/`): runs in the logged-in IB portal tab. **Sync now**
 (fast, background-safe) pulls positions/orders/trades/watchlists + the daily
@@ -262,7 +331,15 @@ switching tabs / a backgrounded window. A **manual** Sync now also runs the
 **batched greeks** pass (Δ/Θ/Γ, many conids per snapshot — quick, best-effort) so
 held-option greeks refresh without a separate step; **Auto-sync** runs the same
 light pull on a timer but **skips greeks** (it may be backgrounded → the in-page
-poll loop would be throttled). **Deep sync** (separate button) runs the **heavy**
+poll loop would be throttled). **Sync on IB login** (popup checkbox, on by default)
+runs that same light pull **once per login**: a 1-minute `loginwatch` alarm + every
+IB-tab navigation probe the tab's *readiness* (`/iserver/auth/status` not
+competing/unauthenticated → an account → `/portfolio/{acct}/summary` +
+`positions/all` actually answering, because the portal is logged in seconds before
+it's usable), and the sync fires on the not-ready → ready edge. The edge is only
+**spent on a productive run** (account returned **and** OH push `pushed === total`);
+otherwise the cooldown is cleared and the watcher retries — 8 tries per login, then it
+tells you to use Sync now. Logged to `/sync` as `source: "login"`. **Deep sync** (separate button) runs the **heavy**
 passes: per-position greeks
 (Δ/Θ/Γ) → `greeks`, exact maintenance margin per held contract (what-if) → `margin`,
 **resolves the true underlying conid for held option-only names** (a naked book holds
@@ -284,10 +361,20 @@ snapshot → `ib_*`), **Get greeks (IB)** (held-contract greek snapshot →
 subscribe burst, so it's fast rather than one contract at a time), **Get margin (IB)** (per held-contract what-if close
 order → `option_harvest_position_margin`), **Push OH → IB**, **Verify OH lists (read
 back)**, **Fix conids from held options**, and **Send page (dev)** capture →
-`ib-capture`. Every Sync (manual/auto/deep) posts its run summary to `sync-log` (the
-`/sync` page, `source` = `manual` | `auto` | `deep`). Full flows in **docs/watchlists.md**.
+`ib-capture`. Every Sync (manual/auto/login/deep) posts its run summary to `sync-log` (the
+`/sync` page, `source` = `manual` | `auto` | `login` | `deep`). Full flows in **docs/watchlists.md**.
+**Self-reporting (0.9.4+).** The popup's status line used to be the only witness to what
+the worker did — a login sync that failed early never reached the `sync-log` POST inside
+`runSync`, so nothing server-side knew it happened. Every status change and every
+login-watcher decision is now POSTed to **`/api/ext-log`** with the extension's identity
+(`chrome.runtime.id` + manifest version), its `chrome.storage` state (autoOn/autoMin/
+loginSyncOn/ibAuthed/loginTries/busy…) and **which alarms are actually armed** — that last
+one is how "why did nothing sync?" gets answered without guessing. Failed posts queue in
+`chrome.storage` (bounded at 100) and flush on the next report; identical login-watch
+outcomes are collapsed for 15 minutes, since the watcher ticks every minute (~1400
+rows/day of "nothing changed" otherwise). Query it with `GET /api/ext-log?event=login-watch&sinceMin=120`.
 **Bump `manifest.json` `version` on every edit** (see
-`[[bump-extension-version]]`; currently 0.9.0).
+`[[bump-extension-version]]`; currently 0.9.5).
 
 ## Local dev gotchas (WSL on `/mnt/d`)
 
