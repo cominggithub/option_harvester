@@ -479,3 +479,28 @@ model AccountBalance {
 
   @@map("option_harvest_account_balances")
 }
+
+/// Self-reported diagnostics from the Chrome extension: who it is (`extId`,
+/// `version`), what it just did (`event`, `status`) and the state it holds in
+/// chrome.storage (`state`: autoOn/autoMin/loginSyncOn/ibAuthed/loginTries/busy…).
+/// The extension POSTs here on every status change and on each login-watcher
+/// decision, so its behaviour is queryable server-side (GET /api/ext-log) instead of
+/// living only in the popup's transient status line — the popup was previously the
+/// ONLY place a failing login sync was visible, which meant relying on the user to
+/// read it out. Complements SyncRun: that logs sync *runs*, this logs the
+/// extension's own lifecycle, including runs that die before they post anything.
+model ExtLog {
+  id      Int      @id @default(autoincrement())
+  at      DateTime @default(now())
+  extId   String?  @map("ext_id") // chrome.runtime.id — which install is talking
+  version String? // manifest version, so stale installs are obvious
+  event   String   @default("status") // "status" | "login-watch" | "alarm" | "rearm" | …
+  level   String   @default("info") // "info" | "warn" | "error"
+  status  String? // human-readable line, mirrors the popup's log
+  state   Json? // chrome.storage snapshot (flags, counters, timestamps)
+  raw     Json? // event-specific payload (probe reasons, per-tab results, …)
+
+  @@index([at])
+  @@index([event])
+  @@map("option_harvest_ext_logs")
+}

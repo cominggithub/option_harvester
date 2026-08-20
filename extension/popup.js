@@ -39,11 +39,12 @@ const render = (s) => {
 const backend = () => ($("backend").value.trim() || DEFAULT).replace(/\/$/, "");
 
 chrome.storage.local.get(
-  ["backend", "autoOn", "autoMin", ...KEYS],
+  ["backend", "autoOn", "autoMin", "loginSyncOn", ...KEYS],
   (s) => {
     $("backend").value = s.backend || DEFAULT;
     $("auto").checked = !!s.autoOn;
     $("mins").value = s.autoMin || 15;
+    $("loginsync").checked = s.loginSyncOn !== false; // default on
     render(s);
   },
 );
@@ -80,6 +81,13 @@ const updateAuto = () =>
   );
 $("auto").onchange = updateAuto;
 $("mins").onchange = () => $("auto").checked && updateAuto();
+
+// One sync per IB login: the worker watches the IB tab's auth state and fires on the
+// not-logged-in → logged-in edge (no repeat while the session stays up).
+$("loginsync").onchange = () =>
+  chrome.runtime.sendMessage({ type: "setLoginSync", on: $("loginsync").checked }, () =>
+    setLog($("loginsync").checked ? "Sync on IB login: on" : "Sync on IB login: off"),
+  );
 
 // Backfill IB conids for the securities universe (one-time; needs an IB tab open).
 $("conids").onclick = () => {

@@ -249,7 +249,7 @@ function RunsTable({ runs }: { runs: SyncRunRow[] }) {
             <tr key={r.id} className="border-b border-line/50 last:border-0 hover:bg-canvas">
               <td className="py-1.5 pr-3 text-ink" title={formatTimestamp(new Date(r.at))}>{ago(r.at)}</td>
               <td className="py-1.5 pr-2">
-                <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${r.source === "auto" ? "bg-sky-50 text-sky-700" : "bg-line text-ink-muted"}`}>{r.source}</span>
+                <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${r.source === "auto" ? "bg-sky-50 text-sky-700" : r.source === "login" ? "bg-emerald-50 text-emerald-700" : "bg-line text-ink-muted"}`}>{r.source}</span>
               </td>
               <td className="tnum py-1.5 pr-2 text-[11px] text-ink-faint">{r.acct ?? "—"}</td>
               <td className="tnum py-1.5 pr-2 text-right">{n(r.positions)}</td>

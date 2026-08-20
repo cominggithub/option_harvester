@@ -27,7 +27,10 @@ export async function POST(req: Request) {
     return Response.json({ error: "Expected JSON { summary, source }" }, { status: 400 });
   }
   const s = (body.summary ?? {}) as Record<string, unknown>;
-  const source = body.source === "auto" ? "auto" : body.source === "deep" ? "deep" : "manual";
+  // "login" = the extension's sync-on-IB-login edge trigger; anything unknown is
+  // recorded as a manual run.
+  const sources = new Set(["auto", "deep", "login", "manual"]);
+  const source = typeof body.source === "string" && sources.has(body.source) ? body.source : "manual";
   const errTop = typeof s.error === "string" ? s.error : null;
 
   try {

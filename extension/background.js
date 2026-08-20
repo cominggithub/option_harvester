@@ -4,6 +4,15 @@
 
 const DEFAULT_BACKEND = "http://114.33.62.221:19210";
 const ALARM = "autosync";
+// Login watcher: polls the open IB tab's auth state once a minute (plus on every IB
+// tab navigation) and syncs on the not-authed → authed EDGE, i.e. once per login.
+const LOGIN_ALARM = "loginwatch";
+// A flaky probe (tab mid-navigation, IB 401 blip) can look like a logout+login, so a
+// login sync can't re-fire more often than this.
+const LOGIN_SYNC_COOLDOWN_MS = 10 * 60 * 1000;
+// A running op refreshes `busyBeat` every 15s; an older beat means the worker was
+// killed mid-op, so the busy flag is orphaned (same threshold as the popup).
+const STALE_MS = 45000;
 const IB_URLS = [
   "https://*.interactivebrokers.com/*",
   "https://*.interactivebrokers.com.au/*",
@@ -68,6 +77,115 @@ async function post(url, payload) {
   return r.json();
 }
 
+// ── Self-reporting → POST /api/ext-log ───────────────────────────────────────
+// The popup's status line used to be the ONLY witness to what this extension did:
+// a login sync that failed early never reached the /api/sync-log POST inside
+// runSync, so nothing server-side knew it had happened, and diagnosing it meant
+// asking the user to read the popup out loud. Every status change and every
+// login-watcher decision is now reported with the extension's identity (runtime id +
+// manifest version), its chrome.storage state and its armed alarms, so the whole
+// picture is queryable with GET /api/ext-log.
+const EXT_LOG_QUEUE = "extLogQueue";
+const EXT_LOG_QUEUE_MAX = 100; // bounded: diagnostics must never grow without limit
+// A login-watch tick fires every minute. Reporting each one verbatim would be ~1400
+// rows/day of "nothing changed", so identical outcomes are collapsed unless this long
+// has passed (keeps a heartbeat, drops the noise).
+const EXT_LOG_DEDUPE_MS = 15 * 60 * 1000;
+
+const STATE_KEYS = [
+  "backend",
+  "autoOn",
+  "autoMin",
+  "loginSyncOn",
+  "ibAuthed",
+  "loginTries",
+  "loginGaveUpAt",
+  "lastLoginSyncAt",
+  "lastStatus",
+  "lastAt",
+  "busy",
+  "busyAt",
+  "busyBeat",
+];
+
+// Which alarms are actually armed, and when they next fire. This is how a
+// "why did nothing sync?" question gets answered without guessing: no `autosync`
+// alarm means the timer is off, whatever the checkbox looked like.
+async function alarmSnapshot() {
+  try {
+    const all = await chrome.alarms.getAll();
+    return all.map((a) => ({
+      name: a.name,
+      nextAt: a.scheduledTime ? new Date(a.scheduledTime).toISOString() : null,
+      periodInMinutes: a.periodInMinutes ?? null,
+    }));
+  } catch {
+    return null;
+  }
+}
+
+async function extState() {
+  const s = await chrome.storage.local.get(STATE_KEYS);
+  const q = await chrome.storage.local.get(EXT_LOG_QUEUE);
+  return { ...s, alarms: await alarmSnapshot(), queued: (q[EXT_LOG_QUEUE] || []).length };
+}
+
+async function postOk(url, payload) {
+  try {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
+// Deliver `payload` plus anything stranded from earlier attempts. The backend can be
+// unreachable exactly when the interesting failures happen (laptop off the network,
+// prod restarting), so undelivered events are kept in chrome.storage and retried on
+// the next report — in order, stopping at the first failure so ordering survives.
+async function flushExtLog(backend, payload) {
+  const stored = await chrome.storage.local.get(EXT_LOG_QUEUE);
+  const queue = Array.isArray(stored[EXT_LOG_QUEUE]) ? stored[EXT_LOG_QUEUE] : [];
+  if (payload) queue.push(payload);
+  const left = [];
+  for (const item of queue) {
+    if (left.length) {
+      left.push(item); // a later item must not overtake a failed earlier one
+      continue;
+    }
+    if (!(await postOk(`${backend}/api/ext-log`, item))) left.push(item);
+  }
+  const trimmed = left.slice(-EXT_LOG_QUEUE_MAX);
+  if (trimmed.length) await chrome.storage.local.set({ [EXT_LOG_QUEUE]: trimmed });
+  else await chrome.storage.local.remove(EXT_LOG_QUEUE);
+}
+
+// Best-effort: telemetry must never break a sync, so everything here is swallowed.
+async function report(event, { status, level, raw, dedupeKey } = {}) {
+  try {
+    const state = await extState();
+    if (dedupeKey) {
+      const k = "extLogDedupe";
+      const prev = (await chrome.storage.local.get(k))[k] || {};
+      if (prev.key === dedupeKey && prev.at && Date.now() - Date.parse(prev.at) < EXT_LOG_DEDUPE_MS) return;
+      await chrome.storage.local.set({ [k]: { key: dedupeKey, at: new Date().toISOString() } });
+    }
+    await flushExtLog(state.backend || DEFAULT_BACKEND, {
+      extId: chrome.runtime?.id ?? null,
+      version: chrome.runtime.getManifest?.()?.version ?? null,
+      event,
+      level: level || "info",
+      status: status ?? state.lastStatus ?? null,
+      state,
+      raw: raw ?? null,
+    });
+  } catch {}
+}
+
 // Find an IB tab to run the fetch in (prefer the active one).
 async function findIbTab(preferActive) {
   if (preferActive) {
@@ -78,10 +196,28 @@ async function findIbTab(preferActive) {
   return tabs[0] || null;
 }
 
-async function runSync(backend, { preferActive, source, withGreeks } = {}, onProgress) {
+// Re-validate a tab id captured earlier (e.g. the tab that passed the login
+// readiness probe): it may have been closed or navigated off IB since.
+async function useTab(tabId) {
+  if (!tabId) return null;
+  try {
+    const t = await chrome.tabs.get(tabId);
+    return t?.id && /interactivebrokers\.|ibkr\./.test(t.url || "") ? t : null;
+  } catch {
+    return null;
+  }
+}
+
+// `tabId` pins the sync to a SPECIFIC IB tab. The login watcher passes the tab whose
+// session it just verified: with several IB tabs open (portal + a marketing/help page)
+// findIbTab's `tabs[0]` can be a page with no brokerage session, so the probe would
+// pass on tab #2 while the sync failed on tab #1 — "not logged in (no account)" on
+// every retry, unfixable by retrying, and invisible in /sync because this path returns
+// before the sync-log POST.
+async function runSync(backend, { preferActive, source, withGreeks, tabId } = {}, onProgress) {
   const p = (m) => onProgress?.(m);
   p("reading IB");
-  const tab = await findIbTab(preferActive);
+  const tab = (await useTab(tabId)) || (await findIbTab(preferActive));
   if (!tab?.id) return { error: "no IB tab open — log into the IB portal in a tab" };
   const [res] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: fetchAllInPage });
   const d = res?.result;
@@ -163,6 +299,15 @@ async function runDeep(backend, { source } = {}, onProgress) {
 
 async function setStatus(text) {
   await chrome.storage.local.set({ lastStatus: text, lastAt: new Date().toISOString() });
+  // Mirror it to the backend. Written to storage first, so the reported `state`
+  // carries this line rather than the previous one.
+  const t = String(text || "");
+  const level = /✕|error|failed|gave up|no IB tab|not logged in/i.test(t)
+    ? "error"
+    : /⚠|waiting|rejected|mismatch/i.test(t)
+      ? "warn"
+      : "info";
+  await report("status", { status: t, level });
 }
 
 // A background op is running. Persisted so the popup — which is torn down whenever
@@ -710,13 +855,31 @@ async function fetchOhListsInPage() {
 
 // Verify the OH→IB push: re-fetch the OH:* lists from IB and POST their conids to
 // /api/oh-verify, which diffs them against the intended payload. Non-fatal.
-async function verifyOhWatchlists(backend) {
+//
+// IB does not make a just-created list readable atomically: a read-back fired
+// immediately after the push can return a *short* list (some conids not stored yet),
+// which shows up as a bogus "verify ⚠N" with N pure `missing` and zero `extra`
+// (observed 2026-08-19: 156 missing at push+0s, 0 at push+23s). So settle briefly
+// first, and if the only diff is missing conids, re-read once before believing it.
+const OH_VERIFY_SETTLE_MS = 2500;
+async function verifyOhWatchlists(backend, { settle = true } = {}) {
   const tab = await findIbTab(false);
   if (!tab?.id) return { error: "no IB tab open — log into the IB portal" };
-  const [res] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: fetchOhListsInPage });
-  const verified = res?.result || [];
+  const readBack = async () => {
+    const [res] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: fetchOhListsInPage });
+    return res?.result || [];
+  };
+  if (settle) await new Promise((s) => setTimeout(s, OH_VERIFY_SETTLE_MS));
+  let verified = await readBack();
   if (!verified.length) return { error: "no OH:* lists found in IB (push first?)" };
-  const out = await post(`${backend}/api/oh-verify`, { verified });
+  let out = await post(`${backend}/api/oh-verify`, { verified });
+  // Only-missing mismatch = IB hasn't finished storing the push, not a wrong conid.
+  const onlyMissing = out && out.ok === false && (out.mismatched ?? 0) > 0 && (out.detail || []).every((d) => (d.extra || []).length === 0);
+  if (onlyMissing) {
+    await new Promise((s) => setTimeout(s, OH_VERIFY_SETTLE_MS));
+    verified = await readBack();
+    if (verified.length) out = await post(`${backend}/api/oh-verify`, { verified });
+  }
   return { ...out, lists: verified.length };
 }
 
@@ -804,11 +967,236 @@ async function resolveUnderlyings(backend) {
   return { ...out, tried: items.length, resolved: resolved.length };
 }
 
+// ── Sync on IB login ─────────────────────────────────────────────────────────
+// Runs IN the IB page: is this session **usable**, not merely logged in? The portal
+// stages a login — SSO cookie → brokerage session → trading permissions — and the
+// page renders long before the last stage lands. `/iserver/accounts` answering is
+// therefore NOT enough: for a few seconds after login it can answer while the portfolio
+// endpoints still 401/return nothing, which would produce an empty "successful" sync.
+// So the gate is three-part: auth status → an account → the two portfolio reads the
+// sync actually consumes.
+async function ibSessionInPage() {
+  const base = location.origin + "/portal.proxy/v1/portal";
+  const j = async (u, init) => {
+    try {
+      const r = await fetch(u, { credentials: "include", ...init });
+      return r.ok ? await r.json() : null;
+    } catch {
+      return null;
+    }
+  };
+  // 1) Session state. GET works through the portal proxy; the documented CP-API form
+  //    is POST, so fall back to it. A missing/blank status isn't fatal — the reads
+  //    below are the real test — but an explicit "not authenticated / competing"
+  //    means the brokerage session isn't up yet, so don't consume the login edge.
+  const st = (await j(`${base}/iserver/auth/status`)) ?? (await j(`${base}/iserver/auth/status`, { method: "POST" }));
+  if (st && st.authenticated === false) {
+    return { ready: false, reason: st.competing ? "competing IB session" : "brokerage session not authenticated yet" };
+  }
+  if (st && st.connected === false) return { ready: false, reason: "IB session not connected yet" };
+  // 2) An account — also what initialises the brokerage session for /iserver/*.
+  const accts = await j(`${base}/iserver/accounts`);
+  const acct = accts?.accounts?.[0];
+  if (!acct) return { ready: false, reason: "no account yet (still logging in)" };
+  // 3) Canary reads: exactly what runSync pulls. If either is still gated, wait for
+  //    the next tick instead of syncing a half-open session.
+  const [sum, pos] = await Promise.all([
+    j(`${base}/portfolio/${acct}/summary`),
+    j(`${base}/portfolio/${acct}/positions/all`),
+  ]);
+  if (!sum) return { ready: false, acct, reason: "account summary not available yet" };
+  if (!pos || !Array.isArray(pos.positions)) return { ready: false, acct, reason: "positions not available yet" };
+  return { ready: true, acct, reason: "ready" };
+}
+
+// The light pull (positions/orders/trades/watchlists/balances + OH push & verify),
+// fired right after a login. Skips greeks like auto-sync: the tab may be in the
+// background moments after login, which would throttle the in-page poll loop.
+// Returns whether the run was PRODUCTIVE, so the caller knows whether the login edge
+// was really spent (see checkIbLogin): a run that failed, produced no account, or
+// couldn't push the OH lists (the signature of a session that reads but can't write
+// yet) must be retried rather than swallowed for the whole cooldown.
+async function loginSync(tabId) {
+  const st = await chrome.storage.local.get(["backend", "lastLoginSyncAt", "busy", "busyAt", "busyBeat"]);
+  // Never stack on a live op (manual / auto / deep) …
+  const beat = st.busyBeat || st.busyAt;
+  if (st.busy && beat && Date.now() - Date.parse(beat) < STALE_MS) return { skipped: "busy" };
+  // … and never re-fire within the cooldown.
+  if (st.lastLoginSyncAt && Date.now() - Date.parse(st.lastLoginSyncAt) < LOGIN_SYNC_COOLDOWN_MS) return { skipped: "cooldown" };
+
+  const backend = st.backend || DEFAULT_BACKEND;
+  await chrome.storage.local.set({ lastLoginSyncAt: new Date().toISOString() });
+  await setBusy("Syncing (IB login)");
+  const hb = startHeartbeat();
+  const r = await runSync(backend, { preferActive: false, source: "login", tabId }, (m) => setProgress(m)).catch((e) => ({
+    error: String(e),
+  }));
+  clearInterval(hb);
+  try {
+    await setStatus(r.error ? `login: ${r.error}` : `login ✓ ${summary(r)}`);
+  } finally {
+    await clearBusy();
+  }
+  // runSync only logs runs that got as far as posting data, so a login attempt that
+  // died early (no usable tab, IB fetch refused) left NO trace in /sync history — the
+  // popup's transient status line was the only evidence. Record it.
+  if (r.error) await post(`${backend}/api/sync-log`, { summary: r, source: "login" }).catch(() => {});
+  // Productive = IB answered with an account AND the OH push got every list in. A
+  // read-only / half-open session typically reads fine but fails the watchlist POSTs.
+  const pushOk = !r.ohPush?.error && (r.ohPush?.total == null || r.ohPush.pushed === r.ohPush.total);
+  return { productive: !r.error && !!r.acct && pushOk, result: r };
+}
+
+// Edge detector. Probes the open IB tabs and compares with the last-known session
+// state (`ibAuthed`, persisted so it survives the worker being suspended): a
+// not-ready → ready transition means the user just logged in → sync once. Staying
+// logged in does nothing (that's what auto-sync is for); a logout re-arms the next
+// login.
+//
+// The login edge is only **spent** on a productive sync. A session that is up but
+// still gated (trading permissions/2FA not finished, a competing session, the portal
+// mid-handshake) either fails the readiness probe or produces an unproductive run —
+// in both cases `ibAuthed` stays false and the cooldown is cleared, so the 1-minute
+// watcher tries again, up to LOGIN_SYNC_MAX_TRIES times per login. Without that, one
+// premature attempt would mark the login "handled" and nothing would sync at all.
+const LOGIN_SYNC_MAX_TRIES = 8; // ≈8 minutes of retries at the 1-min watcher cadence
+// Giving up used to be permanent for the session (`ibAuthed` was pinned true), so the
+// only way back was a manual Sync now or a real logout — the "gave up after 8 tries"
+// dead end. Instead, re-arm the whole budget after a pause: whatever gated IB (2FA
+// still pending, a competing session, IB-side maintenance) is usually gone by then.
+const LOGIN_GIVEUP_RETRY_MS = 30 * 60 * 1000;
+let loginCheckRunning = false;
+async function checkIbLogin() {
+  if (loginCheckRunning) return;
+  const { loginSyncOn } = await chrome.storage.local.get(["loginSyncOn"]);
+  if (loginSyncOn === false) return; // opt-out; default is on
+  loginCheckRunning = true;
+  try {
+    // Probe every IB tab, not just the first: a non-portal IB page (marketing site,
+    // help centre) has no usable session, and the real portal may be the 2nd tab.
+    const tabs = await chrome.tabs.query({ url: IB_URLS });
+    let ready = false;
+    let reason = "no IB tab";
+    let readyTabId = null;
+    for (const t of tabs) {
+      if (!t.id) continue;
+      const [res] = await chrome.scripting
+        .executeScript({ target: { tabId: t.id }, func: ibSessionInPage })
+        .catch(() => []);
+      const p = res?.result;
+      if (p?.ready) {
+        ready = true;
+        reason = "ready";
+        readyTabId = t.id; // sync THIS tab — the one whose session we just verified
+        break;
+      }
+      if (p?.reason) reason = p.reason; // keep the most informative "not yet" reason
+    }
+    const { ibAuthed, loginTries, loginGaveUpAt } = await chrome.storage.local.get([
+      "ibAuthed",
+      "loginTries",
+      "loginGaveUpAt",
+    ]);
+    if (!ready) {
+      // Not usable yet. Leave the edge unspent so the next tick can fire, and surface
+      // WHY in the popup while we're still inside the retry budget for this login.
+      // A ready → not-ready flip is a logout: give the next login a fresh budget.
+      await chrome.storage.local.set({ ibAuthed: false, ...(ibAuthed === true ? { loginTries: 0 } : {}) });
+      if ((loginTries ?? 0) > 0 && (loginTries ?? 0) < LOGIN_SYNC_MAX_TRIES) await setStatus(`login sync waiting: ${reason}`);
+      await report("login-watch", {
+        level: "info",
+        status: `not ready: ${reason}`,
+        raw: { ready: false, reason, ibTabs: tabs.length, wasAuthed: ibAuthed === true },
+        dedupeKey: `notready:${reason}:${tabs.length}`,
+      });
+      return;
+    }
+    // Budget exhausted earlier for this session: wait out the pause, then start over.
+    if (loginGaveUpAt && Date.now() - Date.parse(loginGaveUpAt) < LOGIN_GIVEUP_RETRY_MS) {
+      await report("login-watch", {
+        level: "warn",
+        status: "ready, but in the post-giveup pause",
+        raw: { ready: true, gaveUpAt: loginGaveUpAt, retryAfterMs: LOGIN_GIVEUP_RETRY_MS },
+        dedupeKey: `giveup-pause:${loginGaveUpAt}`,
+      });
+      return;
+    }
+    if (loginGaveUpAt) {
+      await chrome.storage.local.remove(["loginGaveUpAt", "lastLoginSyncAt"]);
+      await chrome.storage.local.set({ ibAuthed: false, loginTries: 0 });
+    } else if (ibAuthed === true) {
+      await report("login-watch", {
+        status: "ready; this login already synced",
+        raw: { ready: true, ibAuthed: true },
+        dedupeKey: "ready-already-synced",
+      });
+      return; // this session's login was already synced
+    }
+    await report("login-sync-start", { status: "IB session ready — syncing", raw: { tabId: readyTabId } });
+    const out = await loginSync(readyTabId);
+    if (out?.productive) {
+      await chrome.storage.local.set({ ibAuthed: true, loginTries: 0 }); // edge spent
+      await chrome.storage.local.remove(["loginGaveUpAt"]);
+      return;
+    }
+    // A skipped attempt (an op already running, or inside the cooldown) never touched
+    // IB, so it must not consume the budget — that alone could exhaust all 8 tries
+    // without a single sync, which is indistinguishable in the popup from 8 real
+    // failures. Only a run that actually reached IB counts.
+    if (out?.skipped) {
+      await report("login-sync-skip", {
+        status: `login sync skipped: ${out.skipped}`,
+        raw: { skipped: out.skipped },
+        dedupeKey: `skip:${out.skipped}`,
+      });
+      return;
+    }
+    const tries = (loginTries ?? 0) + 1;
+    await chrome.storage.local.set({ loginTries: tries });
+    await report("login-sync-fail", {
+      level: "error",
+      status: `login sync attempt ${tries}/${LOGIN_SYNC_MAX_TRIES} unproductive`,
+      raw: { tries, result: out?.result ?? null },
+    });
+    if (tries >= LOGIN_SYNC_MAX_TRIES) {
+      const mins = Math.round(LOGIN_GIVEUP_RETRY_MS / 60000);
+      await setStatus(`login sync failed ${tries}× — retrying in ${mins} min (or use Sync now)`);
+      await chrome.storage.local.set({ loginGaveUpAt: new Date().toISOString(), ibAuthed: false });
+      return;
+    }
+    // Ran but didn't land (IB gated the reads/writes) — retry on the next tick.
+    await chrome.storage.local.set({ ibAuthed: false });
+    await chrome.storage.local.remove(["lastLoginSyncAt"]);
+  } finally {
+    loginCheckRunning = false;
+  }
+}
+
+// Immediacy: a login is a navigation into the portal (full load or SPA URL change).
+// The 1-minute watcher below is the safety net for when the session becomes usable
+// a few seconds after the page settles.
+const IB_HOST_RE = /^https:\/\/[^/]*(interactivebrokers\.[a-z.]+|ibkr\.com)\//i;
+chrome.tabs.onUpdated.addListener((_tabId, info, tab) => {
+  if (!IB_HOST_RE.test(info.url || tab?.url || "")) return;
+  if (!info.url && info.status !== "complete") return;
+  checkIbLogin();
+});
+
+function scheduleLoginWatch() {
+  chrome.alarms.create(LOGIN_ALARM, { periodInMinutes: 1, delayInMinutes: 0.1 });
+}
+
 // Timer: sync whenever the alarm fires, if auto-sync is on and an IB tab exists.
 chrome.alarms.onAlarm.addListener(async (a) => {
+  if (a.name === LOGIN_ALARM) return void checkIbLogin();
   if (a.name !== ALARM) return;
   const { backend, autoOn } = await chrome.storage.local.get(["backend", "autoOn"]);
-  if (!autoOn) return;
+  if (!autoOn) {
+    // The alarm exists but the toggle is off — worth one report, not one per tick.
+    await report("alarm", { level: "warn", status: "auto-sync alarm fired but autoOn is off", dedupeKey: "alarm-auto-off" });
+    return;
+  }
+  await report("alarm", { status: "auto-sync alarm fired" });
   await setBusy("Auto-syncing");
   const hb = startHeartbeat();
   const r = await runSync(backend || DEFAULT_BACKEND, { preferActive: false, source: "auto" }).catch((e) => ({ error: String(e) }));
@@ -921,15 +1309,38 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
     chrome.storage.local.set({ autoOn: msg.on, autoMin: msg.minutes });
     if (msg.on) scheduleAuto(msg.minutes);
     else chrome.alarms.clear(ALARM);
+    report("setting", { status: `auto-sync ${msg.on ? `on (${msg.minutes || 15}m)` : "off"}` });
+    reply({ ok: true });
+    return true;
+  }
+  if (msg.type === "setLoginSync") {
+    chrome.storage.local.set({ loginSyncOn: msg.on });
+    if (msg.on) scheduleLoginWatch();
+    else chrome.alarms.clear(LOGIN_ALARM);
+    report("setting", { status: `login-sync ${msg.on ? "on" : "off"}` });
     reply({ ok: true });
     return true;
   }
 });
 
-// Re-arm the alarm across browser restarts / extension reloads.
+// Re-arm the alarms across browser restarts / extension reloads. A restart also
+// invalidates any remembered IB session, so reset `ibAuthed` — the first authed probe
+// after this counts as a fresh login (the cooldown still guards double-firing).
 async function rearm() {
-  const { autoOn, autoMin } = await chrome.storage.local.get(["autoOn", "autoMin"]);
+  const { autoOn, autoMin, loginSyncOn } = await chrome.storage.local.get(["autoOn", "autoMin", "loginSyncOn"]);
   if (autoOn) scheduleAuto(autoMin);
+  await chrome.storage.local.set({ ibAuthed: false, loginTries: 0 });
+  await chrome.storage.local.remove(["loginGaveUpAt"]);
+  if (loginSyncOn !== false) {
+    scheduleLoginWatch();
+    checkIbLogin(); // an IB tab may already be restored and logged in
+  }
+  // Announce ourselves: id, version, and which triggers are actually armed. This is
+  // the row that answers "which build is installed and is the timer on?" without
+  // anyone having to open the popup.
+  await report("rearm", {
+    status: `armed: auto ${autoOn ? `on (${autoMin || 15}m)` : "OFF"} · login-sync ${loginSyncOn === false ? "OFF" : "on"}`,
+  });
 }
 chrome.runtime.onStartup.addListener(rearm);
 chrome.runtime.onInstalled.addListener(rearm);
