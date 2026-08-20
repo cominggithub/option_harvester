@@ -95,12 +95,21 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   Δ band, median DTE/|Δ|/IV, legs still in the entry window, **effective names** (1/HHI)
   and **effective themes**; (3) **Risk flags** — legs inside 1σ of their strike, short
   calls on *rising* names, earnings before expiry, |Δ| past the roll/give-up lines, ITM,
-  tested, and legs with no roll room left; (4) **Parallel shock** — book P/L at expiry
+  tested, and legs with no roll room left; (4) **Earnings before expiry** — the legs held
+  over a print, in three sub-sections by **how soon the print lands** (≤`EARNINGS_IMMINENT_DAYS`
+  = 7d / ≤`EARNINGS_NEAR_DAYS` = 21d / later but still inside the option's life), soonest
+  first, each with credit, assignment at risk and open P/L, and per leg the earnings date,
+  days to it, and **print → expiry** room (a print days before expiry means the gap decides
+  the trade). Grouped by days-to-print rather than by expiry because that is the order the
+  decisions have to be made in, and a gap is the one risk the σ cushion cannot see — it is
+  not drawn from the distribution IV describes. The strip also states what is *not* covered:
+  legs already clear of a print, ETF legs (no earnings by construction) and single-stock legs
+  with **no earnings date on file** — a data gap, not safety; (5) **Parallel shock** — book P/L at expiry
   under ±5/10/20% moves in every underlying, split call vs put (the asymmetry between the
-  two columns *is* the directional bet); (5) **Distributions** — by correlated **theme**,
-  sector, DTE bucket, |Δ| bucket, underlying trend, side, and name; (6) **What to do now**
+  two columns *is* the directional bet); (6) **Distributions** — by correlated **theme**,
+  sector, DTE bucket, |Δ| bucket, underlying trend, side, and name; (7) **What to do now**
   — every leg with a verdict (close / roll / defend / let-expire / hold) and the reason;
-  (7) **Outside this analysis** — long, stock and beyond-1-year legs, listed not dropped.
+  (8) **Outside this analysis** — long, stock and beyond-1-year legs, listed not dropped.
   Tactical per-leg advice stays on `/positions`; this page is the portfolio frame.
 - **Short call analyzer** (`/short-call`, `getShortCallRecord` in `lib/shortcall.ts`) — the
   **closed-trade record** of the naked-call program, per target, with the reason each trade
@@ -407,6 +416,14 @@ Filters to **short option legs with DTE ≤ `BOOK_HORIZON_DAYS` (365)**, reuses
   `ROLL_MIN_ROOM_DAYS` (30) of 1-year room remains; otherwise **hold**.
 - **`tally`/`hhi`** for the distributions, and **`shockBook`** for the parallel shock
   (credit − at-expiry intrinsic; long legs excluded).
+- **earnings inside the option's life** — `earningsBucket(daysToEarnings)` and
+  `buildEarningsGroups(legs)`: the legs whose underlying reports on or before expiry,
+  bucketed **This week / 1–3 weeks / 3+ weeks** by days to the *print* (not to expiry) and
+  sorted soonest-first, since that is the order they must be decided in. Per leg,
+  `daysToEarnings` and `earningsBufferDays` (expiry − earnings = recovery room after the
+  gap). `report.earnings` also separates *clear of a print* from *ETF (no earnings by
+  construction)* and *single stock with no earnings date on file* — the last is a backfill
+  gap and must not read as safety.
 - margin coverage: legs without a synced IB what-if are extrapolated at the observed
   average, so utilisation isn't understated.
 

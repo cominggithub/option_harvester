@@ -169,7 +169,10 @@ Pages (all `force-dynamic`):
   inside 1 year, measured against the strategy doctrine (docs/strategy.md § 五) —
   credit/margin/Θ/net-Δ$ KPIs, doctrine conformance (Δ band, median DTE, effective
   names/themes), risk flags (inside 1σ of the strike, short calls on rising names,
-  earnings before expiry, Δ past the roll/give-up lines), a ±20% parallel shock table,
+  earnings before expiry, Δ past the roll/give-up lines), an **earnings-before-expiry
+  section** grouping the legs held over a print into ≤7d / ≤21d / later sub-sections
+  (soonest print first, with print → expiry recovery room, and ETF "no earnings" kept
+  separate from a missing-date data gap), a ±20% parallel shock table,
   distributions by theme/sector/DTE/Δ/trend/side/name, and a per-leg
   close/roll/defend/let-expire/hold action board. Built by `getBookRisk` (`lib/bookrisk.ts`).
 - `src/app/short-call/page.tsx` — **Short call analyzer**: the closed-trade record of the

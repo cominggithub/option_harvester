@@ -6,8 +6,10 @@
 import assert from "node:assert/strict";
 import {
   buildBookRisk,
+  buildEarningsGroups,
   deltaBucket,
   dteBucket,
+  earningsBucket,
   hhi,
   shockBook,
   sigmaMove,
@@ -19,6 +21,8 @@ import {
   BOOK_HORIZON_DAYS,
   DELTA_GIVE_UP,
   DELTA_WATCH,
+  EARNINGS_IMMINENT_DAYS,
+  EARNINGS_NEAR_DAYS,
   HARVEST_CAPTURED,
   TARGET_DELTA,
   type BookLeg,
@@ -127,9 +131,10 @@ const group = (o: Partial<PositionGroup>): PositionGroup =>
   ({ symbol: "NVDA", currency: "USD", ivPct: 45, price: 220, nextEarnings: null, legs: [], totalCost: 0,
      marketValue: 0, unrealizedPnl: 0, maintMargin: null, ...o }) as PositionGroup;
 const sec = (o: Partial<SecurityRow>): SecurityRow =>
-  ({ ticker: "NVDA", sector: "Information Technology", ivPct: 45, downtrend: true,
+  ({ ticker: "NVDA", sector: "Information Technology", type: "stock", ivPct: 45, downtrend: true,
      trend: { m1: { label: "down" }, m3: { label: "down" }, m6: { label: "sideways" } },
-     ivStats: { rank: 62, percentile: null, n: 90, min: null, max: null, current: 45 } } as unknown as SecurityRow);
+     ivStats: { rank: 62, percentile: null, n: 90, min: null, max: null, current: 45 },
+     ...o } as unknown as SecurityRow);
 
 const asOf = new Date("2026-08-19T00:00:00Z");
 const report = buildBookRisk(
@@ -174,6 +179,49 @@ ok(report.conformance.inDeltaBand === 1 && report.conformance.notRisingShare ===
 ok(report.byDte[0].key === "46–90" && report.bySide[0].key === "Short calls", "distributions keyed and sorted");
 ok(report.verdicts.every((v) => v.legs.length > 0), "empty verdict groups are dropped");
 ok(report.shocks.length === 6 && report.shocks[0].movePct === -0.2, "shock grid runs −20%…+20%");
+
+// ── earnings inside the option's life ────────────────────────────────────────
+// Buckets are days-to-PRINT, not days-to-expiry: what matters is whether there is
+// still time to harvest or roll before the gap.
+ok(earningsBucket(0) === "This week" && earningsBucket(EARNINGS_IMMINENT_DAYS) === "This week", "a print today or on the 7th day is imminent");
+ok(earningsBucket(EARNINGS_IMMINENT_DAYS + 1) === "1–3 weeks" && earningsBucket(EARNINGS_NEAR_DAYS) === "1–3 weeks", "8–21 days is the near bucket, boundaries inclusive");
+ok(earningsBucket(EARNINGS_NEAR_DAYS + 1) === "3+ weeks", "past 21 days it is the far bucket");
+ok(earningsBucket(null) === null, "no print → no bucket (the leg is not listed at all)");
+
+const eLeg = (o: Partial<BookLeg>): BookLeg => mkLeg({ earningsRisk: true, ...o });
+const eGroups = buildEarningsGroups([
+  eLeg({ symbol: "AAPL", earningsDate: "2026-08-24", daysToEarnings: 4, credit: 100, notional: 10_000 }),
+  eLeg({ symbol: "MSFT", earningsDate: "2026-08-21", daysToEarnings: 1, credit: 200, notional: 20_000 }),
+  eLeg({ symbol: "NVDA", earningsDate: "2026-09-02", daysToEarnings: 13, credit: 300, notional: 30_000 }),
+  mkLeg({ symbol: "SPY", earningsDate: null, earningsRisk: false, credit: 900 }), // no print in its life
+  eLeg({ symbol: "KO", earningsDate: null, daysToEarnings: null, credit: 400 }), // flagged but undated → unusable
+]);
+ok(eGroups.length === 2 && eGroups[0].key === "This week" && eGroups[1].key === "1–3 weeks", "empty buckets are dropped, order is soonest-first");
+ok(eGroups[0].legs.map((l) => l.symbol).join(",") === "MSFT,AAPL", "inside a bucket the soonest print comes first");
+ok(eGroups[0].legs.length === 2 && eGroups[0].credit === 300 && eGroups[0].atRisk === 30_000 && eGroups[0].symbols === 2, "group totals: credit, assignment at risk, distinct names");
+ok(eGroups.every((g) => g.legs.every((l) => l.symbol !== "SPY" && l.symbol !== "KO")), "a leg with no print in its life — or flagged with no date — is never grouped");
+
+// Assembly: the print date comes off the position group, and both distances are derived.
+const withEarnings = buildBookRisk(
+  [group({ nextEarnings: "2026-08-26", legs: [leg({})] })], // leg expires 2026-10-16
+  [sec({})],
+  { netLiquidation: 100_000 } as never,
+  asOf,
+);
+const el = withEarnings.legs[0];
+ok(el.earningsRisk && el.daysToEarnings === 7, "a print between today and expiry flags the leg and dates it (7 days out)");
+ok(el.earningsBufferDays === 51, "print → expiry room is expiry − earnings, not expiry − today");
+ok(withEarnings.earnings.legs === 1 && withEarnings.earnings.symbols === 1 && withEarnings.earnings.creditShare === 1, "the section totals the exposed legs and their share of book credit");
+ok(withEarnings.earnings.groups[0].key === "This week", "a print inside a week lands in the imminent group");
+
+// After the print, or with no print at all, the leg drops out of the section — and an
+// ETF (no earnings by construction) must not be counted as a stock with missing data.
+const cleared = buildBookRisk([group({ nextEarnings: "2026-06-01", legs: [leg({})] })], [sec({})], null, asOf);
+ok(cleared.earnings.legs === 0 && cleared.earnings.clearLegs === 1 && cleared.legs[0].daysToEarnings === null, "a past print clears the leg");
+const etfBook = buildBookRisk([group({ symbol: "SOXL", nextEarnings: null, legs: [leg({})] })], [sec({ ticker: "SOXL", type: "etf" } as Partial<SecurityRow>)], null, asOf);
+ok(etfBook.earnings.etfLegs === 1 && etfBook.earnings.unknownLegs === 0, "an ETF leg has no earnings by construction");
+const gapBook = buildBookRisk([group({ nextEarnings: null, legs: [leg({})] })], [sec({ type: "stock" } as Partial<SecurityRow>)], null, asOf);
+ok(gapBook.earnings.unknownLegs === 1 && gapBook.earnings.etfLegs === 0, "a stock with no earnings date on file is a data gap, not a clean leg");
 
 // An empty book must not throw or divide by zero.
 const empty = buildBookRisk([], [], null, asOf);

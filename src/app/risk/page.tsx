@@ -5,6 +5,8 @@ import {
   DELTA_BAND,
   DELTA_GIVE_UP,
   DELTA_WATCH,
+  EARNINGS_IMMINENT_DAYS,
+  EARNINGS_NEAR_DAYS,
   HARVEST_CAPTURED,
   ROLL_MIN_ROOM_DAYS,
   SIGMA_DANGER,
@@ -89,8 +91,9 @@ function SliceTable({ slices, label, max }: { slices: Slice[]; label: string; ma
   );
 }
 
-// One position row in the action board.
-function LegRow({ l }: { l: BookLeg }) {
+// One position row in the action board. `earnings` adds the print columns — only the
+// earnings section asks for them, and there they are the reason the row is listed.
+function LegRow({ l, earnings }: { l: BookLeg; earnings?: boolean }) {
   const tight = l.sigmas != null && l.sigmas < SIGMA_DANGER;
   return (
     <tr className="border-b border-line/50 align-top last:border-0 hover:bg-canvas">
@@ -104,6 +107,17 @@ function LegRow({ l }: { l: BookLeg }) {
         <span className={l.right === "C" ? "text-rose-700" : "text-sky-700"}>{l.right === "C" ? "call" : "put"}</span>{" "}
         {l.strike} × {l.qty}
       </td>
+      {earnings ? (
+        <>
+          <td className="tnum py-1.5 pr-2 whitespace-nowrap text-right">
+            <span className="font-semibold text-amber-800">{l.earningsDate ?? "—"}</span>
+            {l.daysToEarnings != null ? <span className="ml-1 text-[10px] text-ink-faint">in {l.daysToEarnings}d</span> : null}
+          </td>
+          <td className="tnum py-1.5 pr-2 text-right">
+            {l.earningsBufferDays == null ? "—" : `${l.earningsBufferDays}d`}
+          </td>
+        </>
+      ) : null}
       <td className="tnum py-1.5 pr-2 text-right">{l.dte ?? "—"}d</td>
       <td className="tnum py-1.5 pr-2 text-right">{num(l.absDelta)}</td>
       <td className="tnum py-1.5 pr-2 text-right">{pct(l.moneyness)}</td>
@@ -115,22 +129,31 @@ function LegRow({ l }: { l: BookLeg }) {
       <td className={`tnum py-1.5 pr-2 text-right ${pnlCls(l.unrealizedPnl)}`}>{signed(l.unrealizedPnl)}</td>
       <td className="tnum py-1.5 pr-2 text-right">{pct(l.capturedPct)}</td>
       <td className="py-1.5 pr-3 text-[11px] leading-snug text-ink-muted">
+        {earnings ? (
+          <span className={`mr-1 rounded px-1 text-[10px] font-semibold ${VERDICT_META[l.verdict].cls}`}>{VERDICT_META[l.verdict].label}</span>
+        ) : null}
         {l.verdictWhy}
-        {l.earningsRisk ? <span className="ml-1 rounded bg-amber-50 px-1 text-[10px] font-semibold text-amber-800">earnings {l.earningsDate}</span> : null}
+        {!earnings && l.earningsRisk ? <span className="ml-1 rounded bg-amber-50 px-1 text-[10px] font-semibold text-amber-800">earnings {l.earningsDate}</span> : null}
         {l.right === "C" && l.trend === "up" ? <span className="ml-1 rounded bg-rose-50 px-1 text-[10px] font-semibold text-rose-800">rising</span> : null}
       </td>
     </tr>
   );
 }
 
-function LegTable({ legs }: { legs: BookLeg[] }) {
+function LegTable({ legs, earnings }: { legs: BookLeg[]; earnings?: boolean }) {
   return (
     <div className="overflow-x-auto bg-surface">
-      <table className="w-full min-w-[980px] border-collapse text-[12px]">
+      <table className={`w-full ${earnings ? "min-w-[1120px]" : "min-w-[980px]"} border-collapse text-[12px]`}>
         <thead>
           <tr className="border-b border-line text-left text-[10px] uppercase tracking-wider text-ink-faint">
             <th className="py-1.5 pl-3 pr-2 font-medium">Name</th>
             <th className="py-1.5 pr-2 font-medium">Leg</th>
+            {earnings ? (
+              <>
+                <th className="py-1.5 pr-2 text-right font-medium">Earnings</th>
+                <th className="py-1.5 pr-2 text-right font-medium">Print → exp</th>
+              </>
+            ) : null}
             <th className="py-1.5 pr-2 text-right font-medium">DTE</th>
             <th className="py-1.5 pr-2 text-right font-medium">|Δ|</th>
             <th className="py-1.5 pr-2 text-right font-medium">OTM</th>
@@ -144,7 +167,7 @@ function LegTable({ legs }: { legs: BookLeg[] }) {
         </thead>
         <tbody className="text-ink-muted">
           {legs.map((l) => (
-            <LegRow key={`${l.contract}-${l.strike}-${l.expiry}`} l={l} />
+            <LegRow key={`${l.contract}-${l.strike}-${l.expiry}`} l={l} earnings={earnings} />
           ))}
         </tbody>
       </table>
@@ -178,6 +201,7 @@ export default async function RiskPage() {
   const t = r.totals;
   const c = r.concentration;
   const b = r.breaches;
+  const e = r.earnings;
   const worstShock = r.shocks.reduce((a, s) => (s.net < a.net ? s : a), r.shocks[0]);
 
   if (!t.legs) {
@@ -274,13 +298,81 @@ export default async function RiskPage() {
           hint="one expected move (IV × √t) reaches the strike — the %OTM number flatters these"
         />
         <FlagList title="Short calls on rising names" legs={b.trendUp} tone="text-rose-700" hint="violates the entry filter: the trend was supposed to be the first defence" />
-        <FlagList title="Earnings before expiry" legs={b.earnings} tone="text-amber-700" hint="held through the gap — the risk single stocks add over ETFs" />
+        <FlagList title="Earnings before expiry" legs={b.earnings} tone="text-amber-700" hint="held through the gap — the risk single stocks add over ETFs; grouped by print date below" />
         <FlagList title={`|Δ| over ${DELTA_WATCH}`} legs={b.deltaOverWatch} tone="text-rose-700" hint={`drifted past the roll line; over ${DELTA_GIVE_UP} it should be closed, not rolled`} />
         <FlagList title="In the money" legs={b.itm} tone="text-rose-700" hint="assignment risk now — close, or roll out-and-away for credit" />
         <FlagList title="Tested (within 5%)" legs={b.tested} tone="text-amber-700" hint="spot pressing the strike" />
         <FlagList title={`Under ${ROLL_MIN_ROOM_DAYS}d of 1-year room`} legs={b.noRollRoom} tone="text-amber-700" hint="no roll fits inside the horizon — these can only be closed" />
         <FlagList title={`|Δ| over ${DELTA_GIVE_UP} (give up)`} legs={b.deltaOverGiveUp} tone="text-rose-700" hint="behaving like stock; rolling just re-books the same bad trade" />
       </div>
+
+      {/* ── earnings inside the option's life ────────────────────────────── */}
+      <H2 note={`${EARNINGS_IMMINENT_DAYS}d / ${EARNINGS_NEAR_DAYS}d buckets · soonest print first`}>
+        Earnings before expiry
+      </H2>
+      <p className="mt-2 max-w-4xl text-[12.5px] leading-relaxed text-ink-muted">
+        The one risk the σ column cannot see: a gap is not drawn from the distribution IV describes, so a leg that is
+        2σ away tonight can be through the strike tomorrow morning. § 2.6 of the short-call spec says don&rsquo;t sell over
+        a print on a single stock unless the position is deliberately sized down — these are the ones already on the
+        book, grouped by <strong className="text-ink">how soon the print lands</strong> (not by expiry), because that is
+        the order they have to be decided in. <strong className="text-ink">Print → exp</strong> is the recovery room
+        left after the gap: a print days before expiry means the gap decides the trade.
+      </p>
+      {e.legs === 0 ? (
+        <div className="mt-3 bg-surface px-4 py-3 text-[12px] leading-relaxed text-ink-muted">
+          No leg in the book is held over an earnings print. {e.etfLegs > 0 ? <>{e.etfLegs} ETF leg(s) have none by construction. </> : null}
+          {e.unknownLegs > 0 ? (
+            <span className="text-amber-700">
+              {e.unknownLegs} single-stock leg(s) have no earnings date on file — a data gap, not a clean bill of health
+              (run <code>scripts/backfill-earnings.ts</code>).
+            </span>
+          ) : null}
+        </div>
+      ) : (
+        <>
+          <div className="mt-3 grid grid-cols-2 gap-px bg-line md:grid-cols-4">
+            <Kpi
+              label="Legs over a print"
+              value={`${e.legs}`}
+              tone={e.legs ? "text-amber-700" : "text-ink"}
+              sub={`${e.symbols} name(s) of ${t.symbols} · ${pct(e.creditShare)} of book credit`}
+            />
+            <Kpi label="Credit exposed" value={money(e.credit)} sub={`open P/L ${signed(e.unrealized)}`} />
+            <Kpi label="Assignment at risk" value={money(e.atRisk)} sub="strike × 100 × contracts across these legs" />
+            <Kpi
+              label="Clear of a print"
+              value={`${e.clearLegs}`}
+              sub={`${e.etfLegs} ETF leg(s) have no earnings${e.unknownLegs ? ` · ${e.unknownLegs} stock leg(s) missing a date` : ""}`}
+              tone={e.unknownLegs ? "text-amber-700" : "text-ink"}
+            />
+          </div>
+          {e.groups.map((g) => (
+            <div key={g.key} className="mt-4">
+              <div className="mb-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                <span
+                  className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${
+                    g.key === "This week" ? "bg-rose-50 text-rose-800" : g.key === "1–3 weeks" ? "bg-amber-50 text-amber-800" : "bg-line text-ink-muted"
+                  }`}
+                >
+                  {g.key}
+                </span>
+                <span className="tnum text-[11px] text-ink-faint">
+                  {g.legs.length} leg{g.legs.length === 1 ? "" : "s"} · {g.symbols} name{g.symbols === 1 ? "" : "s"} · credit {money(g.credit)} · at risk{" "}
+                  {money(g.atRisk)} · open P/L {signed(g.unrealized)}
+                </span>
+                <span className="text-[11px] text-ink-faint">— {g.hint}</span>
+              </div>
+              <LegTable legs={g.legs} earnings />
+            </div>
+          ))}
+          {e.unknownLegs > 0 && (
+            <p className="mt-1.5 text-[11px] leading-snug text-amber-700">
+              {e.unknownLegs} single-stock leg(s) carry no earnings date on file, so they are absent from these groups —
+              missing data, not safety. Backfill with <code>scripts/backfill-earnings.ts</code>.
+            </p>
+          )}
+        </>
+      )}
 
       {/* ── shock ────────────────────────────────────────────────────────── */}
       <H2 note="at-expiry intrinsic, every underlying moved by the same %, no IV/time effects">Parallel shock</H2>

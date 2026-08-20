@@ -38,6 +38,13 @@ export const SIGMA_DANGER = 1; // strike less than 1σ away over the remaining l
 export const SIGMA_TIGHT = 0.75; // …and under this on a near-dated leg it's tested
 export const SIGMA_TIGHT_DTE = 30;
 
+// Earnings inside the option's life. §2.6 of docs/short-call-strategy.md bars selling
+// over a print on a single stock unless the position is deliberately sized down, so the
+// ones already on the book are grouped by HOW SOON the gap lands: that, not the expiry,
+// is when the risk is taken.
+export const EARNINGS_IMMINENT_DAYS = 7; // this week — act before the print, not after
+export const EARNINGS_NEAR_DAYS = 21; // inside three weeks
+
 // Correlated themes. Sector labels hide the real cluster risk in this book: SOXX
 // (Info Tech), SOXL (Leveraged) and TSM (Off-Index) are three sector buckets but ONE
 // bet on semiconductors, and GDX/AG/SLV are one bet on metals. Diversification only
@@ -140,6 +147,7 @@ export function trendRead(s: Pick<SecurityRow, "trend" | "downtrend"> | null | u
 export type BookLeg = LegSuggestion & {
   sector: string;
   theme: string; // correlated cluster (semis / metals / crypto …) — sector when none
+  instrumentType: string | null; // "etf" | "stock" | … — an ETF has no earnings print
   ivPct: number | null; // underlying IV (annualised, %)
   ivRank: number | null; // 0–100 percentile of that IV in its own history
   trend: TrendRead;
@@ -150,6 +158,8 @@ export type BookLeg = LegSuggestion & {
   deltaDollar: number | null; // Δ · qty · 100 · spot — signed share-equivalent exposure
   sigmas: number | null; // distance to the strike in expected moves
   rollRoomDays: number | null; // days left before the 1-year wall
+  daysToEarnings: number | null; // calendar days until the print (null = none in the life)
+  earningsBufferDays: number | null; // days from the print to expiry — recovery room after the gap
   inDeltaBand: boolean; // |Δ| within TARGET_DELTA ± DELTA_BAND
   verdict: Verdict;
   verdictWhy: string;
@@ -267,6 +277,66 @@ export function hhi(slices: Slice[]): number | null {
   return slices.reduce((a, s) => a + (s.credit / total) ** 2, 0);
 }
 
+// ── earnings inside the option's life ────────────────────────────────────────
+// A short option held over an earnings print is the one risk the σ-cushion number
+// cannot see: the gap is not drawn from the same distribution the IV describes, so a
+// leg 2σ away on paper can be through the strike the next morning. What matters for
+// acting is HOW SOON the print is (can it still be closed or rolled before it?), which
+// is why the grouping is by days-to-earnings and not by expiry.
+export const EARNINGS_BUCKETS = ["This week", "1–3 weeks", "3+ weeks"] as const;
+export type EarningsBucket = (typeof EARNINGS_BUCKETS)[number];
+
+export function earningsBucket(daysToEarnings: number | null): EarningsBucket | null {
+  if (daysToEarnings == null) return null;
+  if (daysToEarnings <= EARNINGS_IMMINENT_DAYS) return "This week";
+  if (daysToEarnings <= EARNINGS_NEAR_DAYS) return "1–3 weeks";
+  return "3+ weeks";
+}
+
+export type EarningsGroup = {
+  key: EarningsBucket;
+  hint: string;
+  legs: BookLeg[];
+  credit: number;
+  atRisk: number; // Σ notional — what assignment would transact
+  unrealized: number;
+  symbols: number;
+};
+
+const EARNINGS_HINT: Record<EarningsBucket, string> = {
+  "This week": `the print lands within ${EARNINGS_IMMINENT_DAYS} days — the decision to hold through it is being made now`,
+  "1–3 weeks": "still time to harvest or roll past the print for credit",
+  "3+ weeks": `the gap is more than ${EARNINGS_NEAR_DAYS} days out but still inside the option's life`,
+};
+
+/**
+ * Group the legs whose underlying reports before expiry, by how soon the print is.
+ * Sorted soonest-first inside each group, because that is the order they have to be
+ * decided in. Legs with no print inside their life are simply absent.
+ */
+export function buildEarningsGroups(legs: BookLeg[]): EarningsGroup[] {
+  const held = legs.filter((l) => l.earningsRisk && l.earningsDate);
+  return EARNINGS_BUCKETS.map((key) => {
+    const rows = held
+      .filter((l) => earningsBucket(l.daysToEarnings) === key)
+      .sort(
+        (a, b) =>
+          (a.earningsDate ?? "").localeCompare(b.earningsDate ?? "") ||
+          b.priority - a.priority ||
+          (b.credit ?? 0) - (a.credit ?? 0),
+      );
+    return {
+      key,
+      hint: EARNINGS_HINT[key],
+      legs: rows,
+      credit: rows.reduce((a, l) => a + (l.credit ?? 0), 0),
+      atRisk: rows.reduce((a, l) => a + (l.notional ?? 0), 0),
+      unrealized: rows.reduce((a, l) => a + (l.unrealizedPnl ?? 0), 0),
+      symbols: new Set(rows.map((l) => l.symbol)).size,
+    };
+  }).filter((g) => g.legs.length > 0);
+}
+
 // ── parallel shock (at-expiry intrinsic) ─────────────────────────────────────
 // What the open book pays/loses if every underlying moves x% and each leg is held to
 // expiry: P/L = credit − intrinsic. No IV or time effects — a deliberately crude,
@@ -337,6 +407,21 @@ export type BookRisk = {
     noRollRoom: BookLeg[];
   };
   conformance: { inDeltaBand: number; deltaBandShare: number; inEntryWindow: number; notRisingShare: number | null; medianDte: number | null; medianAbsDelta: number | null; medianIv: number | null };
+  // Legs held over a print, grouped by how soon it lands, plus what is NOT covered:
+  // ETF legs have no earnings at all, while a single-stock leg with no date on file is a
+  // data gap (missing earnings backfill) and must not be read as "safe".
+  earnings: {
+    groups: EarningsGroup[];
+    legs: number;
+    symbols: number;
+    credit: number;
+    atRisk: number;
+    unrealized: number;
+    creditShare: number | null; // share of book credit exposed to a print
+    clearLegs: number; // print already past / after expiry
+    etfLegs: number; // no earnings by construction
+    unknownLegs: number; // single stock with no earnings date on file
+  };
   shocks: Shock[];
   verdicts: { verdict: Verdict; legs: BookLeg[] }[];
 };
@@ -411,6 +496,7 @@ export function buildBookRisk(
         ...base,
         sector: sec?.sector ?? "Unclassified",
         theme: themeOf(base.symbol, sec?.sector ?? "Unclassified"),
+        instrumentType: sec?.type ?? null,
         ivPct,
         ivRank: sec?.ivStats?.rank ?? null,
         trend: trendRead(sec),
@@ -421,6 +507,12 @@ export function buildBookRisk(
         deltaDollar,
         sigmas,
         rollRoomDays,
+        daysToEarnings:
+          base.earningsRisk && base.earningsDate ? Math.round((Date.parse(base.earningsDate) - Date.parse(today)) / DAY) : null,
+        earningsBufferDays:
+          base.earningsRisk && base.earningsDate && leg.expiry
+            ? Math.round((Date.parse(leg.expiry) - Date.parse(base.earningsDate)) / DAY)
+            : null,
         inDeltaBand: absDelta != null && absDelta >= TARGET_DELTA - DELTA_BAND && absDelta <= TARGET_DELTA + DELTA_BAND,
         verdict: v.verdict,
         verdictWhy: v.why,
@@ -518,6 +610,23 @@ export function buildBookRisk(
       medianAbsDelta: median(legs.map((l) => l.absDelta ?? NaN)),
       medianIv: median(legs.map((l) => l.ivPct ?? NaN)),
     },
+    earnings: (() => {
+      const held = legs.filter((l) => l.earningsRisk && l.earningsDate);
+      const credit = held.reduce((a, l) => a + (l.credit ?? 0), 0);
+      const isEtf = (l: BookLeg) => (l.instrumentType ?? "").toLowerCase() === "etf";
+      return {
+        groups: buildEarningsGroups(legs),
+        legs: held.length,
+        symbols: new Set(held.map((l) => l.symbol)).size,
+        credit,
+        atRisk: held.reduce((a, l) => a + (l.notional ?? 0), 0),
+        unrealized: held.reduce((a, l) => a + (l.unrealizedPnl ?? 0), 0),
+        creditShare: totals.credit > 0 ? credit / totals.credit : null,
+        clearLegs: legs.filter((l) => !l.earningsRisk && l.earningsDate != null).length,
+        etfLegs: legs.filter((l) => !l.earningsRisk && l.earningsDate == null && isEtf(l)).length,
+        unknownLegs: legs.filter((l) => !l.earningsRisk && l.earningsDate == null && !isEtf(l)).length,
+      };
+    })(),
     shocks: SHOCK_MOVES.map((m) => shockBook(legs, m)),
     verdicts: (Object.keys(VERDICT_META) as Verdict[])
       .sort((a, b) => VERDICT_META[a].rank - VERDICT_META[b].rank)

@@ -65,7 +65,10 @@ What they cover:
   (ITM/give-up → defend, 70% captured → close, cheap+near → let-expire, drifted or thin
   σ cushion → roll, no 1-year room → close, otherwise hold), theme clustering
   (SOXX/SOXL/TSM → one Semiconductors bet), `tally`/HHI shares, shock signs (a +30% move
-  costs the calls and leaves the puts their credit; long legs excluded), and assembly
+  costs the calls and leaves the puts their credit; long legs excluded), the **earnings
+  grouping** (day-to-print buckets with inclusive boundaries, soonest-first ordering,
+  `earningsBufferDays` = expiry − earnings, a past print clearing the leg, and an ETF being
+  distinguished from a stock with a missing earnings date), and assembly
   (horizon filter, exclusion counts, totals/greek signs, margin extrapolation at partial
   coverage, empty book safe).
 - **shortcall-check** — the `/short-call` engine: Black-Scholes anchors (ATM price/delta,
