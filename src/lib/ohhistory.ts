@@ -8,6 +8,7 @@ import {
   NC_MIN_WEEKLY_BUCKETS,
 } from "@/lib/securities";
 import { HIV_IV_MIN, HIVS_PRICE_MIN, HIVS_PRICE_MAX } from "@/lib/watchlists";
+import { isLongLeveragedEtf } from "@/lib/leveraged";
 import { HIGH_ROIC_MIN, isHighRoic } from "@/lib/roic";
 
 // OH-watchlist change log. OH lists (NC/NCcan/Cpos/Ppos/RED) are computed live and
@@ -74,6 +75,7 @@ type Snap = {
   trendM1: string | null;
   trendM3: string | null;
   trendM6: string | null;
+  lev: boolean; // leveraged long ETF — derived from the security's name, not stored
 };
 
 export type OhChange = { ticker: string; name: string | null; reason: string };
@@ -100,6 +102,11 @@ const LIST_META: { key: string; name: string; inList: (r: Snap) => boolean }[] =
   { key: "otc", name: "OTC", inList: (r) => (r.target || (r.posCall ?? 0) !== 0 || (r.posPut ?? 0) !== 0) && (r.posCall ?? 0) === 0 },
   // ROIC — value-quality: names with ROIC ≥ HIGH_ROIC_MIN (stocks only).
   { key: "roic", name: "ROIC", inList: (r) => isHighRoic(r.roic) },
+  // LEV — leveraged LONG ETFs (2x/3x bulls, inverse/short excluded). Membership is a
+  // static property of the instrument (its name), not a daily metric, so it's resolved
+  // from the CURRENT securities table rather than the snapshot row: the only way a
+  // name enters/leaves this list is the universe itself gaining/dropping it.
+  { key: "lev", name: "LEV", inList: (r) => r.lev },
 ];
 
 const fmtM = (v: number | null) => (v == null ? "?" : `${(v / 1_000_000).toFixed(1)}M`);
@@ -255,6 +262,10 @@ function reasonFor(key: string, prev: Snap | undefined, cur: Snap, dir: "added" 
       const thr = `${(HIGH_ROIC_MIN * 100).toFixed(0)}%`;
       return dir === "added" ? `ROIC ${pv}→${cv} (≥${thr})` : `ROIC ${pv}→${cv} (<${thr})`;
     }
+    case "lev": {
+      // Static membership (the fund's name), so the only cause is universe churn.
+      return dir === "added" ? "leveraged long ETF entered the universe" : "left the universe";
+    }
     default:
       return dir;
   }
@@ -268,7 +279,12 @@ export async function getOhChangeLog(limitDates = 30): Promise<OhChangeLog> {
   if (!dates.length) return { latestDate: null, snapshotDays: 0, currentCounts: [], renews: [] };
 
   const raw = await prisma.ohScreenSnapshot.findMany({ where: { date: { in: dates } } });
-  const names = new Map((await prisma.security.findMany({ select: { ticker: true, name: true } })).map((s) => [s.ticker, s.name]));
+  // Ticker → display name, plus the LEV flag (leveraged long ETF). Both are static
+  // instrument properties, so the current securities row is the right source — the
+  // snapshot stores only the day-varying screen inputs.
+  const secRows = await prisma.security.findMany({ select: { ticker: true, name: true, type: true } });
+  const names = new Map(secRows.map((s) => [s.ticker, s.name]));
+  const levTickers = new Set(secRows.filter((s) => isLongLeveragedEtf(s)).map((s) => s.ticker));
 
   // date ISO → (ticker → Snap)
   const byDate = new Map<string, Map<string, Snap>>();
@@ -292,6 +308,7 @@ export async function getOhChangeLog(limitDates = 30): Promise<OhChangeLog> {
       trendM1: r.trendM1,
       trendM3: r.trendM3,
       trendM6: r.trendM6,
+      lev: levTickers.has(r.ticker),
     });
   }
 

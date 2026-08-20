@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import type { SecurityRow } from "@/lib/securities";
 import { NC_MIN_WEEKLY_BUCKETS } from "@/lib/securities";
+import { isLongLeveragedEtf, LEV_MIN_FACTOR } from "@/lib/leveraged";
 
 // Watchlists shown on /watchlists (and, later, pushed to IB by the plugin).
 //
@@ -39,6 +40,7 @@ const toMember = (s: SecurityRow): OhMember => ({ ticker: s.ticker, name: s.name
 //  otc   — Option Targets (Analyzer bullseye, or any option leg held) that you do NOT
 //          hold a call on yet — i.e. call-writing candidates you've flagged.
 //  roic  — high-ROIC value-quality names (ROIC ≥ HIGH_ROIC_MIN; the /roic screen).
+//  lev   — leveraged LONG ETFs (2x/3x bulls); inverse/short funds excluded.
 export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
   const nc = securities.filter((s) => s.nc);
   const nccan = nc.filter((s) => !s.held);
@@ -66,6 +68,10 @@ export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
   // ROIC — value-quality universe: names flagged high-ROIC (ROIC ≥ HIGH_ROIC_MIN,
   // stocks only; ETFs have no ROIC). Same membership as the /roic screen.
   const roic = securities.filter((s) => s.highRoic);
+  // LEV — leveraged LONG ETFs (2x/3x bulls). Inverse/short funds are excluded on
+  // purpose (see lib/leveraged.ts): writing calls on a -3x fund is a bullish bet on
+  // the index, the opposite of the naked-call book's intent.
+  const lev = securities.filter(isLongLeveragedEtf);
 
   return [
     {
@@ -127,6 +133,12 @@ export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
       name: "ROIC",
       desc: "High ROIC — value-quality names with Return on Invested Capital ≥ 15% (the /roic screen); the cash-backed put-write quality universe.",
       members: roic.map(toMember).sort(byTicker),
+    },
+    {
+      key: "lev",
+      name: "LEV",
+      desc: `Leveraged long ETFs — ${LEV_MIN_FACTOR}x/3x bull funds (Ultra/UltraPro/Bull 2X-3X). Inverse and short funds (-2x/-3x, Bear/UltraShort) are excluded: their structurally rich IV is the premium to sell, but only on the long side.`,
+      members: lev.map(toMember).sort(byTicker),
     },
   ];
 }

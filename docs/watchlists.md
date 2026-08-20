@@ -15,9 +15,9 @@ user's Interactive Brokers lists, *synced* in by the extension.
 Derived live at read time from the dashboard data (`getDashboardData`) — they
 always reflect the latest ingest + synced positions. Defined in
 **`src/lib/watchlists.ts`** (`computeOhWatchlists`), shared by the page and the
-OH→IB push so membership has one source of truth. There are **10 OH lists** in a
-fixed order (NC, NCcan, Cpos, Ppos, RED, HIV, HIVS, HIVSC, OTC, ROIC) — that order sets
-the OH→IB suggested ids **990001–990010** (`OH_ID_BASE` in `ohpush.ts`), so **only
+OH→IB push so membership has one source of truth. There are **11 OH lists** in a
+fixed order (NC, NCcan, Cpos, Ppos, RED, HIV, HIVS, HIVSC, OTC, ROIC, LEV) — that order sets
+the OH→IB suggested ids **990001–990011** (`OH_ID_BASE` in `ohpush.ts`), so **only
 append new lists at the end** to keep existing ids stable.
 
 **Shared thresholds** — one source of truth, all exported constants; never inline a
@@ -32,6 +32,7 @@ magic number:
 | `HIV_IV_MIN` | 50 % | `watchlists.ts` | HIV, HIVS, HIVSC |
 | `HIVS_PRICE_MIN` / `HIVS_PRICE_MAX` | $20 / $200 | `watchlists.ts` | HIVS, HIVSC |
 | `HIGH_ROIC_MIN` | 15 % | `roic.ts` | ROIC |
+| `LEV_MIN_FACTOR` | 2 (2x and up) | `leveraged.ts` | LEV |
 | assignment-risk delta | \|Δ\| > 0.30 (inline) | `watchlists.ts` | RED |
 
 **The lists**, grouped by family. "Requires" is the data a list needs to be
@@ -49,6 +50,7 @@ correct — a list silently under-populates if its inputs are stale/unsynced.
 | `hivsc`| HIVSC  | IV       | `hivs && s.position.call === 0 && s.position.put === 0` — HIVS **candidates**: HIVS names you hold **no call and no put** on yet. `hivsc ⊆ hivs`. | ingest + position sync |
 | `otc`  | OTC    | target   | `(s.target \|\| s.position.call !== 0 \|\| s.position.put !== 0) && s.position.call === 0` — "Option Targets, no Call": names in the Analyzer's Option Targets (flagged bullseye **or** any held option leg) that you don't yet hold a **call** on. Your call-writing candidates; excludes anything already in Cpos. | marks (target) + position sync |
 | `roic` | ROIC   | value    | `s.highRoic` — value-quality names with Return on Invested Capital ≥ `HIGH_ROIC_MIN` (15 %). Same membership as the `/roic` screen; stocks only (ETFs have no ROIC). The cash-backed put-write quality universe. | ingest (fundamentals → ROIC) |
+| `lev`  | LEV    | leverage | `isLongLeveragedEtf(s)` — **leveraged long ETFs**: `type === "etf"` and a name-derived leverage factor ≥ `LEV_MIN_FACTOR` (2x/3x — "Ultra" = 2x, "UltraPro" = 3x, "Bull 2X/3X", "(2x)", "2x Long"). **Inverse/short funds are excluded** ("Bear", "Short", "UltraShort", "Inverse", any `-2x`/`-3x`). | ingest (name + type) |
 
 Family notes / invariants:
 - **screen** — the doctrine's naked-call funnel. `NCcan = NC − held`; see docs/spec.md §3 and docs/strategy.md.
@@ -56,6 +58,7 @@ Family notes / invariants:
 - **IV** — volatility funnel: `HIVSC ⊆ HIVS ⊆ HIV`. HIV is the high-IV universe that also has a tradable 1/2/3/4-week option ladder (so there's near-term premium to sell), HIVS narrows to a tradable price band, HIVSC removes anything you already have an option position on (so it's the actionable "write here next" IV list — the IV analogue of NCcan).
 - **target** — OTC is the flag/hold-driven call-writing queue; a name leaves OTC the moment a call is written on it (it becomes Cpos).
 - **value** — ROIC is the standalone value-quality universe (the `/roic` screen), independent of positions/IV; it's the pool you'd sell cash-backed puts into on a panic. ETFs are excluded (no ROIC).
+- **leverage** — LEV is the 2x/3x **long** ETF shelf (`lib/leveraged.ts`, self-check `scripts/leveraged-check.ts`): the structurally richest call premium in the universe, where daily-rebalancing decay works *for* the writer. Inverse funds are deliberately absent — writing a call on a `-3x` fund is a *bullish* index bet, the opposite of the NC book. Membership is a static property of the instrument's name, so `/wl-log` only shows a LEV change when the universe itself gains/drops a fund. Classification is name-based (Yahoo exposes no leverage field); the sponsors' naming is rigidly conventional, and the check pins every fund currently tracked.
 
 **Adding a new OH list** (requirement checklist): add it to `computeOhWatchlists`
 (`watchlists.ts`) **and** to `LIST_META` + a `reasonFor` case in
@@ -81,8 +84,8 @@ Columns: `watchlist_id`, `watchlist_name`, `position` (order in list), `conid`,
 
 `src/app/watchlists/page.tsx` → `WatchlistBrowser` (client). Mirrors the Analyzer:
 
-- **Left-nav tabs** in two groups — **Option Harvester** (all 10 computed lists:
-  NC, NCcan, Cpos, Ppos, RED, HIV, HIVS, HIVSC, OTC, ROIC — built dynamically from
+- **Left-nav tabs** in two groups — **Option Harvester** (all 11 computed lists:
+  NC, NCcan, Cpos, Ppos, RED, HIV, HIVS, HIVSC, OTC, ROIC, LEV — built dynamically from
   `computeOhWatchlists`, so a new OH list appears here automatically) and
   **Interactive Brokers** (the synced lists) — each with a member count.
 - **Table view** = the Analyzer's wide table (`WideStockList`): a three-line left
@@ -148,7 +151,7 @@ All run in the user's **logged-in IB portal tab** (session cookies) and target t
 backend in the popup (default prod `http://114.33.62.221:19210`). The extension is
 manifest v3; **bump `manifest.json` version on every edit**.
 
-### 4a. IB → web  (popup: **Sync now**; auto-sync)
+### 4a. IB → web  (popup: **Sync now**; auto-sync; sync-on-login)
 `fetchAllInPage` also pulls watchlists: `GET /iserver/watchlists` (the
 `data.user_lists`) → `GET /iserver/watchlist?id=<id>` per list → `POST /api/watchlist
 { ibWatchlists }`. The endpoint parses (`parseIbPortalWatchlists`) and
@@ -160,6 +163,31 @@ the **batched greeks** pass (§ greeks endpoint — many conids per snapshot, qu
 best-effort) so held-option Δ/Θ/Γ refresh without a separate Deep sync. **Auto-sync**
 uses the same light path but **skips greeks** (a backgrounded tab would throttle the
 in-page poll loop).
+
+**Sync on IB login** (popup checkbox, **on by default**) runs that same light path
+**once per login**, so the OH↔IB watchlists are in sync the moment a session exists
+without touching the popup. It is an *edge* trigger, not a poll of the data: a
+`loginwatch` alarm (1 min) plus every IB-tab navigation probes each open IB tab
+in-page (`ibSessionInPage`), and the sync fires on the **not-ready → ready**
+transition (`ibAuthed` in `chrome.storage.local`, reset on browser start / logout).
+
+**"Logged in" ≠ "usable".** The portal stages a login — SSO cookie → brokerage
+session → trading permissions — and renders long before the last stage lands, so
+`/iserver/accounts` answering is not sufficient. The readiness gate is three-part:
+`GET /iserver/auth/status` (rejects `authenticated: false`, `competing`, `connected:
+false`; GET via the portal proxy, POST as fallback) → an account id → the two reads
+the sync actually consumes (`/portfolio/{acct}/summary`, `/portfolio/{acct}/
+positions/all`). Anything not ready yet reports *why* into the popup log
+("positions not available yet", "competing IB session") and waits for the next tick.
+
+**The login edge is only spent on a productive run** — IB returned an account **and**
+the OH→IB push got every list in (`pushed === total`; a session that reads but can't
+write yet fails exactly there). An unproductive run clears the cooldown and leaves
+`ibAuthed` false, so the 1-minute watcher retries — up to `LOGIN_SYNC_MAX_TRIES` (8)
+per login, then it gives up with `login sync gave up after 8 tries — use Sync now`
+rather than hammering. A logout resets the budget. Other guards: it never stacks on a
+live op (fresh `busyBeat`) and never re-fires within a **10-minute cooldown**. Runs
+post `source: "login"` to `/api/sync-log` (green badge in the `/sync` run history).
 
 ### 4e. Deep sync  (popup: **Deep sync (greeks/margin/conids)**)
 The heavy passes are separate: per-held-contract greeks, per-contract margin what-if,
@@ -219,6 +247,16 @@ per-list diff) is stored in `option_harvest_oh_verify` and shown on **/sync** un
 the lists in the IB app. Runs whenever the push ran (**Sync now**, auto-sync, or
 **Deep sync**), since the `OH:*` lists are deliberately excluded from the normal pull
 (§4d) and this is the only programmatic read of what IB actually stored.
+
+**Read-back timing (extension ≥ 0.9.3).** IB does not make a just-created list
+readable atomically, so a read-back fired immediately after the push can return
+*short* lists — a bogus `verify ⚠N` where every diff is `missing` and none is `extra`
+(observed 2026-08-19: 156 missing at push+0 s, **0** on the re-verify 23 s later). The
+extension therefore settles `OH_VERIFY_SETTLE_MS` (2.5 s) before reading, and if the
+only diff is missing conids it re-reads once more before posting the verdict. A
+mismatch containing **extra** conids is never retried — that's a real wrong-conid
+finding. Both attempts are recorded in `option_harvest_oh_verify` (the panel shows the
+latest), so the history keeps the evidence.
 
 ### 4c. Removal
 No dedicated delete flow is needed: deleting a list in IB and running **Sync now**
