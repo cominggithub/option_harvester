@@ -58,6 +58,26 @@ function fmtExpiryShort(iso: string | null): string {
 }
 const expId = (iso: string | null) => `exp-${iso ?? "none"}`;
 
+// How far back the closed (realized) P/L chart looks. The open book below is NOT
+// windowed — it shows every expiry you still hold, however far out.
+const CLOSED_WINDOW_MONTHS = 2;
+
+// "YYYY-MM-DD" minus n months, as a plain string (no Date → no TZ drift). The day is
+// clamped to the target month's length, so 31 Mar − 1 month is 28/29 Feb rather than
+// the non-existent "02-31" — which, as a string bound, would silently drop the last
+// days of February.
+function monthsBack(iso: string, n: number): string {
+  const y = +iso.slice(0, 4);
+  const m = +iso.slice(5, 7);
+  const d = +iso.slice(8, 10);
+  const t = y * 12 + (m - 1) - n;
+  const ty = Math.floor(t / 12);
+  const tm = (t % 12) + 1;
+  const last = new Date(Date.UTC(ty, tm, 0)).getUTCDate(); // day 0 of next month = last of this
+  const td = Math.min(d, last);
+  return `${ty}-${String(tm).padStart(2, "0")}-${String(td).padStart(2, "0")}`;
+}
+
 function legTag(leg: OptionPnlLeg): { tag: string; cls: string } {
   if (leg.right === "C") return { tag: "CALL", cls: "bg-emerald-50 text-emerald-700" };
   if (leg.right === "P") return { tag: "PUT", cls: "bg-indigo-50 text-indigo-700" };
@@ -260,15 +280,18 @@ export default async function PnlPredictPage() {
   const closedShown = byExpiry.reduce((a, g) => a + closedFor(g).length, 0);
   const closedShownPnl = byExpiry.reduce((a, g) => a + closedFor(g).reduce((s, c) => s + c.proceeds, 0), 0);
 
-  // Closed realized P/L per expiry for the closed-P/L chart — windowed to the
-  // recent one year (by expiry date), oldest→newest, with a running cumulative.
-  // Same per-expiry proceeds as the week-to-week "Closed" rows below; null-expiry
-  // bucket and anything older than a year are dropped. Cutoff via string math
-  // ("2026-07-29" → "2025-07-29") to avoid any Date/TZ drift.
-  const closedCutoff = `${+today.slice(0, 4) - 1}${today.slice(4)}`;
+  // Closed realized P/L per expiry for the closed-P/L chart — the last
+  // CLOSED_WINDOW_MONTHS of expiries, oldest→newest, with a running cumulative.
+  // BOUNDED AT BOTH ENDS. A closed contract keeps its own expiry, which for one you
+  // exited early is still in the FUTURE, so a lower bound alone let the series run
+  // years out: a single LEAP realization (−73.6k at 2028-01-21) set the whole y-scale
+  // and flattened every recent bar into the axis, while the heading claimed "last N
+  // months". Anything outside the window still counts in the full realized ledger on
+  // /transactions; this chart is deliberately the recent view.
+  const closedCutoff = monthsBack(today, CLOSED_WINDOW_MONTHS);
   let cClosed = 0;
   const closedPoints = [...closedByExpiry.entries()]
-    .filter(([k]) => k !== "\u2014" && k >= closedCutoff)
+    .filter(([k]) => k !== "\u2014" && k >= closedCutoff && k <= today)
     .map(([date, cs]) => ({ date, pnl: cs.reduce((s, c) => s + c.proceeds, 0) }))
     .sort((a, b) => a.date.localeCompare(b.date))
     .map((p) => ({ date: p.date, bar: Math.round(p.pnl), cum: Math.round((cClosed += p.pnl)) }));
@@ -365,8 +388,8 @@ export default async function PnlPredictPage() {
               {closedPoints.length > 0 && (
                 <div id="chart-closed" className="mt-4 scroll-mt-6 rounded-lg border border-line bg-surface px-4 py-3">
                   <div className="flex items-baseline justify-between gap-3">
-                    <div className="overline text-ink-faint">Closed (realized) P/L by expiry date · last 12 months</div>
-                    <span className="tnum text-[11px] text-ink-faint">total <span className={pnlClass(closedPnlTotal)}>{signedMoney(closedPnlTotal)}</span> · already exited, not in the open book above</span>
+                    <div className="overline text-ink-faint">Closed (realized) P/L by expiry date · {closedCutoff} → {today}</div>
+                    <span className="tnum text-[11px] text-ink-faint">total <span className={pnlClass(closedPnlTotal)}>{signedMoney(closedPnlTotal)}</span> · expiries in this window only · already exited, not in the open book above</span>
                   </div>
                   <div className="mt-2">
                     <CumulativePnlByExpiry points={closedPoints} label="Cumulative realized P/L (closed)" barLabel="Per-expiry closed P/L" w={1180} h={340} />
