@@ -22,6 +22,8 @@ lives in the knowledge map below; read the row that matches your task before div
 | Need IBKR data (positions, expiries, quotes) from code or by hand | **`docs/ib-agent-integration.md`** — route everything through the read-only `ib-agent` CLI; **never** call the IB Client Portal / TWS API from this repo |
 | Work on the Δ0.30 naked-call model / `ccscore` / predictions | **`docs/cc-target-strategy.md`** — model, backtest, predict→validate loop |
 | Work on watchlists (OH + IB), conid backfill, IB option fetch, plugin sync | **`docs/watchlists.md`** — sources, `/watchlists` page, IB↔web sync flows |
+| Wonder whether a Δ on screen is real, or touch anything that reads greeks | **`src/lib/greekage.ts`** (the decision + why) + `docs/spec.md § 4.9`; audit it with `npm run audit:greeks` |
+| Understand a past defect (what broke, why it wasn't caught, what changed) | **`docs/defects/`** — one file per incident; start with `2026-08-21-stale-delta.md` (a delta 45h old rendered as live, past the 0.30 roll line) |
 | Find where code lives | **File map** (below) |
 
 (Terminology: calls are naked, puts cash-backed; legacy code uses `cc`/`csp`/`ccScore`.)
@@ -160,7 +162,13 @@ Pages (all `force-dynamic`):
 - `src/app/pnl-predict/page.tsx` — **P&L Predict**: open option book grouped by expiry
   (near→far) with per-date + cumulative unrealized P/L, premium, **earned%/unearned$/%**,
   current underlying **Spot before Strike** on each detail row, per-position greeks
-  (Δ/Θ/Γ; per-leg delta colour-coded by risk), sticky section nav,
+  (Δ/Θ/Γ; per-leg delta colour-coded by risk), a **Week by week** table (one row per
+  Mon–Sun week, 2 months back → farthest expiry, expandable to its positions; **three
+  lenses**: *activity* = every position the week touched [closed + sold-still-open +
+  expiring] with one win% / P/L and a **FAIL** badge when losses outweigh profits,
+  *closed* = realized by close week, *open* = unrealized by expiry week, plus a
+  non-overlapping book roll-up that carries the cumulative — `buildOptionPnlByWeek`),
+  sticky section nav,
   interactive charts (cumulative P/L/credit + earned-vs-unearned amount & %,
   `CumulativePnlChart.tsx`), and an open-book win/loss matrix (inferred from unrealized
   P/L). Built by `buildOptionPnlByExpiry` in `positions.ts`.
@@ -241,6 +249,11 @@ API (`src/app/api/…`, mutations + on-demand data):
   whose `/trsrv` pick is wrong); pins live in `option_harvest_security_conids`; `options` — GET ticker→conid, POST IB option
   snapshot into `ib_*`; `greeks` — GET held option conids, POST per-contract greek
   snapshots (7308/09/10/11) into `option_harvest_option_greeks` (keyed by conid).
+  Freshness is stamped **per field**: `at` only moves when a greek actually arrived
+  and `deltaAt` records when the *delta* was measured, because a snapshot that comes
+  back empty used to re-stamp a days-old delta as current (`|δ| > 1` is rejected;
+  the response reports `updated / stale / rejected`). Reads go through
+  **`lib/greekage.ts`**, never straight off the row.
   `margin` — GET held option conids + closing side/qty; POST per-contract IB
   what-if results into `option_harvest_position_margin` (keyed by conid) — exact
   per-position maintenance/initial margin.
@@ -280,8 +293,16 @@ because IB never books it on the option leg; invariant Σ chain realized = Σ le
 **`sc-loss.ts`**, **`sc-actions.ts`**, **`sc-candidates.ts`**, **`sc-timeline.ts`**,
 **`sc-data.ts`** (one section-wide load), `blackscholes.ts`
 (`bsPrice`/`bsDelta`/`impliedVol`/`volAndDelta` — pure BS + bisection IV, the only way to
-recover the greeks of a historical fill), `positions.ts` (positions/orders/trades views + `analyzeOrders`;
-`getPositionGroups` joins per-contract greeks + exact IB margin by conid;
+recover the greeks of a historical fill), **`greekage.ts`** (`readDelta` — the only way a
+delta reaches a page or a gate: how old IB's measurement is (`deltaAt`), what the leg's own
+mark implies right now (BS), and which of the two to act on. `DELTA_STALE_HOURS` 18,
+`DELTA_DIVERGE_ABS` 0.05, `source` `ib`|`model`; `summarizeDeltaProvenance`/`ageLabel`/
+`deltaTitle` feed `components/DeltaCell.tsx`. Exists because an IB snapshot is an event,
+not a feed: on 2026-08-21 the book's deltas were 45h old beside minute-old marks, and 17
+of 51 were off by more than 0.05 — one of them across the 0.30 roll line),
+`positions.ts` (positions/orders/trades views + `analyzeOrders`;
+`getPositionGroups` joins per-contract greeks + exact IB margin by conid, and every option
+leg carries `delta` = the effective delta + `deltaRead` = its provenance;
 `buildOptionPnlByExpiry` groups
 the option book by expiry with cumulative P/L/credit + net greeks for P&L Predict),
 `news.ts` (headlines + lexicon), `score.ts` (Signal), `ccscore.ts` (Δ0.30 Call-Edge
@@ -318,11 +339,14 @@ Scripts (`scripts/`):
   `docs/cc-target-strategy.md`. Predictions written to `predictions/cc-*.jsonl`.
 - Entrypoints: `daily.sh`, `spreads.sh`, `server.sh`.
 - Self-checks: `*-check.ts` (`pnl`, `posanalysis`, `positions`, `trades`, `news`, `roic`,
-  `leveraged`, `bookrisk`, `shortcall`, `sc-rules`, `sc-lifecycle`, `sc-analyzer`) —
-  see test plan. **`npm run check`** runs the short-call suite (369 assertions over six
-  scripts) and is the gate for any change under `/short-call` or `/risk`; `npm run check:sc`
+  `leveraged`, `bookrisk`, `shortcall`, `sc-rules`, `sc-lifecycle`, `sc-analyzer`, `greeks`) —
+  see test plan. **`npm run check`** runs the short-call suite + the delta-freshness check
+  (441 assertions over seven scripts) and is the gate for any change under `/short-call`,
+  `/risk` or anything that renders a Δ; `npm run check:sc`
   is the analyzer-only subset. **`npm run reconcile:sc`** (`sc-reconcile.ts`) is the one
   that touches the DB — read-only — and fails if leg totals and chain totals disagree.
+  **`npm run audit:greeks`** is the read-only delta report: per held leg, IB's stored Δ,
+  its measurement age, the mark-implied Δ and the gap (this is what proved the staleness).
 
 Chrome extension (`extension/`): runs in the logged-in IB portal tab. **Sync now**
 (fast, background-safe) pulls positions/orders/trades/watchlists + the daily
@@ -332,9 +356,12 @@ to verify** the pushed conids (`/api/oh-verify`, shown on `/sync`). It's just pa
 fetches (no per-contract timers), so it finishes in a few seconds and survives
 switching tabs / a backgrounded window. A **manual** Sync now also runs the
 **batched greeks** pass (Δ/Θ/Γ, many conids per snapshot — quick, best-effort) so
-held-option greeks refresh without a separate step; **Auto-sync** runs the same
-light pull on a timer but **skips greeks** (it may be backgrounded → the in-page
-poll loop would be throttled). **Sync on IB login** (popup checkbox, on by default)
+held-option greeks refresh without a separate step; **Auto-sync** and **login sync**
+run the same light pull and take greeks **too, but only while the IB tab is the one on
+screen** (`tabInForeground` — active tab in a focused window; Chrome throttles the
+in-page 500ms poll loop in a background tab). When it's skipped the run records
+`greeksSkipped` instead of silently leaving an old delta looking fresh.
+**Sync on IB login** (popup checkbox, on by default)
 runs that same light pull **once per login**: a 1-minute `loginwatch` alarm + every
 IB-tab navigation probe the tab's *readiness* (`/iserver/auth/status` not
 competing/unauthenticated → an account → `/portfolio/{acct}/summary` +
@@ -377,7 +404,7 @@ one is how "why did nothing sync?" gets answered without guessing. Failed posts 
 outcomes are collapsed for 15 minutes, since the watcher ticks every minute (~1400
 rows/day of "nothing changed" otherwise). Query it with `GET /api/ext-log?event=login-watch&sinceMin=120`.
 **Bump `manifest.json` `version` on every edit** (see
-`[[bump-extension-version]]`; currently 0.9.5).
+`[[bump-extension-version]]`; currently 0.9.6).
 
 ## Local dev gotchas (WSL on `/mnt/d`)
 

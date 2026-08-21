@@ -14,6 +14,7 @@
  *     is usually just IV, not real danger).
  */
 import type { PositionGroupLeg } from "./positions";
+import { NO_DELTA_READ, type DeltaRead } from "./greekage";
 
 export type ActionKind = "defend" | "roll" | "harvest" | "let_expire" | "watch" | "hold";
 
@@ -41,7 +42,8 @@ export type LegSuggestion = {
   costToClose: number | null; // current cost to buy it back
   unrealizedPnl: number | null;
   capturedPct: number | null; // unrealizedPnl / credit (1.0 = full premium kept)
-  delta: number | null; // per-contract greeks (from IB, by conid)
+  delta: number | null; // EFFECTIVE per-contract delta (see lib/greekage.ts)
+  deltaRead: DeltaRead; // where that delta came from + how old the IB measurement is
   gamma: number | null;
   theta: number | null;
   maintMargin: number | null; // exact IB maintenance margin this position ties up (what-if)
@@ -138,7 +140,7 @@ export function analyzeShortOption(
 
   return { symbol: leg.contract.split(" ")[0], contract: leg.contract, right, strike: leg.strike, expiry: leg.expiry, qty,
     spot, dte, moneyness, itm, credit, costToClose, unrealizedPnl: upnl, capturedPct: captured,
-    delta: leg.delta, gamma: leg.gamma, theta: leg.theta, maintMargin: leg.maintMargin, action, why, urgency,
+    delta: leg.delta, deltaRead: leg.deltaRead ?? NO_DELTA_READ, gamma: leg.gamma, theta: leg.theta, maintMargin: leg.maintMargin, action, why, urgency,
     earningsDate, earningsRisk };
 }
 
@@ -148,7 +150,7 @@ export function _selfCheck(): void {
   const mk = (o: Partial<PositionGroupLeg>): PositionGroupLeg => ({
     kind: "call", right: "C", contract: "X 18JUL26 100 C", quantity: -1, strike: 100, expiry: "2026-08-21",
     unitCost: 2, totalCost: -200, closePrice: null, marketValue: -50, unrealizedPnl: 150,
-    conid: null, delta: null, gamma: null, theta: null, maintMargin: null, initMargin: null, ...o,
+    conid: null, delta: null, deltaRead: NO_DELTA_READ, gamma: null, theta: null, maintMargin: null, initMargin: null, ...o,
   });
   const assert = (c: boolean, m: string) => { if (!c) throw new Error("posanalysis self-check: " + m); };
 

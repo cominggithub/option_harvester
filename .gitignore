@@ -26,3 +26,7 @@ backups/
 
 # IB extension recon dumps
 captures/
+
+# ib-agent's local snapshot DB, created when the CLI is run from this directory.
+# It belongs to the ib_agent project, not this one.
+data/

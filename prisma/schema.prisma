@@ -375,14 +375,21 @@ model IngestRun {
 /// Synced from the IB Client-Portal market-data snapshot by the Chrome extension
 /// (fields 7308/7309/7310/7311/7283) and joined to held positions by conid at read
 /// time. Kept in its own table so it survives the full-replace positions re-import.
+///
+/// Freshness is per FIELD, not per row: a snapshot that comes back empty (outside
+/// US hours, or when IB's market-data lines are exhausted) must not make an old
+/// delta look new. `at` therefore only moves when some greek actually arrived, and
+/// `deltaAt` records when THE DELTA was last measured — the one number the strategy
+/// gates on (roll line, give-up line, the RED list). See src/lib/greekage.ts.
 model OptionGreek {
-  conid String   @id
-  delta Decimal?
-  gamma Decimal?
-  theta Decimal?
-  vega  Decimal?
-  iv    Decimal? // implied vol %, IB-computed (field 7283)
-  at    DateTime @default(now()) // when the snapshot was captured
+  conid   String    @id
+  delta   Decimal?
+  deltaAt DateTime? @map("delta_at") // when `delta` itself was last measured by IB
+  gamma   Decimal?
+  theta   Decimal?
+  vega    Decimal?
+  iv      Decimal? // implied vol %, IB-computed (field 7283)
+  at      DateTime  @default(now()) // when the snapshot last returned ANY greek
 
   @@map("option_harvest_option_greeks")
 }

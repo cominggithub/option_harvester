@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getOrders, getPositionGroups, analyzeOrders, HEDGE_SHARES_PER_CALL, type OrderView } from "@/lib/positions";
+import { DeltaValue } from "@/components/DeltaCell";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Orders — Option Harvester" };
@@ -42,7 +43,7 @@ function ProtectsCell({ v }: { v: OrderView }) {
             🛡 {v.order.symbol} {c.strike}C
           </span>
           <span className="tnum text-ink-muted">{Math.abs(c.qty)}× · {c.expiry?.slice(5) ?? "?"}{c.dte != null ? ` · ${c.dte}d` : ""}</span>
-          <span className={`tnum ${deltaTone(c.delta)}`}>Δ{c.delta != null ? c.delta.toFixed(2) : "—"}</span>
+          <span className={`tnum ${deltaTone(c.delta)}`}>Δ<DeltaValue read={c.deltaRead} /></span>
         </span>
       ))}
       <span className="tnum text-ink-faint">

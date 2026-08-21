@@ -198,6 +198,44 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   (call/put × tenor 1M/2M/3M+) infers win/loss from **unrealized P/L** (winning = mark in
   your favour) with gross winning/losing/net columns. Sticky section nav throughout. Data:
   `buildOptionPnlByExpiry` (`positions.ts`); greeks from `option_harvest_option_greeks`.
+  A **Week by week** table (right under the stat band) is the page's record *and*
+  projection in one shape: one row per **Mon–Sun (ISO) week**, from
+  `WEEKLY_LOOKBACK_MONTHS` (2) back through the farthest expiry, each row expandable to
+  the positions behind it. It carries **three lenses in separate column groups**,
+  because collapsing them into one number would be wrong:
+  - **Activity — every position the week touched** (the week's verdict): contracts it
+    **closed** (realized P/L), positions it **sold** that are still open, and open legs
+    **expiring** in it (unrealized P/L) — deduped by contract, with one **win %** and one
+    **P/L** (plus the gross +profit/−loss split) over that union. This exists because the
+    active week does two things at once: it closes losers *and* writes new premium that
+    expires weeks later, and neither of the other lenses shows both in one number. A
+    contract that is already closed is **not** counted back in the week it was sold, so
+    no week is blamed for a trade someone closed later; a still-open position *does*
+    appear in both its sale week and its expiry week (roles are labelled per row), which
+    is why activity totals are never accumulated — the footer says so instead of summing.
+  - **Closed — realized, by close week**: contracts (expired/bought-back split), credit,
+    realized P/L, kept %. Filed under the week the trade was **closed out**, so a short
+    bought back at a loss hits the week you paid for it, not the far-dated expiry it was
+    written against (which also keeps a LEAP buy-back from distorting a near week).
+    Realized is the contract's **full trade result** (Σ net cash of all its legs), so its
+    premium half may have been taken in earlier — trade-result attribution, not a
+    cash-flow statement; the per-fill cash view is `/transactions`.
+  - **Open — unrealized, by expiry week**: expiries, legs c/p, credit, unrealized P/L,
+    earn %.
+  - **Book roll-up**: `Net P/L` = realized (close week) + unrealized (expiry week) and a
+    running `Cum net`. This lens counts every position exactly once, which is why it is
+    the only one with a cumulative.
+  A week whose **losses outweigh its profits** (activity lens) is marked **FAIL** and the
+  row is tinted rose. Quiet past weeks are emitted (they are part of the record); future
+  weeks appear only when they hold an expiry, since a book carrying LEAPs a year out
+  would otherwise be mostly empty rows. A week made only of **long** legs (zero credit)
+  shows "·" for credit/earn rather than a divide-by-zero ratio. The expanded listing is a
+  native `<details>` (the page stays server-only) showing per position: symbol, type,
+  strike, expiry, qty, opened, closed, state, why it belongs to the week, credit, P/L and
+  P/L ÷ credit — sorted **worst P/L first**, so the trade that decided the week reads at
+  the top. Data: `buildOptionPnlByWeek` (`positions.ts`), which joins IB position legs to
+  the transaction-derived contracts by `legKey` (symbol|right|strike|expiry) to date each
+  open position's sale.
   Each expiry-detail row shows current underlying **Spot immediately before Strike**.
   The **closed** (realized) P/L chart is windowed to the last `CLOSED_WINDOW_MONTHS` (2) of
   expiries and is **bounded at both ends**: a contract exited early keeps its own expiry,
@@ -229,6 +267,52 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
 - **IB vs Yahoo** (`/ib`) — compares the IB-sourced option snapshot (price / IV / DTE /
   bid-ask spread, from the extension) against the Yahoo-sourced values per ticker, so
   the two feeds can be eyeballed before a screen switches source.
+
+### 4.9 Delta provenance — is the Δ on screen still true? (`src/lib/greekage.ts`)
+
+Delta is the number the whole program gates on: |Δ| ≈ 0.15 at entry, 0.30 = the roll
+line and the RED-watchlist predicate, 0.45 = give up (docs/short-call-strategy.md § 5,
+`bookrisk.ts`). It arrives from IB as a **market-data snapshot taken by the extension** —
+an event, not a feed. Marks, spots and positions refresh on every sync; the greeks only
+refresh when a sync actually runs the greeks pass, and IB serves its last computed
+values, so a snapshot taken outside US hours carries the *previous close's* greeks.
+Rendered side by side, a three-day-old delta reads as current.
+
+Measured on the live book (2026-08-21): the stored deltas were 45h old, **50 of 51
+matched the underlying close of the day their snapshot was taken and only 20 matched the
+current spot**. 17 legs were off by more than 0.05 — including a short NOW call whose
+stored 0.178 was really 0.308, i.e. a leg past the roll line that looked comfortably
+inside it.
+
+So no page or gate reads `option_greeks.delta` directly. `readDelta()` returns:
+
+| field | meaning |
+| --- | --- |
+| `ibDelta`, `measuredAt`, `ageH` | IB's own measurement and its age (from `delta_at`) |
+| `modelDelta`, `impliedVol` | δ implied by **this leg's own mark**: invert Black-Scholes on the mark for σ, then read δ off the same model (the method `/short-call` uses for historical fills) |
+| `stale` | measurement older than `DELTA_STALE_HOURS` = 18 (one US session), or undated |
+| `diverged` | `‖ibΔ| − |modelΔ‖ > DELTA_DIVERGE_ABS` = 0.05 (≈ 1/6 of the 0.30 line) |
+| `delta`, `source` | **the number to act on**: the measurement while it is fresh and agrees; the model once it is stale or the two disagree |
+
+`positions.ts` therefore hands every consumer an *effective* delta: `PositionGroupLeg.delta`,
+`OptionPnlLeg.delta`, `LegSuggestion.delta`, `BookLeg.absDelta`/`deltaDollar`,
+`ProtectedCall.delta` and `PositionSummary.maxOptAbsDelta` (the RED gate — **short legs
+only**, since a long leg you own can't be assigned against you) are all the
+effective value, with `deltaRead` alongside carrying the provenance. When a leg has
+barely moved, measurement and model land in the same place — that is how you can see the
+fallback isn't inventing risk.
+
+**In the UI** (`components/DeltaCell.tsx`): a Δ with no mark is IB's own measurement; a Δ
+marked **ᵐ** is model-derived; hovering either shows both numbers, the implied σ and the
+age. `/positions` also has a **Δ age** column per leg, and `/positions`, `/pnl-predict`
+and `/risk` carry a one-line **Δ provenance** banner (how many legs from each source, how
+many measurements are stale, the oldest age). `/sync`'s greeks card is dated by the
+newest `delta_at` with the oldest in its detail line.
+
+Checks: `scripts/greeks-check.ts` (pure, in `npm run check`) pins the thresholds, the
+model inversion and the decision; `npm run audit:greeks` prints the live per-leg
+comparison (read-only). The defect record that produced all of this — including why nothing
+caught it for three days — is **`docs/defects/2026-08-21-stale-delta.md`**.
 
 ## 5. Metrics & formulas
 
@@ -299,11 +383,17 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   description, sec_type, quantity, avg_cost, market_value, currency, right (C/P),
   strike, expiry, raw, upload_id. Parser extracts right/strike/expiry from the OCC
   symbol. **position_uploads** keeps every raw CSV (re-importable).
-- **option_greeks** — per-contract greeks keyed by **conid** (PK): delta, gamma, theta,
-  vega, iv, at. Synced from the IB Client-Portal market-data snapshot by the extension
-  (fields 7308/7309/7310/7311/7283) and joined to held positions by conid at read time.
-  Separate table so greeks survive the full-replace positions re-import; the POST only
-  writes fields IB actually returns (won't null out a prior good value). Feeds P&L Predict.
+- **option_greeks** — per-contract greeks keyed by **conid** (PK): delta, **delta_at**,
+  gamma, theta, vega, iv, at. Synced from the IB Client-Portal market-data snapshot by the
+  extension (fields 7308/7309/7310/7311/7283) and joined to held positions by conid at read
+  time. Separate table so greeks survive the full-replace positions re-import; the POST only
+  writes fields IB actually returns (won't null out a prior good value).
+  **Freshness is per field.** `at` moves only when *some* greek arrived and `delta_at`
+  records when the delta itself was measured — before that split, a snapshot that came
+  back empty (outside US hours, or with IB's market-data lines exhausted) kept the old
+  delta while stamping `at = now`, so a three-day-old delta was indistinguishable from a
+  live one. A `|δ| > 1` is rejected outright. Every read goes through `lib/greekage.ts`
+  (§ 4.9), never straight off the row. Feeds P&L Predict, Positions, /risk and the RED list.
 - **position_margin** — exact per-position margin keyed by **conid** (PK): maint_margin,
   init_margin, currency, at. Computed by the extension via the Client-Portal what-if
   order endpoint (`POST /iserver/account/{acct}/orders/whatif` on a *closing* order):

@@ -52,7 +52,10 @@ export type OhVerifyResult = {
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
 
 export async function getSyncSummary(): Promise<{ datasets: SyncDataset[]; runs: SyncRunRow[]; ohVerify: OhVerifyResult | null }> {
-  const [pos, posUpload, ord, tx, wlAgg, wlLists, greeks, margin, ibOpts, runsRaw, ohVerifyRaw, conidPins] = await Promise.all([
+  // Greeks freshness is judged on the DELTA measurement (`deltaAt`), not on the row:
+  // `at` moves when any greek arrives, but delta is the field the strategy gates on,
+  // and a snapshot that returned nothing must not look like a refresh.
+  const [pos, posUpload, ord, tx, wlAgg, wlLists, greeks, greekDelta, margin, ibOpts, runsRaw, ohVerifyRaw, conidPins] = await Promise.all([
     prisma.position.aggregate({ _count: { _all: true }, _max: { uploadedAt: true } }),
     prisma.positionUpload.findFirst({ orderBy: { uploadedAt: "desc" }, select: { filename: true, uploadedAt: true } }),
     prisma.order.aggregate({ _count: { _all: true }, _max: { uploadedAt: true } }),
@@ -60,6 +63,9 @@ export async function getSyncSummary(): Promise<{ datasets: SyncDataset[]; runs:
     prisma.watchlistItem.aggregate({ _count: { _all: true }, _max: { syncedAt: true } }),
     prisma.watchlistItem.findMany({ distinct: ["watchlistId"], select: { watchlistId: true } }),
     prisma.optionGreek.aggregate({ _count: { _all: true }, _max: { at: true } }).catch(() => null),
+    prisma.optionGreek
+      .aggregate({ where: { deltaAt: { not: null } }, _count: { _all: true }, _max: { deltaAt: true }, _min: { deltaAt: true } })
+      .catch(() => null),
     prisma.positionMargin.aggregate({ _count: { _all: true }, _max: { at: true } }).catch(() => null),
     prisma.quote.aggregate({ where: { ibAt: { not: null } }, _count: { _all: true }, _max: { ibAt: true } }),
     prisma.syncRun.findMany({ orderBy: { at: "desc" }, take: 30 }).catch(() => []),
@@ -86,7 +92,18 @@ export async function getSyncSummary(): Promise<{ datasets: SyncDataset[]; runs:
       detail: `${wlLists.length} list${wlLists.length === 1 ? "" : "s"}`,
       source: "IB sync (replace)",
     },
-    { key: "greeks", label: "Option greeks", count: greeks?._count._all ?? 0, lastAt: iso(greeks?._max.at ?? null), detail: "held contracts, by conid", source: "IB sync (Get greeks)" },
+    {
+      key: "greeks",
+      label: "Option greeks",
+      count: greeks?._count._all ?? 0,
+      // The headline age is the NEWEST delta measurement; the detail carries the
+      // oldest, because one re-measured contract must not make the book look fresh.
+      lastAt: iso(greekDelta?._max.deltaAt ?? null),
+      detail: `held contracts by conid · ${greekDelta?._count._all ?? 0} with a dated Δ${
+        greekDelta?._min.deltaAt ? ` · oldest Δ ${new Date(greekDelta._min.deltaAt).toISOString().slice(0, 16).replace("T", " ")}Z` : ""
+      }`,
+      source: "IB sync (Get greeks)",
+    },
     { key: "margin", label: "Position margin", count: margin?._count._all ?? 0, lastAt: iso(margin?._max.at ?? null), detail: "held contracts, what-if", source: "IB sync (Get margin)" },
     { key: "ib-options", label: "IB option quotes", count: ibOpts._count._all, lastAt: iso(ibOpts._max.ibAt), detail: "ATM snapshot in ib_* cols", source: "IB sync (Get options)" },
     { key: "conid-pins", label: "Conid pins", count: conidPins?._count._all ?? 0, lastAt: iso(conidPins?._max.at ?? null), detail: "manual + option-derived overrides", source: "manual / IB sync (Fix conids)" },

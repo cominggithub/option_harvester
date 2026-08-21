@@ -4,6 +4,8 @@ import { buildActions, buildGates, openingBlocked, type LegAction } from "@/lib/
 import { SC_NAV } from "@/lib/sc-nav";
 import { CURRENT_VERSION } from "@/lib/sc-rules";
 import { SectionNav } from "@/components/SectionNav";
+import { DeltaValue } from "@/components/DeltaCell";
+import { DELTA_STALE_HOURS } from "@/lib/greekage";
 import { H2, Kpi, money, num, pct, pnlCls, signed } from "@/components/ScShared";
 import { formatTimestamp } from "@/lib/format";
 
@@ -35,7 +37,7 @@ function ActionRow({ a }: { a: LegAction }) {
             {l.dte ?? "—"}d · {Math.abs(l.qty)}x
           </div>
         </span>
-        <span className={`tnum text-right ${l.absDelta != null && l.absDelta > 0.3 ? "font-semibold text-rose-700" : ""}`}>{num(l.absDelta)}</span>
+        <span className={`tnum text-right ${l.absDelta != null && l.absDelta > 0.3 ? "font-semibold text-rose-700" : ""}`}><DeltaValue read={l.deltaRead} abs /></span>
         <span className={`tnum text-right ${l.sigmas != null && l.sigmas < 1 ? "font-semibold text-rose-700" : ""}`}>{l.sigmas == null ? "—" : `${num(l.sigmas, 2)}σ`}</span>
         <span className={`tnum text-right ${l.itm ? "font-semibold text-rose-700" : ""}`}>{pct(l.moneyness)}</span>
         <span className={`tnum text-right ${(l.capturedPct ?? 0) >= 0.7 ? "font-semibold text-emerald-700" : ""}`}>{pct(l.capturedPct)}</span>
@@ -191,8 +193,13 @@ export default async function ShortCallActionsPage() {
       </div>
 
       <p className="mt-4 max-w-4xl text-[11px] leading-relaxed text-ink-faint">
-        Provenance: delta, gamma and theta are IB per-contract greeks where a Deep sync has priced the leg, otherwise blank —
-        never modelled here. σ cushion uses the underlying&rsquo;s annualised IV over the remaining life. Maintenance margin is
+        Provenance: a Δ with no mark is IB&rsquo;s own per-contract measurement from the last greeks sync; one marked{" "}
+        <span className="font-semibold">ᵐ</span> is derived from the leg&rsquo;s current mark (invert Black-Scholes for σ, read δ
+        off the same model) because IB&rsquo;s measurement is more than {DELTA_STALE_HOURS}h old or disagrees with the mark. The
+        snapshot is an event, not a feed — it only refreshes when a sync runs the greeks pass, while the marks refresh every
+        sync, so the fallback is what keeps the gates honest between measurements. Hover any Δ for both numbers and the age.
+        Gamma and theta are still IB-only and blank until a Deep sync prices the leg. σ cushion uses the underlying&rsquo;s
+        annualised IV over the remaining life. Maintenance margin is
         the exact IB what-if figure where synced and extrapolated otherwise, so the margin gate is a floor until every leg has
         priced. The roll target is a Black-Scholes estimate from the underlying&rsquo;s IV, not a quote — treat the credit as
         indicative and check the chain before sending. {book.excluded.beyondHorizon > 0 && `${book.excluded.beyondHorizon} legs expire beyond the 1-year horizon and are excluded.`}

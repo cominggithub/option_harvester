@@ -23,8 +23,9 @@ Each pure engine ships one `assert`-based `_selfCheck`, run via a tiny script. A
 must print `... self-check OK`:
 
 ```bash
-npm run check                         # the short-call suite in one go (369 assertions, six scripts)
+npm run check                         # the short-call suite + delta freshness (441 assertions, seven scripts)
 npm run check:sc                      # just the analyzer engines (rules, lifecycle, pages)
+npm run check:greeks                  # delta freshness / model cross-check (also inside `npm run check`)
 npx tsx scripts/pnl-check.ts          # P/L engine
 npx tsx scripts/posanalysis-check.ts  # position action suggestions
 npx tsx scripts/news-check.ts         # news sentiment lexicon
@@ -36,6 +37,14 @@ npx tsx scripts/leveraged-check.ts    # LEV list: 2x/3x long ETFs, inverse/short
 npx tsx scripts/bookrisk-check.ts     # /risk engine: σ cushion, themes, HHI, shock, verdicts
 npx tsx scripts/shortcall-check.ts    # /short-call: BS implied vol/Δ, path, attribution, zones
 npx tsx scripts/page-markdown-check.ts # Markdown route mapping + HTML conversion
+npx tsx scripts/positions-check.ts    # IB symbol recovery + expiry→week roll-up (then a read-only file↔display reconcile)
+npx tsx scripts/greeks-check.ts       # delta freshness: age read, mark-implied Δ, which one a gate gets
+```
+
+Read-only reports (not gates, no `_selfCheck`):
+
+```bash
+npm run audit:greeks                  # per held leg: IB Δ + its age vs the mark-implied Δ, and the gap
 ```
 
 What they cover:
@@ -51,6 +60,38 @@ What they cover:
 - **posanalysis-check** — OTM-with-most-premium → harvest; ITM call → defend;
   tested call → defend; far-OTM loser → watch; ITM put → roll; long/stock legs ignored.
 - **news-check** — bearish headlines flagged, positive ones not.
+- **positions-check** — pure block: IB's awkward symbol shapes recover the true
+  underlying (`C UBSE 20291221 28 M` → UBSG; single-letter tickers like `C` survive), and
+  the P&L-Predict **weekly roll-up** (`buildOptionPnlByWeek`): the lookback window is
+  contiguous from 2 months back through the current week (a quiet week is emitted, empty,
+  net 0), two expiries in one Mon–Sun week collapse into a single row whose
+  legs/credit/P/L/win split/net greeks equal their sum (ISO label, DTE span, greeks stay
+  `null` when unsynced), **closed contracts land in their `closeDate` week — a LEAP bought
+  back at a loss hits the week it was paid, not its 2028 expiry week** (asserted: no 2028
+  row is created), realizations outside the window or without a `closeDate` are excluded,
+  the expired/bought-back split and win counts are right, `fail` fires when the week's
+  losses outweigh its profits, and `cumulativeNet` == Σ weekly net. The **activity lens**
+  is asserted on the case that motivated it: a week that closes two contracts *and* sells
+  a position expiring later owns all three (2 closed + 1 open), its win rate and P/L span
+  both, the sold-and-still-open position is owned by its sale week (role `opened`) *and*
+  its expiry week (role `expiring`) with the same mark, a position sold before the window
+  appears only in its expiry week, an already-closed trade is never counted back in the
+  week it was sold, the listing is ordered worst-P/L-first, and the book roll-up stays
+  realized-only for that week. Then a **read-only
+  reconcile** of the latest positions upload against `getPositionGroups` (file == display,
+  leg for leg) — routed by upload shape, since extension pushes archive Client-Portal
+  **JSON** while hand uploads are **CSV**.
+- **greeks-check** — delta freshness (`lib/greekage.ts`), fixtures taken from the real
+  book of 2026-08-21 with IB measurements from the 08-19 05:55Z snapshot: the 44h age is
+  read off `deltaAt`; a stale+diverged measurement yields to the **mark-implied** delta
+  (NOW C145: stored 0.178, mark says 0.308 — and the 0.30 gate only trips on the effective
+  value, which is the whole point); a stale measurement the model *agrees* with lands on
+  the same number (proof the fallback doesn't invent risk); a fresh, agreeing measurement
+  is used as-is; a fresh but diverged one still yields; puts keep their sign; a
+  never-measured leg gets the model; no mark and no measurement → no delta; an **undated**
+  measurement counts as stale; past expiry / zero spot → no model value; `|δ| > 1` is
+  discarded; σ and δ from the mark are monotone in spot; and `summarizeDeltaProvenance`
+  counts sources / stale / diverged / oldest-newest ages for the page banners.
 - **roic-check** — `computeRoic` = NOPAT ÷ invested capital on real-shaped inputs
   (AAPL ≈ 82%, KO ≈ 22%, negative-EBIT year stays negative), `operatingIncome` EBIT
   fallback, null on negative/zero invested capital or missing EBIT/equity, effective

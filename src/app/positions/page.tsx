@@ -8,6 +8,8 @@ import {
   type CallProtection,
 } from "@/lib/positions";
 import { analyzeShortOption, ACTION_META, type ActionKind, type LegSuggestion } from "@/lib/posanalysis";
+import { DELTA_STALE_HOURS, summarizeDeltaProvenance } from "@/lib/greekage";
+import { DeltaAge, DeltaProvenanceNote, DeltaValue } from "@/components/DeltaCell";
 import { formatTimestamp } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -155,7 +157,7 @@ function ActionTable({ rows, protByContract }: { rows: LegSuggestion[]; protByCo
             <th className="py-1.5 pr-2 text-right font-medium">Qty</th>
             <th className="py-1.5 pr-2 text-right font-medium">Spot</th>
             <th className="py-1.5 pr-2 text-right font-medium">OTM%</th>
-            <th className="py-1.5 pr-2 text-right font-medium" title="Per-contract delta (assignment risk)">Δ</th>
+            <th className="py-1.5 pr-2 text-right font-medium" title={`Per-contract delta (assignment risk). IB's measurement while it is under ${DELTA_STALE_HOURS}h old and agrees with the leg's mark; otherwise the mark-implied value, marked ᵐ.`}>Δ</th>
             <th className="py-1.5 pr-2 text-right font-medium" title="Per-contract theta (daily time decay)">Θ</th>
             <th className="py-1.5 pr-2 text-right font-medium" title="Per-contract gamma">Γ</th>
             <th className="py-1.5 pr-2 text-right font-medium">Credit</th>
@@ -180,7 +182,7 @@ function ActionTable({ rows, protByContract }: { rows: LegSuggestion[]; protByCo
               <td className="tnum py-1.5 pr-2 text-right text-ink-muted">{s.qty}</td>
               <td className="tnum py-1.5 pr-2 text-right text-ink-muted">{price(s.spot)}</td>
               <td className={`tnum py-1.5 pr-2 text-right ${s.itm ? "text-rose-700" : "text-ink-muted"}`}>{mny(s.moneyness)}</td>
-              <td className={`tnum py-1.5 pr-2 text-right ${deltaText(s.delta)}`}>{g2(s.delta)}</td>
+              <td className={`tnum py-1.5 pr-2 text-right ${deltaText(s.delta)}`}><DeltaValue read={s.deltaRead} /></td>
               <td className="tnum py-1.5 pr-2 text-right text-ink-muted">{g2(s.theta)}</td>
               <td className="tnum py-1.5 pr-2 text-right text-ink-muted">{g3(s.gamma)}</td>
               <td className="tnum py-1.5 pr-2 text-right text-emerald-700">{money(s.credit)}</td>
@@ -232,7 +234,10 @@ export default async function PositionsPage() {
     }
   const bucket = (a: ActionKind) =>
     suggestions.filter((s) => s.action === a).sort((x, y) => (x.dte ?? 1e9) - (y.dte ?? 1e9));
-  const counts = Object.fromEntries(ACTION_ORDER.map((a) => [a, bucket(a).length])) as Record<ActionKind, number>;
+  // Where the deltas on this page came from, and how old IB's measurements are.
+  const deltaProvenance = summarizeDeltaProvenance(
+    groups.flatMap((g) => g.legs.filter((l) => l.right === "C" || l.right === "P").map((l) => l.deltaRead)),
+  );  const counts = Object.fromEntries(ACTION_ORDER.map((a) => [a, bucket(a).length])) as Record<ActionKind, number>;
   const harvestable = suggestions.filter((s) => s.action === "harvest" || s.action === "let_expire").reduce((a, s) => a + (s.unrealizedPnl ?? 0), 0);
   const atRisk = suggestions.filter((s) => s.action === "defend" || s.action === "roll").reduce((a, s) => a + (s.unrealizedPnl ?? 0), 0);
   const earningsRisks = suggestions
@@ -419,6 +424,9 @@ export default async function PositionsPage() {
 
           {/* Suggested actions board */}
           <div id="actions" className="mt-6 scroll-mt-6 space-y-4">
+            {ACTION_ORDER.some((a) => counts[a] > 0) ? (
+              <DeltaProvenanceNote p={deltaProvenance} className="px-1" />
+            ) : null}
             {ACTION_ORDER.filter((a) => counts[a] > 0).map((a) => (
               <section key={a} className="overflow-hidden rounded-lg border border-line bg-surface">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-4 py-2.5">
@@ -460,6 +468,8 @@ export default async function PositionsPage() {
                       <th className="px-3 py-1.5 text-right font-medium" title="Distance from spot to strike in $ — call: strike−spot, put: spot−strike. Positive = out-of-the-money cushion; negative = in-the-money.">OTM $</th>
                       <th className="px-3 py-1.5 text-right font-medium" title="Moneyness — the OTM $ as a % of spot. Positive = out of the money.">OTM %</th>
                       <th className="px-3 py-1.5 text-right font-medium">Qty</th>
+                      <th className="px-3 py-1.5 text-right font-medium" title={`Per-contract delta. IB's measurement while it is under ${DELTA_STALE_HOURS}h old and agrees with this leg's mark; otherwise the mark-implied value, marked ᵐ.`}>Δ</th>
+                      <th className="px-3 py-1.5 text-right font-medium" title="Age of IB's own delta measurement for this contract — how long ago a greeks sync last priced it.">Δ age</th>
                       <th className="px-3 py-1.5 text-right font-medium">Unit Cost</th>
                       <th className="px-3 py-1.5 text-right font-medium">Total Cost</th>
                       <th className="px-3 py-1.5 text-right font-medium">Last</th>
@@ -487,6 +497,10 @@ export default async function PositionsPage() {
                           <td className={`tnum px-3 py-2 text-right ${cushion == null ? "text-ink-faint" : cushion < 0 ? "text-rose-700" : "text-ink-muted"}`} title={cushion != null && cushion < 0 ? "In the money" : undefined}>{cushion == null ? "—" : otmUsd(cushion)}</td>
                           <td className={`tnum px-3 py-2 text-right ${otmPct == null ? "text-ink-faint" : otmPct < 0 ? "text-rose-700" : "text-ink-muted"}`}>{otmPct == null ? "—" : mny(otmPct)}</td>
                           <td className="tnum px-3 py-2 text-right">{num(leg.quantity)}</td>
+                          <td className={`tnum px-3 py-2 text-right ${isOpt ? deltaText(leg.delta) : "text-ink-faint"}`}>
+                            {isOpt ? <DeltaValue read={leg.deltaRead} /> : "—"}
+                          </td>
+                          <td className="tnum px-3 py-2 text-right text-[11px]">{isOpt ? <DeltaAge read={leg.deltaRead} /> : <span className="text-ink-faint">—</span>}</td>
                           <td className="tnum px-3 py-2 text-right">{price(leg.unitCost)}</td>
                           <td className="tnum px-3 py-2 text-right">{money(leg.totalCost)}</td>
                           <td className="tnum px-3 py-2 text-right">{price(leg.closePrice)}</td>

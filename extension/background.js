@@ -208,12 +208,31 @@ async function useTab(tabId) {
   }
 }
 
+// Is this tab the one the user is actually looking at? (active in its window, and
+// that window focused). Chrome throttles in-page timers hard in a backgrounded tab,
+// and the batched greeks pass polls IB's snapshot every 500ms — so we only run it
+// unattended when the IB tab is in front, where those timers fire at full speed.
+async function tabInForeground(tab) {
+  try {
+    if (!tab?.id) return false;
+    const t = await chrome.tabs.get(tab.id);
+    if (!t?.active) return false;
+    const w = await chrome.windows.get(t.windowId);
+    return !!w?.focused;
+  } catch {
+    return false;
+  }
+}
+
 // `tabId` pins the sync to a SPECIFIC IB tab. The login watcher passes the tab whose
 // session it just verified: with several IB tabs open (portal + a marketing/help page)
 // findIbTab's `tabs[0]` can be a page with no brokerage session, so the probe would
 // pass on tab #2 while the sync failed on tab #1 — "not logged in (no account)" on
 // every retry, unfixable by retrying, and invisible in /sync because this path returns
 // before the sync-log POST.
+//
+// `withGreeks`: true = always, false = never, "foreground" = only while the IB tab is
+// the one on screen (auto + login use this — see tabInForeground).
 async function runSync(backend, { preferActive, source, withGreeks, tabId } = {}, onProgress) {
   const p = (m) => onProgress?.(m);
   p("reading IB");
@@ -234,12 +253,22 @@ async function runSync(backend, { preferActive, source, withGreeks, tabId } = {}
   if (d.ibWatchlists?.length) out.watchlists = await post(`${backend}/api/watchlist`, { ibWatchlists: d.ibWatchlists });
   // Per-contract greeks (Δ/Θ/Γ) for held options — batched snapshots (many conids
   // per subscribe burst) so it's quick. Positions were just posted, so the backend
-  // knows which held conids to snapshot. Best-effort and MANUAL-only: auto-sync
-  // skips it to stay light and avoid Chrome throttling the in-page poll loop when
-  // the IB tab is backgrounded.
-  if (withGreeks) {
-    p("greeks");
-    out.greeks = await getGreeks(backend, p).catch((e) => ({ error: String(e) }));
+  // knows which held conids to snapshot.
+  //
+  // This used to be manual-only, which meant the delta on every page was only as
+  // fresh as the last time someone clicked Sync now — measured 2026-08-21, the book's
+  // deltas were 45h old while its marks were minutes old, and a 0.18 that the mark
+  // said was 0.31 was hiding a roll. So auto and login syncs now take greeks too,
+  // but only when the IB tab is in FRONT ("foreground"), because the in-page poll
+  // loop is throttled to a crawl in a backgrounded tab.
+  if (withGreeks === true || withGreeks === "foreground") {
+    const allowed = withGreeks === true || (await tabInForeground(tab));
+    if (allowed) {
+      p("greeks");
+      out.greeks = await getGreeks(backend, p, tab.id).catch((e) => ({ error: String(e) }));
+    } else {
+      out.greeksSkipped = "IB tab not in front — greeks not re-measured";
+    }
   }
   // Push OH watchlists back to IB. Positions were just posted above, so the OH
   // lists (Cpos/Ppos/NCcan) reflect the fresh snapshot. Failure here doesn't fail
@@ -272,7 +301,7 @@ async function runDeep(backend, { source } = {}, onProgress) {
   const out = {};
   // Per-position greeks (Δ/Θ/Γ) for held options.
   p("greeks");
-  out.greeks = await getGreeks(backend, p).catch((e) => ({ error: String(e) }));
+  out.greeks = await getGreeks(backend, p, tab.id).catch((e) => ({ error: String(e) }));
   // Exact per-position maintenance margin via what-if.
   p("margin");
   out.margins = await getMargins(backend, p).catch((e) => ({ error: String(e) }));
@@ -348,7 +377,11 @@ const fmt = {
   getOptions: (r) =>
     r?.error ? `✕ ${r.error}` : `✓ options updated ${r?.updated ?? 0}/${r?.tried ?? 0}${r?.errors?.length ? ` · ${r.errors.length} err` : ""}`,
   getGreeks: (r) =>
-    r?.error ? `✕ ${r.error}` : `✓ greeks updated ${r?.updated ?? 0}/${r?.tried ?? 0}${r?.errors?.length ? ` · ${r.errors.length} err` : ""}`,
+    r?.error
+      ? `✕ ${r.error}`
+      : `✓ greeks updated ${r?.updated ?? 0}/${r?.tried ?? 0}${r?.stale ? ` · ${r.stale} returned nothing (kept their old age)` : ""}${
+          r?.rejected ? ` · ${r.rejected} rejected` : ""
+        }${r?.errors?.length ? ` · ${r.errors.length} err` : ""}`,
   getMargins: (r) =>
     r?.error ? `✕ ${r.error}` : `✓ margin updated ${r?.updated ?? 0}/${r?.tried ?? 0}${r?.errors?.length ? ` · ${r.errors.length} err` : ""}`,
   pushOh: (r) => {
@@ -560,11 +593,12 @@ async function fetchGreeksBatchInPage(conids) {
 // Fetch per-position greeks: ask the backend which held option conids exist,
 // snapshot them in the logged-in IB page in BATCHES (one subscribe burst per
 // chunk — far faster than one contract at a time), then post to /api/greeks.
-async function getGreeks(backend, onProgress) {
+// `tabId` pins it to the tab the caller already validated (see runSync).
+async function getGreeks(backend, onProgress, tabId) {
   const targets = await (await fetch(`${backend}/api/greeks`)).json().catch(() => null);
   if (!Array.isArray(targets) || !targets.length) return { error: "no held option positions (sync positions first?)" };
 
-  const tab = await findIbTab(false);
+  const tab = (await useTab(tabId)) || (await findIbTab(false));
   if (!tab?.id) return { error: "no IB tab open — log into the IB portal" };
 
   const conids = targets.map((t) => Number(t.conid)).filter((c) => Number.isFinite(c) && c > 0);
@@ -1028,7 +1062,7 @@ async function loginSync(tabId) {
   await chrome.storage.local.set({ lastLoginSyncAt: new Date().toISOString() });
   await setBusy("Syncing (IB login)");
   const hb = startHeartbeat();
-  const r = await runSync(backend, { preferActive: false, source: "login", tabId }, (m) => setProgress(m)).catch((e) => ({
+  const r = await runSync(backend, { preferActive: false, source: "login", withGreeks: "foreground", tabId }, (m) => setProgress(m)).catch((e) => ({
     error: String(e),
   }));
   clearInterval(hb);
@@ -1199,7 +1233,7 @@ chrome.alarms.onAlarm.addListener(async (a) => {
   await report("alarm", { status: "auto-sync alarm fired" });
   await setBusy("Auto-syncing");
   const hb = startHeartbeat();
-  const r = await runSync(backend || DEFAULT_BACKEND, { preferActive: false, source: "auto" }).catch((e) => ({ error: String(e) }));
+  const r = await runSync(backend || DEFAULT_BACKEND, { preferActive: false, source: "auto", withGreeks: "foreground" }).catch((e) => ({ error: String(e) }));
   clearInterval(hb);
   try {
     await setStatus(r.error ? `auto: ${r.error}` : `auto ✓ ${summary(r)}`);

@@ -53,8 +53,9 @@ export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
   // NOT yet written a call on. (A held call means it's already a Cpos, not a target.)
   const isOptionTarget = (s: SecurityRow) => s.target || hasCall(s) || hasPut(s);
   const otc = securities.filter((s) => isOptionTarget(s) && !hasCall(s));
-  // RED — held names whose biggest option leg has |Δ| > 0.30 (call OR put): the
-  // high assignment-risk book. Needs synced greeks; names without a delta are excluded.
+  // RED — held names whose biggest SHORT option leg has |Δ| > 0.30 (call OR put): the
+  // high assignment-risk book. The delta is the effective one (lib/greekage.ts), so a
+  // stale IB measurement can't hide a name; long legs don't count (no assignment risk).
   const red = securities.filter((s) => s.position && (s.position.maxOptAbsDelta ?? 0) > 0.3);
   // HIV — high IV (> HIV_IV_MIN%) AND a tradable 1/2/3/4-week option ladder
   // (weeklyBuckets ≥ NC_MIN_WEEKLY_BUCKETS), so there's near-term premium to sell.
@@ -101,7 +102,7 @@ export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
     {
       key: "red",
       name: "RED",
-      desc: "High assignment risk — held names whose largest option leg has |Δ| > 0.30 (call or put). Needs synced greeks.",
+      desc: "High assignment risk — held names whose largest SHORT option leg has |Δ| > 0.30 (call or put). Long legs are excluded (they can't be assigned against you). The delta is IB's measurement while it's fresh, otherwise the value implied by the leg's own mark, so a name can't hide here behind a stale greek.",
       members: red.map(toMember).sort(byTicker),
     },
     {

@@ -44,7 +44,7 @@ correct — a list silently under-populates if its inputs are stale/unsynced.
 | `nccan`| NCcan  | screen   | `s.nc && !s.held` — short-call candidates: in NC but no position held yet. | ingest + position sync |
 | `cpos` | Cpos   | position | `s.position.call !== 0` — underlyings you hold a **call** option on. | position sync |
 | `ppos` | Ppos   | position | `s.position.put !== 0` — underlyings you hold a **put** option on. | position sync |
-| `red`  | RED    | position | `s.position && maxOptAbsDelta > 0.30` — high assignment risk: held names whose largest option leg (call or put) has \|Δ\| > 0.30. Names without a synced delta are **excluded** (not assumed safe). | position sync + **deep-sync greeks** |
+| `red`  | RED    | position | `s.position && maxOptAbsDelta > 0.30` — high assignment risk: held names whose largest **short** option leg (call or put) has \|Δ\| > 0.30. Long legs don't count (they can't be assigned against you). The Δ is the **effective** one (`lib/greekage.ts`): IB's measurement while it's under 18h old and agrees with the leg's mark, else the mark-implied value — so a stale greek can't keep a name off the list, and a leg IB has never priced still gets a delta. | position sync (marks) + greeks sync |
 | `hiv`  | HIV    | IV       | `s.ivPct > HIV_IV_MIN && weeklyBuckets ≥ NC_MIN_WEEKLY_BUCKETS` — high implied vol **with a tradable 1/2/3/4-week option ladder**: any tracked name (stock or ETF) with front-month ATM IV above 50 % and ≥4 near-term weekly expiries. | ingest (IV + ladder) |
 | `hivs` | HIVS   | IV       | `hiv && HIVS_PRICE_MIN < s.price < HIVS_PRICE_MAX` — HIV restricted to the mid price band ($20–$200). `hivs ⊆ hiv`. | ingest (IV + price) |
 | `hivsc`| HIVSC  | IV       | `hivs && s.position.call === 0 && s.position.put === 0` — HIVS **candidates**: HIVS names you hold **no call and no put** on yet. `hivsc ⊆ hivs`. | ingest + position sync |
@@ -54,7 +54,7 @@ correct — a list silently under-populates if its inputs are stale/unsynced.
 
 Family notes / invariants:
 - **screen** — the doctrine's naked-call funnel. `NCcan = NC − held`; see docs/spec.md §3 and docs/strategy.md.
-- **position** — mirror the IB book. Cpos/Ppos are per-side; RED is the risk overlay and is the **only** list that needs Deep sync (greeks by conid).
+- **position** — mirror the IB book. Cpos/Ppos are per-side; RED is the risk overlay: it needs greeks *or* a fresh mark (since 2026-08, a leg with no usable IB measurement is priced off its mark instead of dropping out of the list — see docs/spec.md § 4.9).
 - **IV** — volatility funnel: `HIVSC ⊆ HIVS ⊆ HIV`. HIV is the high-IV universe that also has a tradable 1/2/3/4-week option ladder (so there's near-term premium to sell), HIVS narrows to a tradable price band, HIVSC removes anything you already have an option position on (so it's the actionable "write here next" IV list — the IV analogue of NCcan).
 - **target** — OTC is the flag/hold-driven call-writing queue; a name leaves OTC the moment a call is written on it (it becomes Cpos).
 - **value** — ROIC is the standalone value-quality universe (the `/roic` screen), independent of positions/IV; it's the pool you'd sell cash-backed puts into on a panic. ETFs are excluded (no ROIC).
