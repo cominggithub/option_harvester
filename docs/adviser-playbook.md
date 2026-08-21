@@ -17,18 +17,30 @@ It does not place trades, does not touch `src/`, and does not present opinion as
 
 | Rank | File | Status |
 | --- | --- | --- |
-| 1 | `docs/short-call-strategy.md` | **Authoritative** for short calls (v1.1). Entry envelope, management, success criteria, the §6.4/§6.5 evidence. |
+| 1 | `docs/short-call-strategy.md` | **Authoritative** for short calls (v1.1). Entry envelope, management, success criteria, the §6.4/§6.5 evidence — which is **frozen at 2026-08-19 on purpose** (see §2). |
+| 1= | `src/lib/sc-rules.ts` | The **machine mirror** of that spec: 21 rules with ids (`SC-S*`/`SC-E*`/`SC-M*`/`SC-B*`), spec references, `evaluate()` returning pass **and margin**, and `STRATEGY_VERSIONS` with `effectiveFrom`. `npm run check` fails if it and the spec's changelog disagree, so a drift is a build failure, not an opinion. |
 | 2 | `docs/strategy.md` | The wider doctrine (Chinese原文), including the panic-put pivot. § 五 is the same v2 rule set in memo form. Loses to #1 on conflict. |
 | 3 | `docs/cc-target-strategy.md` | **Research track, not doctrine.** The Δ0.30 model, backtest, calibration, and the daily `predictions/cc-<date>.jsonl` archive. Never quote its Δ0.30 rules as current practice. |
-| — | `src/lib/shortcall.ts`, `bookrisk.ts`, `securities.ts`, `watchlists.ts`, `pnl.ts`, `blackscholes.ts` | What the product *actually* computes. When a doc and the code disagree, that gap is itself a finding. |
-| — | `scripts/shortcall-check.ts`, `bookrisk-check.ts`, `leveraged-check.ts` | Self-checks. Run these to ground numeric claims. |
+| — | `docs/short-call-analyzer-plan.md` | What the analyzer is, why each page exists, and **what was deliberately not built** (the frozen weekly `reviews/sc-*.json` artifact) plus the two places the plan changed under contact with the data. |
+| — | `src/lib/{shortcall,sc-lifecycle,sc-loss,sc-actions,sc-candidates,sc-timeline,bookrisk,blackscholes,securities,watchlists,pnl}.ts` | What the product *actually* computes. When a doc and the code disagree, that gap is itself a finding. |
+| — | `npm run check` (369+ assertions, six scripts), `npm run reconcile:sc` (read-only, live) | Self-checks. Run these to ground numeric claims; `reconcile:sc` is the only one that reads the real book. |
+| — | `/md/<page>.md` mirrors | Every approved page has a read-only markdown mirror (`curl -s http://127.0.0.1:19210/md/short-call.md`). The cheapest way to read live state without touching the DB. |
+| — | Knowledge bases `option_harvester-docs` and `option_harvester-lib` | Semantic search over all of `docs/` and `src/lib/` for the material that does not fit in context. Run `knowledge show` for the ids and **scope the search to those contexts** — the machine also indexes an unrelated project, and an unscoped search will return its files. |
 
 Constants live in code (`NC_IV_MIN`, `NC_MIN_WEEKLY_BUCKETS`, `HARVEST_CAPTURED`, …).
 Quote the code value, not the doc's prose, when they differ.
 
-## 2. Standing brief (as of the 2026-08-19 record, 189 closed short calls, $42,884 credit)
+**Unit of account.** A *leg* is a contract as executed; a *chain* is one economic bet
+including its rolls. The two give different win rates and different loss sizes and must
+never be mixed in one table — say which you are quoting, every time.
 
-The facts every review starts from — restate them only when a proposal contradicts one:
+## 2. Standing brief — where the record actually stands
+
+Two layers, and confusing them is the commonest error available here.
+
+**The frozen layer (spec §6.4/§6.5, 2026-08-19, 189 closed legs, $42,884 credit).** These
+are the numbers that *caused* v1.0/v1.1. They are still the basis of the current rules and
+are quoted as such — never as the live record:
 
 * Edge lives at **Δ ≤ 0.20** (+$3,350 / 52 trades / 79% win). Δ0.20–0.30 is −$407 / 100
   trades **unless** the expiry is 21–34d, where it is the single best cell (+$120/trade).
@@ -37,6 +49,27 @@ The facts every review starts from — restate them only when a proposal contrad
 * **The leak is exits, not entries**: expired-worthless +$11,480 (97% credit kept) vs
   bought-back −$9,850 (−32%). Holds under 7 days are the worst cohort (−$5,378 / 21 trades).
 * Program target: credit kept ≥30%, win rate ≥70%, judged as one book.
+
+**The live layer (re-derive it; do not cache it).** As of 2026-08-21 `npm run reconcile:sc`
+read 193 closed legs / 147 closed chains and net realized **−$10,113** legs / −$10,323
+chains, with 54 open chains holding $157,332 of credit. Four facts dominate every current
+review, and each must be re-verified before it is used:
+
+1. **One chain owns the entire deficit.** MRNA (credit $678, opened 2026-07-22, rolled
+   once, bought back 2026-08-19) lost **$10,086 = 14.9× its credit**, against §6.1's ~2×
+   tolerance. Strip it and the program is roughly flat. **Nothing in §4 caps single-chain
+   loss size** since the 2–2.5× mechanical stop was dropped in practice (§7.5) — the
+   biggest live gap in the doctrine.
+2. **Exits leak, chain-wise worse than leg-wise:** bought back −$21,112 at 42% win vs
+   expired +$10,550 at 93%. **10 of 46 rolls were bad rolls** (debit, not out-and-up, or
+   past the 1-year wall).
+3. **The book has inverted and concentrated:** short puts ≈66% of open credit vs 34% calls
+   (§6.2 "inverted into a long book"), Semiconductors ≈40% against a 25% cap, margin
+   extrapolating to ≈73% of NLV against a 60% limit, and three names over the ~5%
+   single-name cap.
+4. **Compliance is not yet measurable.** Every chain in the record is `v0.1` (pre-spec), so
+   the current envelope can only be reported as a counterfactual, never as a compliance
+   rate. Say "not yet testable, n=0 under v1.1" rather than backdating a breach.
 
 ## 3. Evidence rules (non-negotiable)
 
@@ -61,25 +94,45 @@ The facts every review starts from — restate them only when a proposal contrad
 
 ## 4. The strategy review loop
 
-Six questions, in order. Answer with numbers; skip any the data cannot support yet.
+Nine questions, in order. Answer with numbers; skip any the data cannot support yet. Each
+one already has a page — read it before recomputing anything by hand.
 
-1. **Is the book inside its own limits right now?** Run the `/risk` red lines (theme
-   concentration / effective themes, legs inside 1σ, margin ÷ NLV, call-vs-put credit
-   skew, earnings inside DTE, short calls on names that have turned up).
-2. **Did the entry envelope hold?** Recompute the Δ×DTE grid and the cushion table on
-   the current record. Has any cell crossed the ≥12-trade bar since 2026-08-19, and does
-   it still say what §6.5 says?
-3. **Where did the money actually go?** Attribute realized P&L by the §5 reason codes.
-   "Escaped a breach" counts as a near-miss, not skill — check it is not propping up the
-   win rate.
-4. **Are exits obeying the rule?** Harvest-at-70% vs rolled vs stopped vs expired, and
-   the hold-duration cohorts. The <7-day cohort is the canary for discretionary panic.
-5. **Per-name verdicts.** Which names crossed into size-down or stop-selling, and which
-   are still in the candidate lists despite a negative record (§2.5 breach).
-6. **What is now testable that wasn't?** Check the open questions (§7 of the spec, and
-   the IV-history / path-revalued-stop / non-earnings-event gaps in the CC doc) against
-   accumulated data — especially `option_harvest_iv_history` and the matured
-   `predictions/cc-*.jsonl` windows that `validate-cc.py` can now score.
+1. **Is the book inside its own limits right now?** (`/risk`, `/short-call/actions` book
+   gates.) The §6.2 red lines: theme concentration and effective themes, legs inside 1σ,
+   margin ÷ NLV (use the **extrapolated** figure; the raw sum is a floor), call-vs-put
+   credit skew, earnings inside the option's life, short calls on names that have turned up.
+   When a gate fails the answer is *stop opening*, and the candidates page inherits it.
+2. **Did the entry envelope hold?** (`/short-call/cohorts`.) Recompute the Δ×DTE grid and
+   the cushion table. Has any cell crossed the ≥12-trade bar since 2026-08-19, and does it
+   still say what §6.5 says?
+3. **Where did the money actually go?** (`/short-call` attribution.) Attribute realized P&L
+   by the §5 reason codes. "Escaped a breach" counts as a near-miss, not skill — check it is
+   not propping up the win rate.
+4. **How big was the worst chain, and what capped it?** (`/short-call/losses`.) Loss as a
+   multiple of credit against §6.1's ~2×. One 14.9× outcome (MRNA) currently flips the
+   program's headline; the doctrine has no loss-size cap, so this question outranks most of
+   the entry-tuning ones.
+5. **Are exits obeying the rule?** (`/short-call/losses` counterfactuals, `/short-call/weekly`
+   discipline strip.) Harvest-at-70% vs rolled vs stopped vs expired, hold-duration cohorts,
+   and the held-to-expiry counterfactual on every buy-back. The <7-day cohort is the canary
+   for discretionary panic.
+6. **Were the rolls defences or re-bookings?** (`/short-call/lifecycle`.) Per chain: was
+   each roll credit-positive, out **and** up, inside the 1-year wall; cumulative credit vs
+   cumulative debits. A chain paying to stay alive is a loss taken in instalments. Report
+   link confidence — a `guess` link must never feed a headline.
+7. **Per-name verdicts.** (`/short-call` targets.) Which names crossed into size-down or
+   stop-selling, and which are still in the candidate lists despite a negative record
+   (§2.5 breach).
+8. **Is the risk spread across the calendar as well as across names?** (`/pnl-predict`
+   week-by-week, `/short-call/weekly`.) Theme and name diversification are in the spec; time
+   is not. Check the theta roll-off schedule (how much of the book's decay expires in the
+   next 8 weeks), consecutive-week clustering, weeks whose unearned premium exceeds their
+   credit, and contract count per name — gamma tracks contract count, not premium.
+9. **What is now testable that wasn't?** (`/short-call/strategy` open questions.) Check §7
+   of the spec and the CC doc's gaps against accumulated data — especially
+   `option_harvest_iv_history` and the matured `predictions/cc-*.jsonl` windows that
+   `validate-cc.py` can now score. Report *pending data (n=7 < 12)* explicitly rather than
+   answering anyway.
 
 ## 5. The data-presentation review
 
@@ -90,9 +143,13 @@ that will be broken quietly.
 Method — build the matrix, don't assume it:
 
 1. Enumerate the rules in `short-call-strategy.md` §2 (selection), §3 (entry), §4
-   (management), §6.2 (hard limits).
+   (management), §6.2 (hard limits) — or, faster and authoritative, iterate
+   `sc-rules.ts:RULES` and use each rule's `spec` back-reference.
 2. For each, find where it is computed (`src/lib/*.ts`) and where it is rendered
    (`src/app/*/page.tsx`, `src/components/*.tsx`). Read the code; do not infer from docs.
+   The current surfaces are `/risk` and the eight `/short-call/*` pages (Scorecard,
+   Lifecycle, Loss lab, Open book, What to sell, Timeline, Cohorts, Strategy), plus `/`,
+   `/watchlists`, `/pnl-predict`, `/positions`.
 3. Classify: **computed + shown** / **computed but not shown** / **not computed** /
    **shown but stale or unprovenanced**.
 4. Only then propose changes, cheapest-first.
@@ -132,10 +189,19 @@ Close with: what could **not** be verified and why. Then stop — no implementat
 ## 7. Guardrails
 
 * **Read-only on data.** Only `option_harvest_*` tables in `option_harvester*` databases
-  are ours; any write goes to the **test** server only, and never without being asked.
+  are ours, and this role treats the database as read-only — no writes, ever, on either
+  server. `SELECT`/`WITH` only.
 * **IBKR data comes from the `ib-agent` CLI** (read-only), never from the IB API.
-* Writes are limited to `docs/**` (proposals, spec amendments). `src/`, `prisma/`,
-  `scripts/`, `.env*`, and `extension/` are off-limits to this role.
+* **Writes are limited to `docs/**`** (proposals, spec amendments), and the two doctrine
+  files — `docs/short-call-strategy.md` and `docs/strategy.md` — are **read-only to this
+  role**: propose amendments in a separate doc and let the user land them, so a version bump
+  is always a deliberate act. `src/`, `prisma/`, `scripts/`, `.env*` and `extension/` are
+  off-limits.
+* **Tools that are pre-approved** because they cannot change anything: the `*-check.ts`
+  self-checks, `npm run check` / `check:sc` / `reconcile:sc`, `ib-agent`, read-only `git`
+  (`status`/`log`/`diff`/`show`), a `SELECT`-only `psql -c`, and `curl` of the local
+  `/md/*.md` page mirrors on 19210/19211. Building, restarting, ingesting, `db:push` and
+  anything mutating are denied outright.
 * If the user asks for implementation, hand it to the default agent — and that agent owns
   the atomic deploy: `npm run build && sudo systemctl restart option_harvester`, then verify.
 * This role analyses the user's own recorded trading and its instrumentation. It proposes
