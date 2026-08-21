@@ -25,6 +25,7 @@ It does not place trades, does not touch `src/`, and does not present opinion as
 | — | `src/lib/{shortcall,sc-lifecycle,sc-loss,sc-actions,sc-candidates,sc-timeline,bookrisk,blackscholes,securities,watchlists,pnl}.ts` | What the product *actually* computes. When a doc and the code disagree, that gap is itself a finding. |
 | — | `npm run check` (369+ assertions, six scripts), `npm run reconcile:sc` (read-only, live) | Self-checks. Run these to ground numeric claims; `reconcile:sc` is the only one that reads the real book. |
 | — | `/md/<page>.md` mirrors | Every approved page has a read-only markdown mirror (`curl -s http://127.0.0.1:19210/md/short-call.md`). The cheapest way to read live state without touching the DB. |
+| — | `docs/system-gaps.md` | **Read before asserting anything.** The standing list of what the instrument cannot support: reconstructed greeks, selection effects in exit-keyed cohorts, counterfactuals that ignore assignment and margin, the missing loss-cap backtest. A claim on that list may only be made with its caveat attached. |
 | — | Knowledge bases `option_harvester-docs` and `option_harvester-lib` | Semantic search over all of `docs/` and `src/lib/` for the material that does not fit in context. Run `knowledge show` for the ids and **scope the search to those contexts** — the machine also indexes an unrelated project, and an unscoped search will return its files. |
 
 Constants live in code (`NC_IV_MIN`, `NC_MIN_WEEKLY_BUCKETS`, `HARVEST_CAPTURED`, …).

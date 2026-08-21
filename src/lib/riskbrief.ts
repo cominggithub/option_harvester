@@ -25,11 +25,14 @@
 import {
   DELTA_GIVE_UP,
   DELTA_WATCH,
+  HARVEST_CAPTURED as HARVEST_CAPTURED_SHARE,
   SIGMA_DANGER,
   TARGET_DELTA,
   type BookRisk,
 } from "@/lib/bookrisk";
 import {
+  ENTRY_DELTA_CORE,
+  ENTRY_SIGMA_FLOOR,
   MAX_MARGIN_PCT_NLV,
   MAX_SHARE_INSIDE_1SIGMA,
   MAX_THEME_CREDIT_SHARE,
@@ -38,6 +41,7 @@ import {
 } from "@/lib/sc-rules";
 import { ACCEPTABLE_LOSS_MULTIPLE, PANIC_EXIT_DAYS, type LossReport } from "@/lib/sc-loss";
 import type { ChainTotals, ScChain } from "@/lib/sc-lifecycle";
+import type { ScTrade } from "@/lib/shortcall";
 import type { Candidate } from "@/lib/sc-candidates";
 
 /** IB starts issuing margin calls around here; below ~5% it liquidates for you. */
@@ -305,8 +309,93 @@ export function thetaCliff(book: BookRisk, asOf: Date): { total: number; expirin
   };
 }
 
+// ── the exit audit: was each buy-back a defence or a choice? ─────────────────
+/**
+ * The naive read of this record — "bought-back chains lost money, expired chains made
+ * money, therefore buying back loses money" — is a **selection effect, not a cause**. You
+ * buy back *because* the position moved against you; you let it expire *because* it did
+ * not. Comparing the two cohorts measures which positions went wrong, not which decision
+ * was wrong.
+ *
+ * The question that can be answered is: **at the moment of closing, did a rule require
+ * it?** A buy-back at |Δ| > 0.30 (the roll line) or in the money is mandated by §4.3/§4.4 —
+ * it is buying back a broken position to prevent assignment, which is the strategy working.
+ * A buy-back at |Δ| ≤ 0.30 with most of the credit still outstanding is a *choice*, and
+ * only those are evidence about exit discipline.
+ *
+ * Both deltas here are reconstructed by inverting Black-Scholes on the traded price against
+ * that day's close (IB exposes no greeks for a historical execution), so they carry the
+ * limits in `docs/system-gaps.md` §1: no intraday spot, no skew, a fixed rate. Trades whose
+ * exit delta could not be recovered are counted separately rather than assumed benign.
+ */
+export type ExitBucket = { n: number; realized: number; credit: number };
+export type ExitAudit = {
+  buyBacks: number;
+  expired: number;
+  buyBackNet: number;
+  expiredNet: number;
+  /** Closed with ≥70% of the credit captured — the harvest rule, not a leak. */
+  harvested: ExitBucket;
+  /** |Δ| past the roll line or ITM at the close: a rule required the exit. */
+  mandated: ExitBucket;
+  /** Inside the roll line with most of the credit outstanding: a discretionary exit. */
+  discretionary: ExitBucket;
+  unknownExitDelta: number;
+  /** What the mandated exits looked like when they were SOLD — the upstream cause. */
+  mandatedEntry: {
+    avgDelta: number | null;
+    avgSigmas: number | null;
+    avgHold: number | null;
+    underCushionFloor: number;
+    overCoreDelta: number;
+    breached: number;
+  };
+};
+
+export function exitAudit(trades: ScTrade[]): ExitAudit | null {
+  const closed = trades.filter((t) => t.closeDate != null || t.exitPrice != null || t.realized !== 0);
+  if (!closed.length) return null;
+  const buy = closed.filter((t) => t.exitPrice != null);
+  const exp = closed.filter((t) => t.exitPrice == null);
+  const bucket = (xs: ScTrade[]): ExitBucket => ({
+    n: xs.length,
+    realized: xs.reduce((a, t) => a + t.realized, 0),
+    credit: xs.reduce((a, t) => a + t.credit, 0),
+  });
+  const itm = (t: ScTrade) => t.moneynessExit != null && t.moneynessExit <= 0;
+  const past = (t: ScTrade) => (t.exitDelta != null && t.exitDelta > DELTA_WATCH) || itm(t);
+  const harvested = buy.filter((t) => (t.keptPct ?? 0) >= HARVEST_CAPTURED_SHARE);
+  const mandated = buy.filter((t) => past(t));
+  // A buy-back whose exit delta could not be recovered is in NEITHER bucket: we cannot say
+  // whether a rule required it, and guessing would put an unknown on the side of the
+  // argument being made.
+  const discretionary = buy.filter((t) => !past(t) && t.exitDelta != null && (t.keptPct ?? 1) < HARVEST_CAPTURED_SHARE);
+  const mean = (xs: (number | null)[]) => {
+    const v = xs.filter((x): x is number => x != null && Number.isFinite(x));
+    return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+  };
+  return {
+    buyBacks: buy.length,
+    expired: exp.length,
+    buyBackNet: buy.reduce((a, t) => a + t.realized, 0),
+    expiredNet: exp.reduce((a, t) => a + t.realized, 0),
+    harvested: bucket(harvested),
+    mandated: bucket(mandated),
+    discretionary: bucket(discretionary),
+    unknownExitDelta: buy.filter((t) => t.exitDelta == null && !itm(t)).length,
+    mandatedEntry: {
+      avgDelta: mean(mandated.map((t) => t.entryDelta)),
+      avgSigmas: mean(mandated.map((t) => t.entrySigmas)),
+      avgHold: mean(mandated.map((t) => t.holdDays)),
+      underCushionFloor: mandated.filter((t) => t.entrySigmas != null && t.entrySigmas < ENTRY_SIGMA_FLOOR).length,
+      overCoreDelta: mandated.filter((t) => t.entryDelta != null && t.entryDelta > ENTRY_DELTA_CORE).length,
+      breached: mandated.filter((t) => t.breached).length,
+    },
+  };
+}
+
 // ── 2. why the strategy is failing ───────────────────────────────────────────
-export function buildFailures(totals: ChainTotals, chains: ScChain[], loss: LossReport): Finding[] {
+export function buildFailures(totals: ChainTotals, chains: ScChain[], loss: LossReport, trades: ScTrade[] = []): Finding[] {
   const out: Finding[] = [];
   const closed = chains.filter((c) => c.state === "closed");
   if (!closed.length) return out;
@@ -331,30 +420,48 @@ export function buildFailures(totals: ChainTotals, chains: ScChain[], loss: Loss
     });
   }
 
-  // Exits, chain-wise. This is the leak the record has always shown.
-  const bb = closed.filter((c) => c.terminal === "bought_back");
-  const ex = closed.filter((c) => c.terminal === "expired");
-  if (bb.length >= 5 && ex.length >= 5) {
-    const bbNet = bb.reduce((a, c) => a + c.realized, 0);
-    const exNet = ex.reduce((a, c) => a + c.realized, 0);
-    const bbWin = bb.filter((c) => c.win).length / bb.length;
-    const exWin = ex.filter((c) => c.win).length / ex.length;
-    if (bbNet < 0 && exNet > 0) {
+  // Exits, judged by the state AT CLOSE rather than by outcome. The cohort comparison
+  // everyone reaches for first is a selection effect; this is the part that is causal.
+  const audit = exitAudit(trades);
+  if (audit && audit.buyBacks >= 10) {
+    const a = audit;
+    out.push({
+      id: "F-EXITS",
+      severity: "high",
+      title: `Buy-backs are where the damage is recognised, not where it is caused: ${a.mandated.n} of ${a.buyBacks} were mandated by the state at close (|Δ| past ${DELTA_WATCH} or already ITM) and carry ${usd(a.mandated.realized)}, while only ${a.discretionary.n} were discretionary — for ${usd(a.discretionary.realized)}.`,
+      evidence: [
+        `mandated exits: ${plural(a.mandated.n, "trade")}, ${usd(a.mandated.realized)} on ${usd(a.mandated.credit)} of credit — closing these prevented assignment, which §4.3/§4.4 require`,
+        `discretionary exits (|Δ| ≤ ${DELTA_WATCH}, under ${pc(HARVEST_CAPTURED_SHARE)} captured): ${plural(a.discretionary.n, "trade")}, ${usd(a.discretionary.realized)}`,
+        `harvests at ≥${pc(HARVEST_CAPTURED_SHARE)} of credit: ${plural(a.harvested.n, "trade")}, ${usd(a.harvested.realized)} — the rule working`,
+        `the raw cohort split (${usd(a.buyBackNet)} bought back vs ${usd(a.expiredNet)} expired) is a selection effect: a position is bought back *because* it moved against you and left to expire *because* it did not`,
+        a.unknownExitDelta ? `${plural(a.unknownExitDelta, "buy-back")} has no recoverable exit delta and is excluded from the split` : "",
+        loss.counterfactual.n >= 5
+          ? `held-to-expiry counterfactual on ${loss.counterfactual.n} losing chains: ${usd(loss.counterfactual.netIfHeld)} instead of ${usd(loss.counterfactual.actual)} — inferred from daily closes, and it prices neither the assignment it avoided nor the margin holding would have consumed, so it is a bound and not a verdict`
+          : "",
+      ].filter(Boolean),
+      mechanism:
+        "Closing a short call at a high delta is the defence, not the failure: it converts an open-ended assignment risk into a bounded, known loss. Reading the buy-back cohort as the cause inverts cause and effect and points the fix at the one discipline that was actually being followed.",
+      action: `Keep closing at the give-up line. Judge exits only on the discretionary bucket — currently ${plural(a.discretionary.n, "trade")} worth ${usd(a.discretionary.realized)} — and look upstream for the money.`,
+      rules: ["SC-M3", "SC-M4"],
+    });
+
+    // The upstream cause, which is where the money actually goes.
+    if (a.mandated.n >= 5 && a.mandated.realized < 0) {
+      const e = a.mandatedEntry;
       out.push({
-        id: "F-EXITS",
+        id: "F-ENTRY",
         severity: "critical",
-        title: `The money is lost at the exit, not the entry: bought-back chains are ${usd(bbNet)} while chains left to expire are ${usd(exNet)}.`,
+        title: `The real leak is upstream: every one of those ${a.mandated.n} forced exits was sold inside the cushion floor, at an average of ${e.avgSigmas?.toFixed(2)}σ against a ${ENTRY_SIGMA_FLOOR}σ minimum.`,
         evidence: [
-          `${plural(bb.length, "chain")} bought back, ${pc(bbWin)} win rate, ${usd(bbNet)}`,
-          `${plural(ex.length, "chain")} expired worthless, ${pc(exWin)} win rate, ${usd(exNet)}`,
-          loss.counterfactual.n >= 5
-            ? `held-to-expiry counterfactual on ${loss.counterfactual.n} losing chains: ${usd(loss.counterfactual.netIfHeld)} instead of ${usd(loss.counterfactual.actual)} (inferred from daily bars)`
-            : "",
-        ].filter(Boolean),
+          `at sale: average |Δ| ${e.avgDelta?.toFixed(2)} (target ${TARGET_DELTA}), average cushion ${e.avgSigmas?.toFixed(2)}σ, average hold ${e.avgHold?.toFixed(0)} days`,
+          `${e.underCushionFloor} of ${a.mandated.n} were under the ${ENTRY_SIGMA_FLOOR}σ floor; ${e.overCoreDelta} were sold above Δ${ENTRY_DELTA_CORE}`,
+          `${e.breached} of them traded through the strike at some point — the exit was not a choice by then`,
+          `total cost of that entry error: ${usd(a.mandated.realized)}`,
+        ],
         mechanism:
-          "Every buy-back converts an unrealised mark into realised cash, and the decision to do it is made under pressure — usually when the mark is worst. Expiry, by contrast, needs no decision. The gap between the two columns is the price of intervening.",
-        action: "Make the exit mechanical: harvest at 70% of credit, otherwise let it run to the give-up line. No discretionary buy-backs in between.",
-        rules: ["SC-M1", "SC-M2"],
+          "A strike inside one expected move is reachable by ordinary noise, so the position arrives at the give-up line as a matter of course rather than as an accident. By the time delta is past the roll line, every remaining option is bad: hold and risk assignment, or close and book the loss. The decision that mattered was made at the sale.",
+        action: `Enforce the cushion floor at entry — it is the single gate that separates these from the harvests (${a.harvested.n} harvested trades averaged a wider cushion) — and refuse the trade when no strike inside the expiry window clears ${ENTRY_SIGMA_FLOOR}σ.`,
+        rules: ["SC-E3", "SC-E1"],
       });
     }
   }
@@ -487,6 +594,8 @@ export function buildRiskBrief(args: {
   totals: ChainTotals;
   chains: ScChain[];
   loss: LossReport;
+  /** Leg-level record — the only place the state at CLOSE (exit delta) survives. */
+  trades?: ScTrade[];
   candidates: Candidate[];
   openingBlockedBy: string[];
   ingestAsOf: string | null;
@@ -496,7 +605,7 @@ export function buildRiskBrief(args: {
   const asOf = args.asOf ?? new Date();
   const { book } = args;
   const risks = buildRisks(book, asOf);
-  const failures = buildFailures(args.totals, args.chains, args.loss);
+  const failures = buildFailures(args.totals, args.chains, args.loss, args.trades ?? []);
   const targets = buildTargets(args.candidates, book);
 
   const worst = risks[0]?.severity ?? "info";

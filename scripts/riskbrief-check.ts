@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import {
   CUSHION_CRITICAL,
+  exitAudit,
   SEVERITY_RANK,
   buildFailures,
   buildRiskBrief,
@@ -18,6 +19,7 @@ import type { SecurityRow } from "../src/lib/securities";
 import type { ChainTotals, ScChain } from "../src/lib/sc-lifecycle";
 import type { LossReport } from "../src/lib/sc-loss";
 import type { Candidate } from "../src/lib/sc-candidates";
+import type { ScTrade } from "../src/lib/shortcall";
 
 let pass = 0;
 const ok = (cond: boolean, msg: string) => {
@@ -163,8 +165,7 @@ function cleanBook(bal: unknown = balance({})): BookRisk {
   ok(cap != null && cap.severity === "critical", "a 14.9× loss raises the missing-loss-cap finding as critical");
   ok(cap.title.includes("MRNA") && cap.title.includes("14.9"), "the finding names the chain and its multiple");
   ok(cap.evidence.some((e) => e.includes("%")), "it quantifies that chain's share of the deficit");
-  const exits = f.find((x) => x.id === "F-EXITS");
-  ok(exits != null && exits.evidence.some((e) => e.includes("counterfactual")), "the exit finding cites the held-to-expiry counterfactual when there is one");
+  ok(f.find((x) => x.id === "F-EXITS") == null, "no exit claim is made when no leg-level exit data was supplied — an absent audit is silence, not a verdict");
   ok(f.find((x) => x.id === "F-AVOIDABLE")!.title.includes("self-inflicted"), "an avoidable share over half is called self-inflicted");
   ok(f.find((x) => x.id === "F-VERSION")!.severity === "info", "the pre-spec caveat is information, not an alarm");
   ok(f.every((x) => x.mechanism && x.action), "every failure explains the mechanism and names an action");
@@ -195,6 +196,61 @@ function cleanBook(bal: unknown = balance({})): BookRisk {
   const thin = buildTargets([cand({ ownRecord: { trades: 1, realized: -1_171, keptPct: -2 } })], b);
   ok(thin[0].caution != null && thin[0].caution.includes("too few"), "a single losing trade is surfaced as a caution, not used as a veto");
   ok(buildTargets([cand({})], b, 0).length === 0, "the limit is respected");
+}
+
+// ── the exit audit: defence vs choice, judged at the close ───────────────────
+{
+  const trade = (o: Partial<ScTrade>): ScTrade =>
+    ({ symbol: "AAA", strike: 100, credit: 200, realized: -400, keptPct: -2, exitPrice: 6, exitDelta: 0.5,
+       moneynessExit: 0.05, entryDelta: 0.25, entrySigmas: 0.8, holdDays: 12, breached: true, closeDate: "2026-08-01", ...o }) as unknown as ScTrade;
+
+  const trades: ScTrade[] = [
+    // mandated: past the roll line
+    trade({ exitDelta: 0.5, realized: -400 }),
+    trade({ exitDelta: 0.35, realized: -300 }),
+    trade({ exitDelta: 0.4, realized: -200 }),
+    trade({ exitDelta: 0.6, realized: -150 }),
+    // mandated: ITM at close even though the delta is missing — ITM must win
+    trade({ exitDelta: null, moneynessExit: -0.02, realized: -900 }),
+    // harvest: most of the credit captured
+    ...Array.from({ length: 5 }, () => trade({ exitDelta: 0.05, moneynessExit: 0.3, realized: 160, keptPct: 0.8, breached: false })),
+    // discretionary: inside the roll line, credit still outstanding
+    trade({ exitDelta: 0.2, moneynessExit: 0.2, realized: -50, keptPct: -0.25, breached: false }),
+    // expired worthless
+    ...Array.from({ length: 5 }, () => trade({ exitPrice: null, exitDelta: null, moneynessExit: null, realized: 200, keptPct: 1, breached: false })),
+    // a buy-back whose exit delta could not be recovered and was not ITM
+    trade({ exitDelta: null, moneynessExit: 0.1, realized: -70, keptPct: -0.35, breached: false }),
+  ];
+
+  const a = exitAudit(trades)!;
+  ok(a.buyBacks === 12 && a.expired === 5, `buy-backs and expiries are counted apart (got ${a.buyBacks}/${a.expired})`);
+  ok(a.mandated.n === 5, `only exits past the roll line or ITM count as mandated (got ${a.mandated.n})`);
+  ok(a.mandated.realized === -1950, "mandated realized sums the defensive closes");
+  ok(a.harvested.n === 5 && a.harvested.realized === 800, "harvests are separated from both buckets — the rule working is not a leak");
+  ok(a.discretionary.n === 1, `a discretionary exit is inside the roll line AND under the harvest line (got ${a.discretionary.n})`);
+  ok(a.unknownExitDelta === 1, "a buy-back with no recoverable exit delta is counted, not assumed benign");
+  ok(a.mandatedEntry.underCushionFloor === 5 && a.mandatedEntry.overCoreDelta === 5, "the audit reports what the mandated exits looked like at entry");
+  ok(a.mandatedEntry.avgSigmas != null && Math.abs(a.mandatedEntry.avgSigmas - 0.8) < 1e-9, "average entry cushion of the mandated exits");
+  ok(exitAudit([]) === null, "no closed trades → no audit rather than a divide-by-zero");
+
+  // The finding must NOT claim exits cause the loss, and must name the upstream cause.
+  const chain = (o: Partial<ScChain>): ScChain =>
+    ({ id: "c", symbol: "AAA", theme: "T", legs: [{ entryDelta: 0.25, dteEntry: 40, entrySigmas: 0.8, contracts: 1, holdDays: 12, strike: 100 }], rolls: 0,
+       state: "closed", terminal: "bought_back", openedAt: "2026-07-01", endedAt: "2026-08-01", ageDays: 31, contractsMax: 1,
+       creditGross: 200, debitsPaid: 600, realized: -400, commission: 0, keptPct: -2, openCredit: 0, win: false,
+       everBreached: true, rollCreditNet: 0, badRolls: 0, ruleVersion: "0.1", linkConfidence: "certain", ...o }) as unknown as ScChain;
+  const many = Array.from({ length: 12 }, (_, i) => chain({ id: `c${i}` }));
+  const f = buildFailures({ chains: 12, rolls: 0, uncertainLinks: 0, realized: -4_800 } as ChainTotals, many, {
+    cases: [], losses: 12, totalLoss: -4_800, avoidableLoss: -4_800, marketLoss: 0, byRuleToday: [], counterfactual: { n: 0 }, outsizedCases: 0, blockedTodayCases: 0,
+  } as unknown as LossReport, trades);
+  const ex = f.find((x) => x.id === "F-EXITS")!;
+  ok(ex != null, "the exit finding is emitted once there are enough buy-backs");
+  ok(!/lost at the exit/i.test(ex.title), "the finding no longer claims the loss happens AT the exit");
+  ok(ex.evidence.some((e) => /selection effect/i.test(e)), "it names the selection effect explicitly");
+  ok(ex.evidence.some((e) => /mandated/i.test(e)) && ex.evidence.some((e) => /discretionary/i.test(e)), "it separates defence from choice");
+  const up = f.find((x) => x.id === "F-ENTRY")!;
+  ok(up != null && up.severity === "critical", "the upstream entry finding is the critical one, not the exit");
+  ok(up.rules.includes("SC-E3"), "and it cites the cushion rule");
 }
 
 console.log(`riskbrief-check: ${pass} assertions passed (cushion floor ${CUSHION_CRITICAL * 100}%).`);

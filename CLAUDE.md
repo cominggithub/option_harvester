@@ -18,6 +18,7 @@ lives in the knowledge map below; read the row that matches your task before div
 | Know *why* the strategy trades what it does | **`docs/strategy.md`** — trading rationale |
 | Work on short calls: entry rules, management, the per-target record | **`docs/short-call-strategy.md`** — the formal, versioned short-call spec (+ what the record proves) |
 | Work on the `/short-call/*` analyzer section (why each page exists, what was deliberately not built) | **`docs/short-call-analyzer-plan.md`** — the build plan, shipped 2026-08-20 |
+| Know what the instrument cannot yet tell you (and why a number may be wrong) | **`docs/system-gaps.md`** — the standing list of system insufficiencies, decision-impact ordered |
 | Audit the strategy against its own record / propose a revision | **`docs/adviser-playbook.md`** + the `option-adviser` role (`.kiro/agents/option-adviser.json`) — evidence rules, `n` thresholds, proposals go to `docs/` only |
 | Need IBKR data (positions, expiries, quotes) from code or by hand | **`docs/ib-agent-integration.md`** — route everything through the read-only `ib-agent` CLI; **never** call the IB Client Portal / TWS API from this repo |
 | Work on the Δ0.30 naked-call model / `ccscore` / predictions | **`docs/cc-target-strategy.md`** — model, backtest, predict→validate loop |

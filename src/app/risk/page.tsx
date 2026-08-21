@@ -270,6 +270,7 @@ export default async function RiskPage() {
     totals: a.totals,
     chains: a.chains,
     loss,
+    trades: a.record.trades,
     candidates,
     openingBlockedBy: openingBlocked(buildGates(r)),
     ingestAsOf: dash.asOf ?? null,
