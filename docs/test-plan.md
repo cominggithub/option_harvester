@@ -35,6 +35,7 @@ npx tsx scripts/sc-lifecycle-check.ts # roll chains: linkage rules, confidence, 
 npx tsx scripts/sc-analyzer-check.ts  # loss anatomy, timeline weeks, roll targets, candidate gates
 npx tsx scripts/leveraged-check.ts    # LEV list: 2x/3x long ETFs, inverse/short excluded
 npx tsx scripts/bookrisk-check.ts     # /risk engine: σ cushion, themes, HHI, shock, verdicts
+npx tsx scripts/riskbrief-check.ts    # /risk brief: severity order, mechanisms, no alarm without a number
 npx tsx scripts/shortcall-check.ts    # /short-call: BS implied vol/Δ, path, attribution, zones
 npx tsx scripts/page-markdown-check.ts # Markdown route mapping + HTML conversion
 npx tsx scripts/positions-check.ts    # IB symbol recovery + expiry→week roll-up (then a read-only file↔display reconcile)
@@ -134,6 +135,17 @@ What they cover:
   cash-vs-vintage split, the roll-target constructor (credit-positive first, no roll past
   the 1-year wall, "none fits" is a valid answer), and the candidate gate stack naming the
   gate that failed.
+- **riskbrief-check** — the `/risk` brief (`lib/riskbrief.ts`): a compliant 25-name book
+  raises **nothing** (the fixture has to be genuinely diversified, because the engine is
+  right to call a one-leg book concentrated); margin past its limit is emitted first and
+  cites the cushion, not just the ratio; a cushion under 10% is always critical; findings
+  are worst-first, unique by id, and every one carries both a mechanism and an action;
+  `thetaCliff` reads 50% when half the decay expires inside the window and null on an empty
+  book; the failure diagnosis fires `F-LOSSCAP` on a 14.9× chain and names it, calls an
+  avoidable share over half "self-inflicted", keeps the pre-spec caveat at `info`, and
+  produces nothing but caveats for a profitable rule-abiding record; targets exclude a name
+  failing either gate stack and surface a thin negative record as a caution rather than a
+  veto; a missing balance snapshot becomes a declared gap.
 - **page-markdown-check** — approved UI-path ↔ `.md` URL mapping, API-path rejection,
   `#page-content` isolation, front matter/source URL, heading/table/link conversion,
   and removal of global navigation, scripts, and SVG internals.

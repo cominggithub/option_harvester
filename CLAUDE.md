@@ -174,7 +174,12 @@ Pages (all `force-dynamic`):
   P/L). Built by `buildOptionPnlByExpiry` in `positions.ts`.
 - `src/app/upload/page.tsx` — IB CSV upload; `src/app/wiki/page.tsx`.
 - `src/app/risk/page.tsx` — **Book risk**: portfolio read on the short premium book
-  inside 1 year, measured against the strategy doctrine (docs/strategy.md § 五) —
+  inside 1 year, measured against the strategy doctrine (docs/strategy.md § 五). Opens with
+  **the brief** (`lib/riskbrief.ts`) — the page's *reading* of the data: what the risk is
+  now (worst-first, each finding carrying its numbers, the mechanism, the action and the
+  rule ids), **why the strategy fails** from the closed record, and **what to sell next**
+  from the candidates that clear both gate stacks. Derived at read time, so a Sync rewrites
+  it with nothing to re-run. Then the evidence —
   credit/margin/Θ/net-Δ$ KPIs, doctrine conformance (Δ band, median DTE, effective
   names/themes), risk flags (inside 1σ of the strike, short calls on rising names,
   earnings before expiry, Δ past the roll/give-up lines), an **earnings-before-expiry
@@ -339,9 +344,9 @@ Scripts (`scripts/`):
   `docs/cc-target-strategy.md`. Predictions written to `predictions/cc-*.jsonl`.
 - Entrypoints: `daily.sh`, `spreads.sh`, `server.sh`.
 - Self-checks: `*-check.ts` (`pnl`, `posanalysis`, `positions`, `trades`, `news`, `roic`,
-  `leveraged`, `bookrisk`, `shortcall`, `sc-rules`, `sc-lifecycle`, `sc-analyzer`, `greeks`) —
-  see test plan. **`npm run check`** runs the short-call suite + the delta-freshness check
-  (441 assertions over seven scripts) and is the gate for any change under `/short-call`,
+  `leveraged`, `bookrisk`, `riskbrief`, `shortcall`, `sc-rules`, `sc-lifecycle`, `sc-analyzer`, `greeks`) —
+  see test plan. **`npm run check`** runs the short-call suite + the delta-freshness and
+  risk-brief checks (493 assertions over eight scripts) and is the gate for any change under `/short-call`,
   `/risk` or anything that renders a Δ; `npm run check:sc`
   is the analyzer-only subset. **`npm run reconcile:sc`** (`sc-reconcile.ts`) is the one
   that touches the DB — read-only — and fails if leg totals and chain totals disagree.

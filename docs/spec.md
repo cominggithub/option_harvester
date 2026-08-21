@@ -88,7 +88,27 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
 - **Book risk** (`/risk`, `getBookRisk` in `lib/bookrisk.ts`) — portfolio-level risk read
   on the **short premium book inside 1 year**, measured against the live doctrine
   (docs/strategy.md § 五: sell 35–45 DTE at |Δ| ≈ 0.15 on non-rising names, spread wide,
-  roll for credit inside the 1-year wall, judge the book not the trade). Sections:
+  roll for credit inside the 1-year wall, judge the book not the trade). A **left rail**
+  (`components/PageToc.tsx`) jumps to each section and carries the number that decides
+  whether it needs opening, red when the section holds a breach.
+  The page opens with **the brief** (`lib/riskbrief.ts`) — its *reading* of the data rather
+  than more of the data — in three parts:
+  (0a) **The brief** — findings ordered worst-first, each with the numbers that triggered
+  it, the **mechanism** (why that number hurts, which is what separates a risk from a
+  statistic), the action, and the rule ids it breaches. Liquidity outranks everything
+  because the broker acts before a thesis resolves. A closing block states **what the
+  reading could not see** (missing balance snapshot, partial margin coverage, stale deltas,
+  undated earnings, guessed roll links), so a silent gap never reads as safety.
+  (0b) **Why the strategy fails** — diagnosis from the closed record, chain-wise: the
+  missing per-chain loss cap, the buy-back-versus-expiry leak with its held-to-expiry
+  counterfactual, roll quality, the avoidable-versus-market split under *today's* envelope,
+  panic exits, and the caveat that every closed chain predates the written rules.
+  (0c) **What to sell next** — the candidates that clear both the doctrine gates and the
+  operator's profile, one executable sentence each with its reasons, prefaced by a
+  stop-opening banner when §6.2 is breached.
+  Everything is derived at read time (`force-dynamic`), so **a Sync is all it takes for the
+  brief to say something different** — there is nothing to re-run, and a *re-analyse now*
+  link forces a fresh read. Then the evidence sections:
   (1) **Book at a glance** — credit, cost-to-close, open P/L + % captured, Θ/day, exact
   maintenance margin with the **unsynced-leg extrapolation** (the raw sum is a floor),
   net Δ$, assignment notional; (2) **Doctrine conformance** — share of legs inside the
@@ -606,6 +626,31 @@ what hit the account, but mixing vintages) and **vintage** (the week it was sold
 those entries ended, the only lens that can judge entry quality). Discipline columns are
 vintage-side on purpose: drift shows up there weeks before it shows up in P&L. Weeks are
 Mon–Sun rolling into the month of their Monday, matching `pnl.ts:weeklyByMonth`.
+
+### Risk brief (`src/lib/riskbrief.ts`, pure + `scripts/riskbrief-check.ts`)
+`buildRiskBrief({ book, totals, chains, loss, candidates, … })` — the `/risk` page's reading
+of its own data. Three producers, each returning ordered `Finding`s
+(`{ id, severity, title, evidence[], mechanism, action, rules[] }`):
+
+- **`buildRisks(book)`** — live exposure. `R-MARGIN` (account maintenance ÷ NLV past
+  `MAX_MARGIN_PCT_NLV`, escalated to critical when the cushion is under
+  `CUSHION_CRITICAL` = 10%), `R-CUSHION`, `R-THEME`, `R-NAME`, `R-SIGMA`, `R-INVERTED`,
+  `R-RISING`, `R-EARNINGS`, `R-BLOWN`/`R-DRIFT`, and `R-CLIFF` — the calendar axis the spec
+  does not cover, via `thetaCliff()`: the share of daily decay expiring inside
+  `CLIFF_WEEKS` = 8. Liquidity is emitted first by construction.
+- **`buildFailures(totals, chains, loss)`** — diagnosis, chain-wise: `F-LOSSCAP` (a chain
+  past `ACCEPTABLE_LOSS_MULTIPLE` with the share of the deficit it owns), `F-EXITS`
+  (bought-back vs expired, plus the held-to-expiry counterfactual), `F-ROLLS`,
+  `F-AVOIDABLE` (the split, and which rule under today's envelope), `F-PANIC`, and
+  `F-VERSION` — emitted as `info`, never as an alarm, because pre-spec chains cannot
+  breach rules that did not exist.
+- **`buildTargets(candidates, book)`** — only names clearing *both* the doctrine gates and
+  the profile stack, rendered as one executable sentence plus its reasons, with a caution
+  when a name's record is negative but under the 3-trade verdict threshold.
+
+Severity ordering is total (`SEVERITY_RANK`), findings are unique by id, and a compliant
+book yields **no** findings rather than filler. `gaps[]` names every input the reading could
+not see; `freshness[]` reports the age of each input beside the conclusions drawn from it.
 
 ### News (`src/lib/news.ts`, lexicon + `_selfCheck`)
 `getNews(ticker)` — live `yf.search` headlines (cached 30 min). `flagNegative()`

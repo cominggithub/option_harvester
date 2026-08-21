@@ -21,6 +21,12 @@ import {
 import { DeltaProvenanceNote, DeltaValue } from "@/components/DeltaCell";
 import { summarizeDeltaProvenance } from "@/lib/greekage";
 import { PageToc, type TocItem } from "@/components/PageToc";
+import { getScAnalyzer } from "@/lib/sc-data";
+import { getDashboardData } from "@/lib/securities";
+import { buildLossReport } from "@/lib/sc-loss";
+import { buildCandidates, PROFILE } from "@/lib/sc-candidates";
+import { buildGates, openingBlocked } from "@/lib/sc-actions";
+import { buildRiskBrief, type Finding, type Severity } from "@/lib/riskbrief";
 import { MAX_MARGIN_PCT_NLV, MAX_THEME_CREDIT_SHARE } from "@/lib/sc-rules";
 import { formatTimestamp } from "@/lib/format";
 
@@ -200,8 +206,48 @@ function FlagList({ title, legs, tone, hint }: { title: string; legs: BookLeg[];
   );
 }
 
+const SEV_STYLE: Record<Severity, { chip: string; edge: string; label: string }> = {
+  critical: { chip: "bg-rose-100 text-rose-900", edge: "border-rose-600", label: "critical" },
+  high: { chip: "bg-rose-50 text-rose-800", edge: "border-rose-400", label: "high" },
+  medium: { chip: "bg-amber-50 text-amber-800", edge: "border-amber-400", label: "medium" },
+  info: { chip: "bg-line text-ink-muted", edge: "border-line", label: "context" },
+};
+
+/** One finding, read as a paragraph: what, on what numbers, why it hurts, what to do. */
+function FindingCard({ f }: { f: Finding }) {
+  const s = SEV_STYLE[f.severity];
+  return (
+    <div className={`border-l-2 ${s.edge} bg-surface px-4 py-3`}>
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${s.chip}`}>{s.label}</span>
+        {f.rules.map((r) => (
+          <span key={r} className="rounded bg-canvas px-1 text-[10px] font-semibold text-ink-muted">
+            {r}
+          </span>
+        ))}
+        <span className="text-[13.5px] font-semibold leading-snug text-ink">{f.title}</span>
+      </div>
+      <ul className="mt-1.5 space-y-0.5">
+        {f.evidence.map((e, i) => (
+          <li key={i} className="tnum text-[11.5px] leading-snug text-ink-muted">
+            · {e}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-1.5 text-[12.5px] leading-relaxed text-ink-muted">
+        <span className="font-semibold text-ink-faint">Why it hurts. </span>
+        {f.mechanism}
+      </p>
+      <p className="mt-1 text-[12.5px] leading-relaxed text-ink">
+        <span className="font-semibold text-ink-faint">Do. </span>
+        {f.action}
+      </p>
+    </div>
+  );
+}
+
 export default async function RiskPage() {
-  const r: BookRisk = await getBookRisk();
+  const [r, a, dash] = await Promise.all([getBookRisk(), getScAnalyzer(), getDashboardData()]);
   const t = r.totals;
   const c = r.concentration;
   const b = r.breaches;
@@ -211,7 +257,31 @@ export default async function RiskPage() {
   // in the rail itself so the page's alarms are visible without scrolling.
   const flagged = b.withinOneSigma.length + b.trendUp.length + b.itm.length + b.deltaOverGiveUp.length;
   const actionable = r.verdicts.filter((v) => v.verdict !== "hold").reduce((a, v) => a + v.legs.length, 0);
+  // The brief: the page's reading of its own data. Recomputed on every request (the page
+  // is force-dynamic), so a Sync is all it takes to make it say something different.
+  // Δ provenance for every leg in the book (drives the Δ$ KPI, the band conformance
+  // and the breach lists below, so it belongs at the top of the page).
+  const deltaProvenance = summarizeDeltaProvenance(r.legs.map((l) => l.deltaRead));
+  const asOfNow = new Date();
+  const loss = buildLossReport(a.chains, a.bars, asOfNow);
+  const candidates = buildCandidates(dash.securities, a.record.targets, r, asOfNow, { dteMin: PROFILE.dteMin, dteMax: PROFILE.dteMax });
+  const brief = buildRiskBrief({
+    book: r,
+    totals: a.totals,
+    chains: a.chains,
+    loss,
+    candidates,
+    openingBlockedBy: openingBlocked(buildGates(r)),
+    ingestAsOf: dash.asOf ?? null,
+    deltaStaleLegs: deltaProvenance.stale,
+    asOf: asOfNow,
+  });
+
   const toc: TocItem[] = [
+    { id: "brief", label: "The brief", count: brief.level, tone: brief.level === "critical" ? "bad" : brief.level === "normal" ? "ok" : "warn" },
+    { id: "why", label: "Why it fails", count: brief.failures.length, tone: brief.failures.some((f) => f.severity === "critical") ? "bad" : "warn" },
+    { id: "targets", label: "What to sell next", count: brief.targets.length, tone: brief.openingBlockedBy.length ? "warn" : "ok" },
+    { id: "evidence", label: "Evidence", group: true },
     { id: "glance", label: "Book at a glance", count: t.legs },
     {
       id: "conformance",
@@ -234,9 +304,6 @@ export default async function RiskPage() {
     { id: "actions", label: "What to do now", count: actionable, tone: actionable ? "warn" : "ok" },
     { id: "excluded", label: "Outside this analysis", count: r.excluded.longLegs + r.excluded.stockLegs + r.excluded.beyondHorizon },
   ];
-  // Δ provenance for every leg in the book (drives the Δ$ KPI, the band conformance
-  // and the breach lists below, so it belongs at the top of the page).
-  const deltaProvenance = summarizeDeltaProvenance(r.legs.map((l) => l.deltaRead));
 
   if (!t.legs) {
     return (
@@ -275,6 +342,120 @@ export default async function RiskPage() {
       <div className="mt-4 flex items-start gap-6">
         <PageToc items={toc} />
         <div className="min-w-0 flex-1">
+      {/* ── the brief: what the data says, not what it contains ──────────── */}
+      <div id="brief" className="scroll-mt-4">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+          <h2 className="text-[13px] font-semibold uppercase tracking-wider text-ink-faint">The brief</h2>
+          <span className="text-[11px] text-ink-faint">
+            re-read on every load · {brief.freshness.map((f) => `${f.label} ${f.value}`).join(" · ")} ·{" "}
+            <Link href={`/risk?t=${Date.now()}`} className="underline">
+              re-analyse now
+            </Link>
+          </span>
+        </div>
+        <p className={`mt-2 border-l-2 ${SEV_STYLE[brief.level === "critical" ? "critical" : brief.level === "high" ? "high" : brief.level === "elevated" ? "medium" : "info"].edge} bg-surface px-4 py-3 text-[14px] leading-relaxed text-ink`}>
+          {brief.headline}
+        </p>
+        <div className="mt-2 space-y-2">
+          {brief.risks.map((f) => (
+            <FindingCard key={f.id} f={f} />
+          ))}
+          {brief.risks.length === 0 && (
+            <div className="bg-surface px-4 py-3 text-[13px] text-ink-muted">
+              Nothing in the book breaches a limit it sets itself. That is the intended state, not an absence of analysis — the
+              sections below are the evidence behind it.
+            </div>
+          )}
+        </div>
+        {brief.gaps.length > 0 && (
+          <div className="mt-2 bg-surface px-4 py-3">
+            <div className="overline text-ink-faint">What this reading could not see</div>
+            <ul className="mt-1 space-y-0.5">
+              {brief.gaps.map((g, i) => (
+                <li key={i} className="text-[11.5px] leading-snug text-amber-700">
+                  · {g}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+
+      {/* ── why the strategy is failing ──────────────────────────────────── */}
+      <H2 id="why" note={`${a.totals.chains} closed chains · ${money(a.totals.realized)} realized`}>
+        Why the strategy fails
+      </H2>
+      <p className="mt-2 max-w-4xl text-[12.5px] leading-relaxed text-ink-muted">
+        Diagnosis from the closed record — chains, not legs, so a position rolled four times is one bet and not three
+        management losses. Read this as why the program is where it is; the per-trade detail lives on{" "}
+        <Link href="/short-call/losses" className="underline">
+          Loss lab
+        </Link>{" "}
+        and{" "}
+        <Link href="/short-call/lifecycle" className="underline">
+          Lifecycle
+        </Link>
+        .
+      </p>
+      <div className="mt-2 space-y-2">
+        {brief.failures.map((f) => (
+          <FindingCard key={f.id} f={f} />
+        ))}
+        {brief.failures.length === 0 && (
+          <div className="bg-surface px-4 py-3 text-[13px] text-ink-muted">
+            No closed chain yet carries a diagnosis — either the record is too short or it has not lost money in a way that
+            breaks a rule.
+          </div>
+        )}
+      </div>
+
+      {/* ── what to sell next ────────────────────────────────────────────── */}
+      <H2 id="targets" note={`Δ≈${TARGET_DELTA} · ${PROFILE.dteMin}–${PROFILE.dteMax} DTE · IV > ${PROFILE.ivMin}% · $${PROFILE.priceMin}–${PROFILE.priceMax} · ≥${(PROFILE.minVolume / 1e6).toFixed(0)}M shares`}>
+        What to sell next
+      </H2>
+      {brief.openingBlockedBy.length > 0 && (
+        <div className="mt-2 border-l-2 border-rose-600 bg-surface px-4 py-3 text-[13px] leading-relaxed text-ink">
+          <span className="font-semibold text-rose-700">These are for after you have made room.</span> The book breaches{" "}
+          {brief.openingBlockedBy.join(", ")}, and §6.2 says fix that before adding risk. Selling any of the below today makes
+          the finding above worse, whatever the premium looks like.
+        </div>
+      )}
+      <div className="mt-2 space-y-2">
+        {brief.targets.map((p) => (
+          <div key={p.symbol} className="bg-surface px-4 py-3">
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <Link href={`/stock/${p.symbol}`} className="text-[13.5px] font-semibold text-ink hover:underline">
+                {p.symbol}
+              </Link>
+              <span className="text-[10.5px] text-ink-faint">{p.theme}</span>
+              <span className="text-[13px] text-ink">{p.headline}</span>
+            </div>
+            <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5">
+              {p.reasons.map((why, i) => (
+                <li key={i} className="text-[11.5px] leading-snug text-ink-muted">
+                  · {why}
+                </li>
+              ))}
+            </ul>
+            {p.caution && <p className="mt-1 text-[11.5px] leading-snug text-amber-700">Caution: {p.caution}</p>}
+          </div>
+        ))}
+        {brief.targets.length === 0 && (
+          <div className="bg-surface px-4 py-3 text-[13px] text-ink-muted">
+            Nothing clears both the doctrine gates and your profile today. A day with no trade is a legitimate output; forcing
+            one is how the worst cohorts in the record were written. The full stack, including near misses, is on{" "}
+            <Link href="/short-call/candidates" className="underline">
+              What to sell
+            </Link>
+            .
+          </div>
+        )}
+      </div>
+      <p className="mt-1.5 text-[11px] leading-snug text-ink-faint">
+        Strikes, deltas and credits are Black-Scholes constructions from each underlying&rsquo;s ATM IV at the last ingest — check
+        the chain before selling. Ranking is by gates cleared then credit, and is not advice.
+      </p>
+
       {/* ── the book at a glance ─────────────────────────────────────────── */}
       <H2 id="glance" note={`${t.legs} short legs · ${t.symbols} names · ${t.callLegs} calls / ${t.putLegs} puts`}>Book at a glance</H2>
       <div className="mt-3 grid grid-cols-2 gap-px bg-line md:grid-cols-3 xl:grid-cols-6">
