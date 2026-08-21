@@ -163,7 +163,10 @@ export function buildGates(book: BookRisk): BookGate[] {
   const t = book.totals;
   const c = book.concentration;
   const nlv = book.balance?.netLiquidation ?? null;
-  const marginPct = t.marginPctOfNlvExtrapolated ?? t.marginPctOfNlv;
+  // Prefer IB's own account requirement — the §6.2 limit is about account solvency, and
+  // the per-leg sum (even extrapolated) is only a floor. Fall back to the estimate.
+  const marginPct = t.accountMarginPctOfNlv ?? t.marginPctOfNlvExtrapolated ?? t.marginPctOfNlv;
+  const marginSource = t.accountMarginPctOfNlv != null ? "IB account requirement" : t.marginPctOfNlvExtrapolated != null ? "extrapolated from synced legs" : "synced legs only (a floor)";
   const inside1Sigma = book.breaches.withinOneSigma.length;
   const callCredit = book.bySide.find((s) => s.key.toLowerCase().includes("call"))?.credit ?? null;
   const putCredit = book.bySide.find((s) => s.key.toLowerCase().includes("put"))?.credit ?? null;
@@ -182,7 +185,9 @@ export function buildGates(book: BookRisk): BookGate[] {
     "SC-B1": `top theme ${c.maxTheme?.key ?? "—"} at ${c.maxTheme ? `${Math.round(c.maxTheme.creditShare * 100)}%` : "—"}, ${c.effectiveThemes?.toFixed(1) ?? "—"} effective themes (limits ${Math.round(
       MAX_THEME_CREDIT_SHARE * 100,
     )}% / ${MIN_EFFECTIVE_THEMES})`,
-    "SC-B2": `${marginPct != null ? `${Math.round(marginPct * 100)}%` : "not synced"} of NLV${nlv ? ` ($${Math.round(nlv).toLocaleString()})` : ""} (limit ${Math.round(MAX_MARGIN_PCT_NLV * 100)}%)`,
+    "SC-B2": `${marginPct != null ? `${Math.round(marginPct * 100)}%` : "not synced"} of NLV${nlv ? ` ($${Math.round(nlv).toLocaleString()})` : ""} (limit ${Math.round(MAX_MARGIN_PCT_NLV * 100)}%) · ${marginSource}${
+      t.excessLiquidityPctOfNlv != null ? ` · excess liquidity $${Math.round(t.excessLiquidity ?? 0).toLocaleString()} = ${Math.round(t.excessLiquidityPctOfNlv * 100)}% cushion` : ""
+    }`,
     "SC-B3": `${inside1Sigma} of ${t.legs} legs inside 1σ (limit ${Math.round(MAX_SHARE_INSIDE_1SIGMA * 100)}%)`,
     "SC-B4": `calls $${Math.round(callCredit ?? 0).toLocaleString()} vs puts $${Math.round(putCredit ?? 0).toLocaleString()}`,
     "SC-B5": marginPct != null ? `${Math.round((1 - marginPct) * 100)}% of NLV unused` : "not synced",

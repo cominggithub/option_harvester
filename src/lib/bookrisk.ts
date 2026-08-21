@@ -386,6 +386,18 @@ export type BookRisk = {
     putNotional: number;
     callLegs: number;
     putLegs: number;
+    /**
+     * IB's own account-level maintenance margin ÷ NLV — the figure the §6.2 limit is
+     * actually about, and the only one that is not an estimate. The per-leg `maintMargin`
+     * above is a *book attribution* built from synced what-ifs and is a floor even after
+     * extrapolation: on 2026-08-21 the extrapolation read 73% of NLV while IB's own
+     * requirement was 78%. Null until a balance snapshot exists.
+     */
+    accountMaintMargin: number | null;
+    accountMarginPctOfNlv: number | null;
+    /** Excess liquidity ÷ NLV — IB's cushion. Under ~10% IB starts forcing liquidations. */
+    excessLiquidity: number | null;
+    excessLiquidityPctOfNlv: number | null;
   };
   balance: Balance | null;
   bySector: Slice[];
@@ -560,6 +572,13 @@ export function buildBookRisk(
     putNotional: puts.reduce((a, l) => a + (l.notional ?? 0), 0),
     callLegs: calls.length,
     putLegs: puts.length,
+    // IB's own numbers. These are measurements, not attributions: the account-level
+    // requirement covers every position (including the long legs this page excludes), and
+    // it is what the broker will actually liquidate against.
+    accountMaintMargin: balance?.maintMargin ?? null,
+    accountMarginPctOfNlv: balance?.maintMargin != null && nlv && nlv > 0 ? balance.maintMargin / nlv : null,
+    excessLiquidity: balance?.excessLiquidity ?? null,
+    excessLiquidityPctOfNlv: balance?.excessLiquidity != null && nlv && nlv > 0 ? balance.excessLiquidity / nlv : null,
   };
 
   const top5 = bySymbol.slice(0, 5).reduce((a, s) => a + s.creditShare, 0);

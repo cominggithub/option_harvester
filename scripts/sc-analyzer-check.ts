@@ -10,8 +10,10 @@ import { buildChains } from "../src/lib/sc-lifecycle";
 import { ACCEPTABLE_LOSS_MULTIPLE, buildLossReport } from "../src/lib/sc-loss";
 import { buildTimeline, weekEnd, weekStart } from "../src/lib/sc-timeline";
 import { rollTarget } from "../src/lib/sc-actions";
+import { pickExpiry, profileGates, PROFILE } from "../src/lib/sc-candidates";
 import { buildScRecord, type BarIndex } from "../src/lib/shortcall";
 import type { BookLeg } from "../src/lib/bookrisk";
+import type { SecurityRow } from "../src/lib/securities";
 
 let pass = 0;
 const ok = (cond: boolean, msg: string) => {
@@ -134,5 +136,55 @@ ok(rollTarget(leg({ ivPct: null })).ok === false, "no IV, no roll construction")
 ok(rollTarget(leg({ costToClose: 5000 })).ok === false, "a roll that cannot pay for the buy-back is refused");
 ok(rollTarget(leg({ costToClose: 5000 })).why.includes("close rather than roll"), "…and the instruction becomes close");
 ok((rollTarget(leg({ strike: 130 })).strike ?? 0) >= 130, "a roll never goes down in strike");
+
+// ── the operator's profile: expiry picker + profile gates ────────────────────
+// 2026-08-21 is a Friday. The window 30–45 days out spans 2026-09-20 → 2026-10-05, whose
+// Fridays are 09-25 and 10-02; neither is a third Friday (09-18 and 10-16 are), so the
+// picker must fall back to the Friday nearest the midpoint (37.5) → 09-25 at 35 days.
+{
+  const asOf = new Date("2026-08-21T12:00:00Z");
+  const picked = pickExpiry(asOf, PROFILE.dteMin, PROFILE.dteMax);
+  ok(picked?.expiry === "2026-09-25" && picked?.dte === 35, `30–45d window picks the Friday nearest the midpoint (got ${picked?.expiry} ${picked?.dte}d)`);
+  ok(picked?.monthly === false, "09-25 is a weekly, and the picker says so rather than implying monthly liquidity");
+  const wide = pickExpiry(asOf, 20, 60); // contains 09-18 and 10-16, both monthlies
+  ok(wide?.expiry === "2026-10-16" && wide?.monthly === true, `a window containing monthlies prefers the later monthly (got ${wide?.expiry})`);
+  ok(pickExpiry(asOf, 1, 3) === null, "a window with no Friday in it returns null rather than inventing an expiry");
+  const every = pickExpiry(asOf, 30, 45);
+  ok(every != null && every.dte >= 30 && every.dte <= 45, "the picked expiry is always inside the requested window");
+}
+
+{
+  const sec = (o: Partial<SecurityRow>): SecurityRow =>
+    ({ ticker: "X", name: "X", sector: "Information Technology", type: "common", price: 100, ivPct: 60, volume: 5_000_000, earningsInDays: null, ...o }) as unknown as SecurityRow;
+  const prop = { dte: 35, expiry: "2026-09-25", monthly: false, strike: 120, delta: 0.15, sigmas: 1.6, estCredit: 200 };
+  const idOf = (gs: ReturnType<typeof profileGates>, id: string) => gs.find((g) => g.id === id)!;
+
+  const good = profileGates(sec({ earningsInDays: 60 }), "single stock", prop);
+  ok(good.every((g) => g.pass === true), "a name inside every profile bound passes all five gates");
+
+  ok(idOf(profileGates(sec({ ivPct: PROFILE.ivMin }), "single stock", prop), "P-IV").pass === false, "IV exactly at the floor fails a strict > test");
+  ok(idOf(profileGates(sec({ price: PROFILE.priceMin }), "single stock", prop), "P-PRICE").pass === true, "the price band is inclusive at both ends");
+  ok(idOf(profileGates(sec({ price: PROFILE.priceMax + 1 }), "single stock", prop), "P-PRICE").pass === false, "a dollar above the band fails");
+  ok(idOf(profileGates(sec({ volume: PROFILE.minVolume - 1 }), "single stock", prop), "P-VOL").pass === false, "the volume floor bites one share below");
+
+  // Earnings: the whole point of the gate is that unknown ≠ safe on a single stock.
+  ok(idOf(profileGates(sec({ earningsInDays: 10 }), "single stock", prop), "P-EARN").pass === false, "a print inside the option's life fails");
+  ok(idOf(profileGates(sec({ earningsInDays: 40 }), "single stock", prop), "P-EARN").pass === true, "a print after expiry passes");
+  ok(idOf(profileGates(sec({ earningsInDays: null }), "single stock", prop), "P-EARN").pass === null, "an unknown date on a stock is 'cannot confirm', not a pass");
+  ok(
+    idOf(profileGates(sec({ earningsInDays: -2 }), "single stock", prop), "P-EARN").pass === null,
+    "a date in the PAST means the next report is not on file — cannot confirm, never a clean pass",
+  );
+  ok(idOf(profileGates(sec({ earningsInDays: null }), "ETF", prop), "P-EARN").pass === true, "an ETF has no earnings by construction");
+  ok(idOf(profileGates(sec({ earningsInDays: 10 }), "leveraged ETF", prop), "P-EARN").pass === true, "a leveraged ETF is still an ETF for this gate");
+
+  ok(idOf(profileGates(sec({}), "single stock", { ...prop, dte: 60 }), "P-DTE").pass === false, "a 60-day proposal is outside the 30–45 window");
+  ok(idOf(profileGates(sec({}), "single stock", null), "P-DTE").pass === null, "no proposal → unknown, never a silent pass");
+  ok(idOf(profileGates(sec({ ivPct: null }), "single stock", prop), "P-IV").pass === null, "a missing IV is unknown, not a failure");
+  ok(
+    idOf(profileGates(sec({ price: 190 }), "single stock", prop), "P-PRICE").pass === true,
+    "the profile band reaches $200 — the §2.4 conflict at 180–200 is left for the doctrine gate to report",
+  );
+}
 
 console.log(`sc-analyzer-check: ${pass} assertions passed.`);

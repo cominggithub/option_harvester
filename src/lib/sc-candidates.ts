@@ -17,7 +17,7 @@
 import { bsDelta, bsPrice } from "@/lib/blackscholes";
 import { trendRead, type BookRisk, type TrendRead } from "@/lib/bookrisk";
 import { isLongLeveragedEtf } from "@/lib/leveraged";
-import type { SecurityRow } from "@/lib/securities";
+import { NC_MIN_VOLUME, type SecurityRow } from "@/lib/securities";
 import type { ScTarget, ScTargetVerdict } from "@/lib/shortcall";
 import {
   ENTRY_SIGMA_FLOOR,
@@ -43,6 +43,7 @@ export type Candidate = {
   trend: TrendRead;
   trendLabels: string;
   weeklyBuckets: number | null;
+  volume: number | null;
   nextEarnings: string | null;
   earningsInDays: number | null;
   verdict: ScTargetVerdict | null;
@@ -50,19 +51,69 @@ export type Candidate = {
   ownRecord: { trades: number; realized: number; keptPct: number | null } | null;
   themeCreditShare: number | null; // where this theme already sits in the open book
   /** The trade the doctrine would put on: Δ≈0.15 inside the entry window. */
-  proposal: { dte: number; expiry: string; strike: number; delta: number | null; sigmas: number; estCredit: number } | null;
+  proposal: { dte: number; expiry: string; monthly: boolean; strike: number; delta: number | null; sigmas: number; estCredit: number } | null;
   gates: RuleResult[];
   failed: string[];
+  /** The operator's own profile gates (§ PROFILE) — separate from doctrine. */
+  profileGates: RuleResult[];
+  profileFailed: string[];
   /** Reference only — the separate Δ0.30 research model (docs/cc-target-strategy.md). */
   ccEdge: number | null;
 };
 
 const DAY = 86_400_000;
 
-/** The Δ0.15 / 35–45 DTE trade on this name, sized to clear the cushion floor. */
-function propose(s: SecurityRow, asOf: Date): Candidate["proposal"] {
+/**
+ * The user's own screening profile, kept separate from doctrine on purpose.
+ *
+ * §2 is the doctrine; this is the operator's stated preference — rich IV, a price band
+ * that makes a 1-contract position meaningful, real liquidity, no earnings inside the
+ * option's life, and a 30–45 day sale. Where the two disagree the row shows BOTH: a name
+ * at $190 satisfies this profile and still fails `SC-S4` (§2.4 stops at $180), and the
+ * table says so rather than quietly widening the spec.
+ */
+export const PROFILE = {
+  ivMin: 40, // > 40% ATM IV (same floor as the NC screen)
+  priceMin: 40,
+  priceMax: 200,
+  minVolume: NC_MIN_VOLUME, // 3M shares/day — "high volume" already has a definition here
+  dteMin: 30,
+  dteMax: 45,
+} as const;
+
+/** Third Friday of the month containing `d`. */
+function thirdFriday(year: number, monthIdx: number): Date {
+  const first = new Date(Date.UTC(year, monthIdx, 1));
+  const offset = (5 - first.getUTCDay() + 7) % 7; // 5 = Friday
+  return new Date(Date.UTC(year, monthIdx, 1 + offset + 14));
+}
+
+/**
+ * Pick a real expiry inside [dteMin, dteMax]: prefer a **monthly** (third-Friday) date
+ * because that is where the open interest is, else the Friday nearest the window's
+ * midpoint. Returns null when the window contains no Friday at all.
+ */
+export function pickExpiry(asOf: Date, dteMin: number, dteMax: number): { expiry: string; dte: number; monthly: boolean } | null {
+  const today = Date.parse(asOf.toISOString().slice(0, 10));
+  const options: { expiry: string; dte: number; monthly: boolean }[] = [];
+  for (let dte = dteMin; dte <= dteMax; dte++) {
+    const d = new Date(today + dte * DAY);
+    if (d.getUTCDay() !== 5) continue;
+    const tf = thirdFriday(d.getUTCFullYear(), d.getUTCMonth());
+    options.push({ expiry: d.toISOString().slice(0, 10), dte, monthly: tf.getTime() === d.getTime() });
+  }
+  if (!options.length) return null;
+  const monthlies = options.filter((o) => o.monthly);
+  if (monthlies.length) return monthlies[monthlies.length - 1];
+  const mid = (dteMin + dteMax) / 2;
+  return options.reduce((best, o) => (Math.abs(o.dte - mid) < Math.abs(best.dte - mid) ? o : best), options[0]);
+}
+
+/** The Δ0.15 trade on this name inside the given window, sized to clear the cushion floor. */
+function propose(s: SecurityRow, asOf: Date, dteMin = TARGET_DTE_MIN, dteMax = TARGET_DTE_MAX): Candidate["proposal"] {
   if (s.price == null || s.price <= 0 || s.ivPct == null || s.ivPct <= 0) return null;
-  const dte = Math.round((TARGET_DTE_MIN + TARGET_DTE_MAX) / 2);
+  const picked = pickExpiry(asOf, dteMin, dteMax);
+  const dte = picked?.dte ?? Math.round((dteMin + dteMax) / 2);
   const vol = s.ivPct / 100;
   const sigma = vol * Math.sqrt(dte / 365);
   // Take the wider of "Δ≈target" and "≥ the cushion floor" so neither rule is violated.
@@ -74,7 +125,8 @@ function propose(s: SecurityRow, asOf: Date): Candidate["proposal"] {
   const years = dte / 365;
   return {
     dte,
-    expiry: new Date(asOf.getTime() + dte * DAY).toISOString().slice(0, 10),
+    expiry: picked?.expiry ?? new Date(asOf.getTime() + dte * DAY).toISOString().slice(0, 10),
+    monthly: picked?.monthly ?? false,
     strike,
     delta: bsDelta({ spot: s.price, strike, years, vol, right: "C" }),
     sigmas: (strike - s.price) / s.price / sigma,
@@ -82,11 +134,89 @@ function propose(s: SecurityRow, asOf: Date): Candidate["proposal"] {
   };
 }
 
+/**
+ * The operator's profile gates, evaluated per name and reported alongside — never merged
+ * into — the doctrine gates. `pass: null` means "cannot confirm", which for the earnings
+ * gate is treated as a miss on a single stock (an unknown report date is not an absent
+ * one) and as a pass on an ETF, which has no earnings by construction.
+ */
+export function profileGates(
+  s: SecurityRow,
+  klass: Candidate["klass"],
+  proposal: Candidate["proposal"],
+): RuleResult[] {
+  const iv = s.ivPct;
+  const px = s.price;
+  const vol = s.volume;
+  const isEtf = klass !== "single stock";
+  // A date in the PAST means the next report is not on file — the ingest holds the last
+  // one. That is "cannot confirm", not "clear": a name that reported 2 days ago has its
+  // next print roughly a quarter out, which a 30–45 day sale usually clears, but "usually"
+  // is not evidence and this gate exists precisely to refuse that inference.
+  const earningsStale = s.earningsInDays != null && s.earningsInDays < 0;
+  const earningsInLife = s.earningsInDays != null && proposal != null && s.earningsInDays >= 0 && s.earningsInDays <= proposal.dte;
+
+  return [
+    {
+      id: "P-IV",
+      title: "Rich implied vol",
+      spec: "profile",
+      pass: iv == null ? null : iv > PROFILE.ivMin,
+      margin: iv == null ? null : iv - PROFILE.ivMin,
+      marginLabel: iv == null ? "no IV snapshot" : `IV ${Math.round(iv)}% vs > ${PROFILE.ivMin}%`,
+    },
+    {
+      id: "P-PRICE",
+      title: "Price band",
+      spec: "profile",
+      pass: px == null ? null : px >= PROFILE.priceMin && px <= PROFILE.priceMax,
+      margin: px == null ? null : Math.min(px - PROFILE.priceMin, PROFILE.priceMax - px),
+      marginLabel: px == null ? "no price" : `$${px.toFixed(0)} vs $${PROFILE.priceMin}–${PROFILE.priceMax}`,
+    },
+    {
+      id: "P-VOL",
+      title: "High volume",
+      spec: "profile",
+      pass: vol == null ? null : vol >= PROFILE.minVolume,
+      margin: vol == null ? null : vol - PROFILE.minVolume,
+      marginLabel: vol == null ? "no volume" : `${(vol / 1e6).toFixed(1)}M vs ≥ ${(PROFILE.minVolume / 1e6).toFixed(0)}M shares/day`,
+    },
+    {
+      id: "P-EARN",
+      title: "No earnings before expiry",
+      spec: "profile",
+      pass: isEtf ? true : s.earningsInDays == null || earningsStale ? null : !earningsInLife,
+      margin: null,
+      marginLabel: isEtf
+        ? "ETF — no earnings"
+        : s.earningsInDays == null
+          ? "no earnings date on file — cannot confirm, so treated as a miss"
+          : earningsStale
+            ? `last report was ${Math.abs(s.earningsInDays)}d ago and the next date is not on file — cannot confirm`
+            : earningsInLife
+              ? `reports in ${s.earningsInDays}d, inside the ${proposal?.dte ?? "?"}d life`
+              : `reports in ${s.earningsInDays}d, after the ${proposal?.dte ?? "?"}d expiry`,
+    },
+    {
+      id: "P-DTE",
+      title: "Sale window",
+      spec: "profile",
+      pass: proposal == null ? null : proposal.dte >= PROFILE.dteMin && proposal.dte <= PROFILE.dteMax,
+      margin: null,
+      marginLabel:
+        proposal == null
+          ? "no proposal (missing price or IV)"
+          : `${proposal.dte}d${proposal.monthly ? " (monthly)" : " (weekly)"} vs ${PROFILE.dteMin}–${PROFILE.dteMax}d`,
+    },
+  ];
+}
+
 export function buildCandidates(
   securities: SecurityRow[],
   targets: ScTarget[],
   book: BookRisk | null,
   asOf: Date = new Date(),
+  window: { dteMin: number; dteMax: number } = { dteMin: TARGET_DTE_MIN, dteMax: TARGET_DTE_MAX },
 ): Candidate[] {
   const verdictOf = new Map(targets.map((t) => [t.symbol, t]));
   const themeShare = new Map((book?.byTheme ?? []).map((s) => [s.key, s.creditShare]));
@@ -98,7 +228,7 @@ export function buildCandidates(
       const theme = themeOf(symbol, s.sector);
       const rec = verdictOf.get(symbol) ?? null;
       const klass: Candidate["klass"] = isLongLeveragedEtf(s) ? "leveraged ETF" : s.type === "etf" ? "ETF" : "single stock";
-      const proposal = propose(s, asOf);
+      const proposal = propose(s, asOf, window.dteMin, window.dteMax);
       const inverse = s.type === "etf" && INVERSE.test(s.name);
       const earningsInLife = s.earningsInDays != null && proposal != null ? s.earningsInDays >= 0 && s.earningsInDays <= proposal.dte : s.earningsInDays != null ? false : null;
 
@@ -143,6 +273,7 @@ export function buildCandidates(
         trend: trendRead(s),
         trendLabels: [s.trend?.m1?.label, s.trend?.m3?.label, s.trend?.m6?.label].map((l) => l ?? "—").join(" / "),
         weeklyBuckets: s.weeklyBuckets,
+        volume: s.volume,
         nextEarnings: s.nextEarnings,
         earningsInDays: s.earningsInDays,
         verdict: rec?.verdict ?? null,
@@ -152,6 +283,10 @@ export function buildCandidates(
         proposal,
         gates,
         failed: gates.filter((g) => g.pass === false).map((g) => g.id),
+        profileGates: profileGates(s, klass, proposal),
+        profileFailed: profileGates(s, klass, proposal)
+          .filter((g) => g.pass !== true)
+          .map((g) => g.id),
         ccEdge: s.ccScore,
       };
     });

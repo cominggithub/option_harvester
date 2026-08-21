@@ -10,6 +10,16 @@ const STATIC_PAGE_PATHS = new Set([
   "/risk",
   "/roic",
   "/short-call",
+  // The analyzer's section pages. Mirrored because the markdown view is how the
+  // option-adviser role (and any review) reads live state without touching the DB;
+  // without them, seven of the eight pages were unreadable that way.
+  "/short-call/actions",
+  "/short-call/candidates",
+  "/short-call/cohorts",
+  "/short-call/lifecycle",
+  "/short-call/losses",
+  "/short-call/strategy",
+  "/short-call/weekly",
   "/sync",
   "/transactions",
   "/upload",
