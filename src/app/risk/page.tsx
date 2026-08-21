@@ -18,6 +18,10 @@ import {
   type BookRisk,
   type Slice,
 } from "@/lib/bookrisk";
+import { DeltaProvenanceNote, DeltaValue } from "@/components/DeltaCell";
+import { summarizeDeltaProvenance } from "@/lib/greekage";
+import { PageToc, type TocItem } from "@/components/PageToc";
+import { MAX_MARGIN_PCT_NLV, MAX_THEME_CREDIT_SHARE } from "@/lib/sc-rules";
 import { formatTimestamp } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -41,9 +45,9 @@ function Kpi({ label, value, sub, tone }: { label: string; value: string; sub?: 
   );
 }
 
-function H2({ children, note }: { children: React.ReactNode; note?: string }) {
+function H2({ children, note, id }: { children: React.ReactNode; note?: string; id?: string }) {
   return (
-    <div className="mt-8 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+    <div id={id} className="mt-8 scroll-mt-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
       <h2 className="text-[13px] font-semibold uppercase tracking-wider text-ink-faint">{children}</h2>
       {note ? <span className="text-[11px] text-ink-faint">{note}</span> : null}
     </div>
@@ -119,7 +123,7 @@ function LegRow({ l, earnings }: { l: BookLeg; earnings?: boolean }) {
         </>
       ) : null}
       <td className="tnum py-1.5 pr-2 text-right">{l.dte ?? "—"}d</td>
-      <td className="tnum py-1.5 pr-2 text-right">{num(l.absDelta)}</td>
+      <td className="tnum py-1.5 pr-2 text-right"><DeltaValue read={l.deltaRead} abs /></td>
       <td className="tnum py-1.5 pr-2 text-right">{pct(l.moneyness)}</td>
       <td className={`tnum py-1.5 pr-2 text-right ${tight ? "font-semibold text-amber-700" : ""}`}>
         {l.sigmas == null ? "—" : `${num(l.sigmas, 1)}σ`}
@@ -203,6 +207,36 @@ export default async function RiskPage() {
   const b = r.breaches;
   const e = r.earnings;
   const worstShock = r.shocks.reduce((a, s) => (s.net < a.net ? s : a), r.shocks[0]);
+  // The rail. Counts are the "do I need to open this?" number, and a breach is toned red
+  // in the rail itself so the page's alarms are visible without scrolling.
+  const flagged = b.withinOneSigma.length + b.trendUp.length + b.itm.length + b.deltaOverGiveUp.length;
+  const actionable = r.verdicts.filter((v) => v.verdict !== "hold").reduce((a, v) => a + v.legs.length, 0);
+  const toc: TocItem[] = [
+    { id: "glance", label: "Book at a glance", count: t.legs },
+    {
+      id: "conformance",
+      label: "Doctrine conformance",
+      count: pct(r.conformance.deltaBandShare),
+      tone: r.conformance.deltaBandShare >= 0.6 ? "ok" : "warn",
+    },
+    { id: "flags", label: "Risk flags", count: flagged, tone: flagged ? "bad" : "ok" },
+    { id: "earnings", label: "Earnings before expiry", count: e.legs, tone: e.legs ? "warn" : "ok" },
+    { id: "shock", label: "Parallel shock", count: signed(worstShock?.net ?? null), tone: (worstShock?.net ?? 0) < 0 ? "bad" : "ok" },
+    { id: "dist", label: "Distributions", group: true },
+    { id: "themes", label: "Correlated themes", count: r.byTheme.length, tone: (c.maxTheme?.creditShare ?? 0) > MAX_THEME_CREDIT_SHARE ? "bad" : "ok" },
+    { id: "sector", label: "By sector", count: r.bySector.length },
+    { id: "dte", label: "By days to expiry", count: r.byDte.length },
+    { id: "delta", label: "By delta", count: r.byDelta.length },
+    { id: "trend", label: "By underlying trend", count: r.byTrend.length },
+    { id: "side", label: "By side", count: r.bySide.length },
+    { id: "name", label: "By name", count: t.symbols },
+    { id: "act", label: "Act", group: true },
+    { id: "actions", label: "What to do now", count: actionable, tone: actionable ? "warn" : "ok" },
+    { id: "excluded", label: "Outside this analysis", count: r.excluded.longLegs + r.excluded.stockLegs + r.excluded.beyondHorizon },
+  ];
+  // Δ provenance for every leg in the book (drives the Δ$ KPI, the band conformance
+  // and the breach lists below, so it belongs at the top of the page).
+  const deltaProvenance = summarizeDeltaProvenance(r.legs.map((l) => l.deltaRead));
 
   if (!t.legs) {
     return (
@@ -235,19 +269,29 @@ export default async function RiskPage() {
         also live on <Link href="/positions" className="underline">Positions</Link>; this page frames them against the doctrine.
       </p>
 
+      <DeltaProvenanceNote p={deltaProvenance} className="mt-2 max-w-4xl" />
+
+      {/* The rail plus every section beside it. Anchors only — no client JS. */}
+      <div className="mt-4 flex items-start gap-6">
+        <PageToc items={toc} />
+        <div className="min-w-0 flex-1">
       {/* ── the book at a glance ─────────────────────────────────────────── */}
-      <H2 note={`${t.legs} short legs · ${t.symbols} names · ${t.callLegs} calls / ${t.putLegs} puts`}>Book at a glance</H2>
+      <H2 id="glance" note={`${t.legs} short legs · ${t.symbols} names · ${t.callLegs} calls / ${t.putLegs} puts`}>Book at a glance</H2>
       <div className="mt-3 grid grid-cols-2 gap-px bg-line md:grid-cols-3 xl:grid-cols-6">
         <Kpi label="Credit taken in" value={money(t.credit)} sub={`${money(t.costToClose)} to buy it all back today`} />
         <Kpi label="Open P/L" value={signed(t.unrealized)} tone={pnlCls(t.unrealized)} sub={`${pct(t.capturedPct)} of the credit already earned`} />
         <Kpi label="Theta / day" value={signed(t.netTheta)} tone="text-emerald-700" sub="what the book earns per calendar day if nothing moves" />
         <Kpi
           label="Maint. margin"
-          value={money(t.maintMargin)}
-          tone={(t.marginPctOfNlvExtrapolated ?? 0) > 0.6 ? "text-rose-700" : "text-ink"}
-          sub={`${pct(t.marginPctOfNlv)} of NLV ${money(r.balance?.netLiquidation ?? null)}${
-            t.marginCoverage < 1 ? ` · only ${pct(t.marginCoverage)} of legs priced → ~${money(t.maintMarginExtrapolated)} (${pct(t.marginPctOfNlvExtrapolated)}) real` : ""
-          }`}
+          value={money(t.accountMaintMargin ?? t.maintMarginExtrapolated ?? t.maintMargin)}
+          tone={(t.accountMarginPctOfNlv ?? t.marginPctOfNlvExtrapolated ?? 0) > MAX_MARGIN_PCT_NLV ? "text-rose-700" : "text-ink"}
+          sub={
+            t.accountMarginPctOfNlv != null
+              ? `${pct(t.accountMarginPctOfNlv)} of NLV ${money(r.balance?.netLiquidation ?? null)} (limit ${pct(MAX_MARGIN_PCT_NLV)}) — IB's own account requirement · excess liquidity ${money(t.excessLiquidity)} = ${pct(t.excessLiquidityPctOfNlv)} cushion · this book's synced legs sum to ${money(t.maintMargin)}`
+              : `${pct(t.marginPctOfNlv)} of NLV ${money(r.balance?.netLiquidation ?? null)}${
+                  t.marginCoverage < 1 ? ` · only ${pct(t.marginCoverage)} of legs priced → ~${money(t.maintMarginExtrapolated)} (${pct(t.marginPctOfNlvExtrapolated)}) real` : ""
+                }`
+          }
         />
         <Kpi label="Net Δ$" value={signed(t.netDeltaDollar)} tone={pnlCls(t.netDeltaDollar)} sub="share-equivalent exposure (short = negative)" />
         <Kpi
@@ -258,7 +302,7 @@ export default async function RiskPage() {
       </div>
 
       {/* ── conformance to the doctrine ──────────────────────────────────── */}
-      <H2 note="how closely the live book matches the entry rules">Doctrine conformance</H2>
+      <H2 id="conformance" note="how closely the live book matches the entry rules">Doctrine conformance</H2>
       <div className="mt-3 grid grid-cols-2 gap-px bg-line md:grid-cols-3 xl:grid-cols-6">
         <Kpi
           label={`|Δ| in ${(TARGET_DELTA - DELTA_BAND).toFixed(2)}–${(TARGET_DELTA + DELTA_BAND).toFixed(2)}`}
@@ -289,7 +333,7 @@ export default async function RiskPage() {
       </div>
 
       {/* ── risk flags ───────────────────────────────────────────────────── */}
-      <H2 note="each flag is a doctrine breach, not a market opinion">Risk flags</H2>
+      <H2 id="flags" note="each flag is a doctrine breach, not a market opinion">Risk flags</H2>
       <div className="mt-3 grid grid-cols-1 gap-px bg-line md:grid-cols-2 xl:grid-cols-4">
         <FlagList
           title={`Inside ${SIGMA_DANGER}σ of the strike`}
@@ -307,7 +351,7 @@ export default async function RiskPage() {
       </div>
 
       {/* ── earnings inside the option's life ────────────────────────────── */}
-      <H2 note={`${EARNINGS_IMMINENT_DAYS}d / ${EARNINGS_NEAR_DAYS}d buckets · soonest print first`}>
+      <H2 id="earnings" note={`${EARNINGS_IMMINENT_DAYS}d / ${EARNINGS_NEAR_DAYS}d buckets · soonest print first`}>
         Earnings before expiry
       </H2>
       <p className="mt-2 max-w-4xl text-[12.5px] leading-relaxed text-ink-muted">
@@ -375,7 +419,7 @@ export default async function RiskPage() {
       )}
 
       {/* ── shock ────────────────────────────────────────────────────────── */}
-      <H2 note="at-expiry intrinsic, every underlying moved by the same %, no IV/time effects">Parallel shock</H2>
+      <H2 id="shock" note="at-expiry intrinsic, every underlying moved by the same %, no IV/time effects">Parallel shock</H2>
       <div className="mt-3 overflow-x-auto bg-surface">
         <table className="w-full min-w-[520px] border-collapse text-[12px]">
           <thead>
@@ -406,7 +450,7 @@ export default async function RiskPage() {
       </p>
 
       {/* ── distributions ────────────────────────────────────────────────── */}
-      <H2 note="credit-weighted; “at risk” = strike × 100 × contracts if assigned">Correlated themes</H2>
+      <H2 id="themes" note="credit-weighted; “at risk” = strike × 100 × contracts if assigned">Correlated themes</H2>
       <div className="mt-3">
         <SliceTable slices={r.byTheme} label="Theme" />
       </div>
@@ -415,38 +459,38 @@ export default async function RiskPage() {
         are three sector labels and one semiconductor bet. Sector HHI {num(c.hhiSector, 3)} vs theme HHI {num(c.hhiTheme, 3)}.
       </p>
 
-      <H2>By sector</H2>
+      <H2 id="sector">By sector</H2>
       <div className="mt-3">
         <SliceTable slices={r.bySector} label="Sector" />
       </div>
 
-      <H2 note={`target window ${TARGET_DTE_MIN}–${TARGET_DTE_MAX}`}>By days to expiry</H2>
+      <H2 id="dte" note={`target window ${TARGET_DTE_MIN}–${TARGET_DTE_MAX}`}>By days to expiry</H2>
       <div className="mt-3">
         <SliceTable slices={r.byDte} label="DTE bucket" />
       </div>
 
-      <H2 note={`target |Δ| ${TARGET_DELTA} · roll line ${DELTA_WATCH} · give-up ${DELTA_GIVE_UP}`}>By delta</H2>
+      <H2 id="delta" note={`target |Δ| ${TARGET_DELTA} · roll line ${DELTA_WATCH} · give-up ${DELTA_GIVE_UP}`}>By delta</H2>
       <div className="mt-3">
         <SliceTable slices={r.byDelta} label="|Δ| bucket" />
       </div>
 
-      <H2 note="the entry filter: calls belong on flat/down names only">By underlying trend</H2>
+      <H2 id="trend" note="the entry filter: calls belong on flat/down names only">By underlying trend</H2>
       <div className="mt-3">
         <SliceTable slices={r.byTrend} label="Trend (1M/3M/6M)" />
       </div>
 
-      <H2 note="direction of the book">By side</H2>
+      <H2 id="side" note="direction of the book">By side</H2>
       <div className="mt-3">
         <SliceTable slices={r.bySide} label="Side" />
       </div>
 
-      <H2 note={`top 15 of ${t.symbols} · single-name cap discipline`}>By name</H2>
+      <H2 id="name" note={`top 15 of ${t.symbols} · single-name cap discipline`}>By name</H2>
       <div className="mt-3">
         <SliceTable slices={r.bySymbol} label="Name" max={15} />
       </div>
 
       {/* ── action board ─────────────────────────────────────────────────── */}
-      <H2 note={`close at ${pct(HARVEST_CAPTURED)} captured · roll past |Δ| ${DELTA_WATCH} while ${ROLL_MIN_ROOM_DAYS}d+ of room remains`}>
+      <H2 id="actions" note={`close at ${pct(HARVEST_CAPTURED)} captured · roll past |Δ| ${DELTA_WATCH} while ${ROLL_MIN_ROOM_DAYS}d+ of room remains`}>
         What to do now
       </H2>
       {r.verdicts.map((v) => (
@@ -465,7 +509,7 @@ export default async function RiskPage() {
       ))}
 
       {/* ── what was excluded ────────────────────────────────────────────── */}
-      <H2>Outside this analysis</H2>
+      <H2 id="excluded">Outside this analysis</H2>
       <div className="mt-3 bg-surface px-4 py-3 text-[12px] leading-relaxed text-ink-muted">
         <div>
           <strong className="text-ink">{r.excluded.beyondHorizon}</strong> option leg(s) expire beyond {BOOK_HORIZON_DAYS} days,{" "}
@@ -484,6 +528,8 @@ export default async function RiskPage() {
             <strong>Deep sync</strong> (extension) to price the rest.
           </div>
         )}
+      </div>
+        </div>
       </div>
     </main>
   );
