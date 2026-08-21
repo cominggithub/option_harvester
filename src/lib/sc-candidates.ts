@@ -31,6 +31,107 @@ import { TARGET_DELTA, TARGET_DTE_MAX, TARGET_DTE_MIN, themeOf } from "@/lib/boo
 /** Inverse/short ETFs — selling calls on these is a bullish index bet (§2 note). */
 const INVERSE = /(-1x|-2x|-3x|inverse|short|bear|ultrashort)/i;
 
+/**
+ * Ranking signals — the operator's *preferences*, kept strictly apart from the gates.
+ *
+ * A gate says whether a trade is permitted. These say which permitted trade is the better
+ * one, and the doctrine already names two of them without ever computing them: §2.1 prefers
+ * a name that is **grinding down** over one that is merely not rising, and §2 prefers IV
+ * that is **rich and already deflating** over IV that is merely rich — selling into a
+ * falling vol puts short vega on the same side as theta instead of fighting it.
+ *
+ * Every component is exposed alongside the total, because a composite score whose parts are
+ * hidden is the thing this program's record argues against.
+ */
+export type CandidateSignals = {
+  /** −1 (falling hard on every window) … +1 (rising). Regression slopes, not labels. */
+  trendTilt: number | null;
+  trendWhy: string;
+  ivRank: number | null;
+  ivChg5: number | null; // percentage points over 5 observations
+  ivOffPeak: number | null; // (IV − 20-day peak) ÷ peak, ≤ 0
+  /** Rich against its own history AND coming off — the §2 preference, measured. */
+  deflating: boolean;
+  ivWhy: string;
+  cushion: number | null;
+  estCredit: number;
+  /** Sum of the weighted components below; components always shown with it. */
+  fit: number;
+  parts: { label: string; value: number }[];
+};
+
+const W = { trend: 30, deflation: 25, cushion: 20, credit: 15, record: 10 } as const;
+
+export function signalsFor(s: SecurityRow, proposal: Candidate["proposal"], rec: ScTarget | null): CandidateSignals {
+  // Trend tilt from the regression slopes over 1M/3M/6M, so "grinding down" (a shallow but
+  // persistent slide) outranks "flat" — the labels alone cannot express that.
+  const slopes = [s.trend?.m1?.slopePct, s.trend?.m3?.slopePct, s.trend?.m6?.slopePct].filter(
+    (v): v is number => v != null && Number.isFinite(v),
+  );
+  const avgSlope = slopes.length ? slopes.reduce((a, v) => a + v, 0) / slopes.length : null;
+  // ±20% across a window is a full score; beyond that it is already a trend, not a tilt.
+  const trendTilt = avgSlope == null ? null : Math.max(-1, Math.min(1, -avgSlope / 20));
+  const trendWhy =
+    avgSlope == null
+      ? "no trend history"
+      : avgSlope < -10
+        ? `falling hard: ${avgSlope.toFixed(0)}% average regression slope across 1M/3M/6M`
+        : avgSlope < -2
+          ? `grinding down: ${avgSlope.toFixed(0)}% average slope — the §2.1 preference`
+          : avgSlope <= 2
+            ? `flat: ${avgSlope.toFixed(0)}% average slope`
+            : `rising ${avgSlope.toFixed(0)}% — acceptable only because no window is labelled up`;
+
+  const st = s.ivStats;
+  const rank = st?.rank ?? null;
+  const chg5 = st?.chg5 ?? null;
+  const offPeak = st?.offPeak20 ?? null;
+  // Rich (rank ≥ 50) and coming off. Both halves required: a name pinned at its own high is
+  // rank 100 and is exactly the vol you do not want to be short of yet.
+  const deflating = rank != null && rank >= 50 && chg5 != null && chg5 < 0;
+  const ivWhy =
+    st == null || st.n < 5
+      ? "IV history too thin to say whether vol is rising or falling"
+      : deflating
+        ? `IV ${Math.round(st.current ?? 0)}% is rank ${Math.round(rank!)} and has come off ${Math.abs(chg5!).toFixed(1)}pp in 5 days${
+            offPeak != null && offPeak < -0.05 ? `, ${Math.abs(offPeak * 100).toFixed(0)}% below its 20-day peak` : ""
+          } — short vega now works with theta`
+        : chg5 != null && chg5 > 0
+          ? `IV is rising (+${chg5.toFixed(1)}pp in 5 days) — premium is getting richer, so waiting may pay`
+          : rank != null && rank < 50
+            ? `IV rank ${Math.round(rank)} — cheap against its own history, so the premium is thin for the risk`
+            : "IV flat over the last week";
+
+  // Deflation score: the §2 preference, scaled by how far off the peak it already is.
+  const deflationScore = deflating ? Math.min(1, 0.5 + Math.abs(offPeak ?? 0) * 4) : chg5 != null && chg5 > 0 ? 0 : 0.25;
+  const cushion = proposal?.sigmas ?? null;
+  const cushionScore = cushion == null ? 0 : Math.max(0, Math.min(1, (cushion - 1) / 1.5));
+  const credit = proposal?.estCredit ?? 0;
+  const creditScore = Math.max(0, Math.min(1, credit / 400));
+  const recordScore = rec == null || rec.trades < 3 ? 0.4 : rec.realized > 0 ? 1 : 0;
+
+  const parts = [
+    { label: "downtrend", value: W.trend * Math.max(0, trendTilt ?? 0) },
+    { label: "IV deflating", value: W.deflation * deflationScore },
+    { label: "cushion", value: W.cushion * cushionScore },
+    { label: "credit", value: W.credit * creditScore },
+    { label: "own record", value: W.record * recordScore },
+  ];
+  return {
+    trendTilt,
+    trendWhy,
+    ivRank: rank,
+    ivChg5: chg5,
+    ivOffPeak: offPeak,
+    deflating,
+    ivWhy,
+    cushion,
+    estCredit: credit,
+    fit: Math.round(parts.reduce((a, p) => a + p.value, 0)),
+    parts: parts.map((p) => ({ ...p, value: Math.round(p.value) })),
+  };
+}
+
 export type Candidate = {
   symbol: string;
   name: string;
@@ -54,6 +155,8 @@ export type Candidate = {
   proposal: { dte: number; expiry: string; monthly: boolean; strike: number; delta: number | null; sigmas: number; estCredit: number } | null;
   gates: RuleResult[];
   failed: string[];
+  /** Preference signals (downtrend, IV deflation, cushion, credit) — ranking, not gating. */
+  signals: CandidateSignals;
   /** The operator's own profile gates (§ PROFILE) — separate from doctrine. */
   profileGates: RuleResult[];
   profileFailed: string[];
@@ -281,6 +384,7 @@ export function buildCandidates(
         ownRecord: rec ? { trades: rec.trades, realized: rec.realized, keptPct: rec.keptPct } : null,
         themeCreditShare: themeShare.has(theme) ? share : null,
         proposal,
+        signals: signalsFor(s, proposal, rec),
         gates,
         failed: gates.filter((g) => g.pass === false).map((g) => g.id),
         profileGates: profileGates(s, klass, proposal),
@@ -291,8 +395,11 @@ export function buildCandidates(
       };
     });
 
-  // Cleanest first, then by estimated credit — the ranking is "passes everything", not a score.
-  return out.sort((a, b) => a.failed.length - b.failed.length || (b.proposal?.estCredit ?? 0) - (a.proposal?.estCredit ?? 0));
+  // Cleanest first — a permitted trade always outranks a merely attractive one — then by the
+  // preference fit, then by credit as the tie-break.
+  return out.sort(
+    (a, b) => a.failed.length - b.failed.length || b.signals.fit - a.signals.fit || (b.proposal?.estCredit ?? 0) - (a.proposal?.estCredit ?? 0),
+  );
 }
 
 export const CANDIDATE_TARGET_DELTA = TARGET_DELTA;

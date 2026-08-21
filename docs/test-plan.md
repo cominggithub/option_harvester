@@ -146,6 +146,13 @@ What they cover:
   produces nothing but caveats for a profitable rule-abiding record; targets exclude a name
   failing either gate stack and surface a thin negative record as a caution rather than a
   veto; a missing balance snapshot becomes a declared gap.
+- **riskbrief-check (ranking half)** — the preference signals: a grinding-down name
+  outranks a rising one and a rising name cannot earn trend points at all; IV that is rising
+  is not "deflating" however rich, and a fall from a *cheap* IV is not either (rank must be
+  ≥50); a thin IV history says so instead of scoring; a thinner cushion ranks lower at equal
+  everything else; the components sum exactly to the total (no hidden term); tier 1 outranks
+  tier 2 regardless of fit; a near miss carries its gate id and margin; and an unevaluable
+  gate becomes a caution rather than being swallowed.
 - **page-markdown-check** — approved UI-path ↔ `.md` URL mapping, API-path rejection,
   `#page-content` isolation, front matter/source URL, heading/table/link conversion,
   and removal of global navigation, scripts, and SVG internals.

@@ -71,6 +71,15 @@ export type Finding = {
 export type TargetPick = {
   symbol: string;
   theme: string;
+  /** 1 = clears every gate; 2 = one gate short, named in `caution`. */
+  tier: 1 | 2;
+  /** Preference fit 0–100, with the components that produced it. */
+  fit: number;
+  parts: { label: string; value: number }[];
+  /** IV is rich against its own history and already coming off (§2's preference). */
+  deflating: boolean;
+  /** Gates that could not be evaluated — "no rule refused it" is not "a rule cleared it". */
+  unknownGates: string[];
   headline: string; // the proposed trade, as a sentence
   reasons: string[]; // why this one and not another
   caution: string | null;
@@ -87,6 +96,12 @@ export type RiskBrief = {
   targets: TargetPick[];
   /** Set when §6.2 says the book may not open, whatever the candidate list says. */
   openingBlockedBy: string[];
+  /**
+   * The vol regime across the sellable universe. §2 prefers selling into IV that is rich
+   * AND already deflating; when almost nothing qualifies, that has to be said rather than
+   * left to be inferred from an absence of badges.
+   */
+  volRegime: { falling: number; rising: number; deflating: number; n: number };
   freshness: { label: string; value: string; stale: boolean }[];
   /** Inputs that were missing, so a silent gap never reads as a clean bill of health. */
   gaps: string[];
@@ -550,42 +565,67 @@ export function buildFailures(totals: ChainTotals, chains: ScChain[], loss: Loss
 }
 
 // ── 3. what to sell next ─────────────────────────────────────────────────────
-export function buildTargets(candidates: Candidate[], book: BookRisk, limit = 6): TargetPick[] {
+/**
+ * Ranked picks. Two tiers, because a list of six is not usable and a list of twenty that
+ * hides its failures is worse: **tier 1** clears every doctrine gate and the whole profile,
+ * **tier 2** is one gate short and says which gate. Ordering inside each tier is the
+ * preference fit — how far the name is grinding down, whether its IV is rich *and already
+ * deflating*, cushion, credit — with the components carried on the row.
+ */
+export function buildTargets(candidates: Candidate[], book: BookRisk, limit = 20): TargetPick[] {
   const openThemes = new Map<string, number>();
   for (const s of book.byTheme) openThemes.set(s.key, s.creditShare);
   const heldCallNames = new Set(book.legs.filter((l) => l.right === "C").map((l) => l.symbol));
 
-  return candidates
-    .filter((c) => c.failed.length === 0 && c.profileFailed.length === 0 && c.proposal != null)
-    .slice(0, limit)
-    .map((c) => {
-      const p = c.proposal!;
-      const share = openThemes.get(c.theme) ?? 0;
-      const reasons: string[] = [];
-      reasons.push(`${p.sigmas.toFixed(1)}σ of cushion at Δ${Math.abs(p.delta ?? 0).toFixed(2)} — the record's profitable side of both axes`);
-      if (c.ivPct != null) reasons.push(`IV ${Math.round(c.ivPct)}%${c.ivRank != null ? ` (rank ${Math.round(c.ivRank)})` : ""} pays for the distance`);
-      if (!heldCallNames.has(c.symbol)) reasons.push("no call already open on this name");
-      if (share === 0) reasons.push(`${c.theme} is unrepresented in the book — this adds diversification instead of concentration`);
-      else reasons.push(`${c.theme} is ${pc(share)} of open credit, inside the ${pc(MAX_THEME_CREDIT_SHARE)} cap`);
-      if (c.ownRecord && c.ownRecord.trades >= 3) reasons.push(`own record ${c.ownRecord.trades} trades, ${usd(c.ownRecord.realized)}`);
-      reasons.push(c.klass === "single stock" ? `next earnings ${c.nextEarnings ?? "unknown"} — outside this expiry` : "ETF, so no earnings gap");
+  const eligible = candidates.filter((c) => c.proposal != null && c.profileFailed.length === 0);
+  const tier1 = eligible.filter((c) => c.failed.length === 0);
+  const tier2 = eligible.filter((c) => c.failed.length === 1);
+  const picked = [...tier1, ...tier2].slice(0, limit);
 
-      const caution =
-        c.ownRecord && c.ownRecord.trades > 0 && c.ownRecord.trades < 3 && c.ownRecord.realized < 0
+  return picked.map((c) => {
+    const p = c.proposal!;
+    const sig = c.signals;
+    const share = openThemes.get(c.theme) ?? 0;
+    const reasons: string[] = [];
+    reasons.push(sig.trendWhy);
+    reasons.push(sig.ivWhy);
+    reasons.push(`${p.sigmas.toFixed(1)}σ of cushion at Δ${Math.abs(p.delta ?? 0).toFixed(2)} — the record's profitable side of both axes`);
+    if (!heldCallNames.has(c.symbol)) reasons.push("no call already open on this name");
+    if (share === 0) reasons.push(`${c.theme} is unrepresented in the book — this adds diversification instead of concentration`);
+    else reasons.push(`${c.theme} is ${pc(share)} of open credit, inside the ${pc(MAX_THEME_CREDIT_SHARE)} cap`);
+    if (c.ownRecord && c.ownRecord.trades >= 3) reasons.push(`own record ${c.ownRecord.trades} trades, ${usd(c.ownRecord.realized)}`);
+    reasons.push(c.klass === "single stock" ? `next earnings ${c.nextEarnings ?? "unknown"} — outside this expiry` : "ETF, so no earnings gap");
+
+    const failedGate = c.gates.find((g) => g.pass === false);
+    // A gate that could not be evaluated is not a gate that passed. Earnings-date gaps are
+    // the case that matters: absence of a flag is not absence of a print.
+    const unknown = c.gates.filter((g) => g.pass === null);
+    const unknownNote = unknown.length ? `${unknown.length} gate${unknown.length === 1 ? "" : "s"} could not be evaluated (${unknown.map((g) => g.id).join(", ")}) — ${unknown[0].marginLabel}` : null;
+    const caution =
+      failedGate != null
+        ? `One gate short: ${failedGate.id} — ${failedGate.marginLabel}. Permitted only if you override that rule deliberately.${unknownNote ? ` Also ${unknownNote}.` : ""}`
+        : unknownNote != null
+          ? `${unknownNote.charAt(0).toUpperCase()}${unknownNote.slice(1)}.`
+          : c.ownRecord && c.ownRecord.trades > 0 && c.ownRecord.trades < 3 && c.ownRecord.realized < 0
           ? `Own record is ${usd(c.ownRecord.realized)} over ${plural(c.ownRecord.trades, "trade")} — too few to veto it under §6.3, but not encouraging.`
-          : c.trend === "up"
-            ? "The trend read is mixed; the entry filter passed on the longer windows only."
+          : sig.trendTilt != null && sig.trendTilt < 0
+            ? "The trend is tilted up, not down; it passes the filter only because no window is labelled up."
             : null;
 
-      return {
-        symbol: c.symbol,
-        theme: c.theme,
-        headline: `Sell 1 ${c.symbol} ${p.expiry} ${p.strike} call for about ${usd(p.estCredit)} (${p.dte} days, ${p.monthly ? "monthly" : "weekly"}).`,
-        reasons,
-        caution,
-        estCredit: p.estCredit,
-      };
-    });
+    return {
+      symbol: c.symbol,
+      theme: c.theme,
+      tier: c.failed.length === 0 ? 1 : 2,
+      unknownGates: unknown.map((g) => g.id),
+      fit: sig.fit,
+      parts: sig.parts,
+      deflating: sig.deflating,
+      headline: `Sell 1 ${c.symbol} ${p.expiry} ${p.strike} call for about ${usd(p.estCredit)} (${p.dte} days, ${p.monthly ? "monthly" : "weekly"}).`,
+      reasons,
+      caution,
+      estCredit: p.estCredit,
+    };
+  });
 }
 
 // ── the brief ────────────────────────────────────────────────────────────────
@@ -620,6 +660,14 @@ export function buildRiskBrief(args: {
           cushion != null ? `, with ${pc(cushion)} of cushion left` : ""
         }. ${risks.length - 1 > 0 ? `${risks.length - 1} further ${risks.length - 1 === 1 ? "finding" : "findings"} below.` : ""}`;
 
+  const withIv = args.candidates.filter((c) => c.signals.ivChg5 != null);
+  const volRegime = {
+    falling: withIv.filter((c) => (c.signals.ivChg5 ?? 0) < 0).length,
+    rising: withIv.filter((c) => (c.signals.ivChg5 ?? 0) > 0).length,
+    deflating: args.candidates.filter((c) => c.signals.deflating).length,
+    n: withIv.length,
+  };
+
   const gaps: string[] = [];
   if (book.balance == null) gaps.push("No account balance snapshot: margin and cushion are unknown, so the first section is blind to the constraint that matters most.");
   if (book.totals.marginCoverage < 1)
@@ -636,6 +684,7 @@ export function buildRiskBrief(args: {
     failures,
     targets,
     openingBlockedBy: args.openingBlockedBy,
+    volRegime,
     freshness: [
       { label: "IB balances", value: book.balance?.date ?? "never", stale: book.balance == null },
       { label: "Price / IV ingest", value: args.ingestAsOf ?? "unknown", stale: args.ingestAsOf == null },

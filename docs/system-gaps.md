@@ -151,7 +151,18 @@ with no authentication, and production listens outside the NAT. Anything reachab
 inject positions or balances — which would silently corrupt every number in this document's
 subject matter. Known, unfixed, and worth fixing for all routes at once.
 
-## 12. Single regime, overlapping windows, survivorship
+## 12. IV rank is computed over a short, still-accumulating history
+
+`option_harvest_iv_history` holds **63 distinct days** for 629 tickers (2026-08-21). Rank is
+therefore "where is IV in its last three months", not in its year, and the new deflation
+signal (`chg5`, `offPeak20`) reads off the same short series. `IV_RANK_MIN_CONFIDENT` (20
+days) gates the thin cases, but a rank of 70 over 63 days is a weaker statement than the
+number looks, and it now drives a ranking the operator reads top-down.
+
+**Fix.** Keep accumulating; revisit the rank floor once a year of history exists, and
+consider reporting the window length beside the rank wherever it is used to rank.
+
+## 13. Single regime, overlapping windows, survivorship
 
 ~14 months, one risk-on churny regime; heavily overlapping option lives, so far fewer
 independent samples than rows; current S&P constituents only. Every cohort conclusion

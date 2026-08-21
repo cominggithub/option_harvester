@@ -160,7 +160,7 @@ function comboFinal(r: ComboRow): FinalScore {
     cspEligible: r.cspEligible,
     trend: null,
     // examples predate a deep IV history → no IV-rank tilt (factor 1)
-    ivStats: { rank: null, percentile: null, n: 0, min: null, max: null, current: r.h },
+    ivStats: { rank: null, percentile: null, n: 0, min: null, max: null, current: r.h, chg5: null, chg20: null, peak20: null, offPeak20: null, falling: false },
   });
 }
 

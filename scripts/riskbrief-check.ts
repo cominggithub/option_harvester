@@ -18,7 +18,9 @@ import type { PositionGroup, PositionGroupLeg } from "../src/lib/positions";
 import type { SecurityRow } from "../src/lib/securities";
 import type { ChainTotals, ScChain } from "../src/lib/sc-lifecycle";
 import type { LossReport } from "../src/lib/sc-loss";
+import { signalsFor } from "../src/lib/sc-candidates";
 import type { Candidate } from "../src/lib/sc-candidates";
+import type { IvStats } from "../src/lib/ivstats";
 import type { ScTrade } from "../src/lib/shortcall";
 
 let pass = 0;
@@ -185,11 +187,29 @@ function cleanBook(bal: unknown = balance({})): BookRisk {
        ivPct: 71, ivRank: 36, trend: "flat", trendLabels: "sideways / down / down", weeklyBuckets: 5, volume: 17e6,
        nextEarnings: "2026-10-29", earningsInDays: 70, verdict: null, verdictWhy: null, ownRecord: { trades: 2, realized: 675, keptPct: 0.4 },
        themeCreditShare: null, proposal: { dte: 35, expiry: "2026-09-25", monthly: false, strike: 230, delta: 0.12, sigmas: 1.5, estCredit: 195 },
+       signals: { trendTilt: 0.4, trendWhy: "grinding down: -8% average slope", ivRank: 71, ivChg5: -3, ivOffPeak: -0.1,
+                  deflating: true, ivWhy: "IV 71% is rank 71 and has come off 3.0pp in 5 days", cushion: 1.5, estCredit: 195,
+                  fit: 62, parts: [{ label: "downtrend", value: 12 }, { label: "IV deflating", value: 22 }] },
        gates: [], failed: [], profileGates: [], profileFailed: [], ccEdge: null, ...o }) as Candidate;
 
   const b = cleanBook();
-  const picks = buildTargets([cand({}), cand({ symbol: "BAD", failed: ["SC-S1"] }), cand({ symbol: "OFFPROFILE", profileFailed: ["P-VOL"] })], b);
-  ok(picks.length === 1 && picks[0].symbol === "COIN", "a name failing either stack is not offered");
+  const oneShort = cand({
+    symbol: "NEAR",
+    failed: ["SC-S4"],
+    gates: [{ id: "SC-S4", title: "Tradable price band", spec: "§2.4", pass: false, margin: -10, marginLabel: "$190 vs $20–180" }] as never,
+  });
+  const picks = buildTargets([cand({}), oneShort, cand({ symbol: "OFFPROFILE", profileFailed: ["P-VOL"] })], b);
+  ok(picks.length === 2, `tier 1 and tier 2 are both offered; a profile miss is not (got ${picks.length})`);
+  ok(picks[0].symbol === "COIN" && picks[0].tier === 1, "a gate-clearing name always ranks above a near miss");
+  ok(picks[1].symbol === "NEAR" && picks[1].tier === 2, "the near miss is tier 2");
+  ok(picks[1].caution != null && picks[1].caution.includes("SC-S4") && picks[1].caution.includes("$190"), "and its caution names the gate and the margin");
+  ok(picks[0].deflating && picks[0].fit === 62 && picks[0].parts.length === 2, "the row carries the deflation flag and the fit components");
+  const withUnknown = buildTargets(
+    [cand({ symbol: "UNK", gates: [{ id: "SC-S6", title: "No earnings inside the option's life", spec: "§2.6", pass: null, margin: null, marginLabel: "no earnings date on file" }] as never })],
+    b,
+  );
+  ok(withUnknown[0].tier === 1 && withUnknown[0].unknownGates.includes("SC-S6"), "an unevaluable gate is reported, not swallowed");
+  ok(withUnknown[0].caution != null && /could not be evaluated/.test(withUnknown[0].caution), "and it becomes a caution — no rule refusing it is not a rule clearing it");
   ok(picks[0].headline.startsWith("Sell 1 COIN 2026-09-25 230 call"), `the pick is an executable sentence (got "${picks[0].headline}")`);
   ok(picks[0].reasons.some((r) => r.includes("σ")), "it says why, starting with the cushion");
   ok(picks[0].caution === null, "no caution invented for a name with a positive record");
@@ -251,6 +271,36 @@ function cleanBook(bal: unknown = balance({})): BookRisk {
   const up = f.find((x) => x.id === "F-ENTRY")!;
   ok(up != null && up.severity === "critical", "the upstream entry finding is the critical one, not the exit");
   ok(up.rules.includes("SC-E3"), "and it cites the cushion rule");
+}
+
+// ── ranking signals: downtrend tilt and IV deflation ─────────────────────────
+{
+  const st = (o: Partial<IvStats>): IvStats =>
+    ({ rank: 70, percentile: 70, n: 60, min: 30, max: 90, current: 60, chg5: -4, chg20: -8, peak20: 70, offPeak20: -0.14, falling: true, ...o }) as IvStats;
+  const sc = (o: Partial<SecurityRow>): SecurityRow =>
+    ({ ticker: "AAA", name: "AAA", sector: "Information Technology", type: "common", price: 100, ivPct: 60, volume: 5e6,
+       earningsInDays: 90, ivStats: st({}),
+       trend: { m1: { slopePct: -8, label: "down" }, m3: { slopePct: -12, label: "down" }, m6: { slopePct: -4, label: "sideways" } }, ...o }) as unknown as SecurityRow;
+  const prop = { dte: 35, expiry: "2026-09-25", monthly: false, strike: 120, delta: 0.13, sigmas: 1.8, estCredit: 300 };
+
+  const grinding = signalsFor(sc({}), prop, null);
+  const rising = signalsFor(sc({ trend: { m1: { slopePct: 9 }, m3: { slopePct: 12 }, m6: { slopePct: 6 } } as never }), prop, null);
+  ok(grinding.trendTilt != null && grinding.trendTilt > 0, "a falling name scores a positive downtrend tilt");
+  ok(rising.trendTilt != null && rising.trendTilt < 0, "a rising name scores negative and cannot earn the trend points");
+  ok(grinding.fit > rising.fit, `grinding down outranks rising (${grinding.fit} vs ${rising.fit})`);
+  ok(/grinding down|falling hard/.test(grinding.trendWhy), `the row says why in words (got "${grinding.trendWhy}")`);
+
+  ok(grinding.deflating, "rank ≥ 50 with a 5-day fall is the §2 deflation preference");
+  ok(!signalsFor(sc({ ivStats: st({ chg5: 3, falling: false }) }), prop, null).deflating, "IV that is RISING is not deflating, however rich");
+  ok(!signalsFor(sc({ ivStats: st({ rank: 20 }) }), prop, null).deflating, "a fall from a cheap IV is not the preference either — rank must be rich");
+  ok(signalsFor(sc({ ivStats: st({ n: 3 }) }), prop, null).ivWhy.includes("too thin"), "a thin IV history says so instead of scoring");
+  const flat = signalsFor(sc({ ivStats: st({ chg5: 0, falling: false }) }), prop, null);
+  ok(flat.fit < grinding.fit, "a deflating name outranks an otherwise identical flat-vol name");
+
+  const thin = signalsFor(sc({}), { ...prop, sigmas: 1.0 }, null);
+  ok(thin.fit < grinding.fit, "a thinner cushion ranks lower at the same everything else");
+  ok(grinding.parts.reduce((a, p) => a + p.value, 0) === grinding.fit, "the components sum to the total — no hidden term");
+  ok(grinding.parts.length === 5 && grinding.parts.every((p) => p.label.length > 0), "every component is named so the score is auditable");
 }
 
 console.log(`riskbrief-check: ${pass} assertions passed (cushion floor ${CUSHION_CRITICAL * 100}%).`);

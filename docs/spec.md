@@ -103,9 +103,18 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   missing per-chain loss cap, the buy-back-versus-expiry leak with its held-to-expiry
   counterfactual, roll quality, the avoidable-versus-market split under *today's* envelope,
   panic exits, and the caveat that every closed chain predates the written rules.
-  (0c) **What to sell next** — the candidates that clear both the doctrine gates and the
-  operator's profile, one executable sentence each with its reasons, prefaced by a
-  stop-opening banner when §6.2 is breached.
+  (0c) **What to sell next** — up to 20 candidates in two tiers: **tier 1** has no failing
+  doctrine gate (and says so as *clears every gate*, or *no gate fails · N unknown* when a
+  gate could not be evaluated — an earnings date that is missing or stale is not a pass),
+  **tier 2** is one gate short and names the gate. Ranked inside each tier by **preference
+  fit**, whose components are printed on the row: how hard the name is *grinding down*
+  (average regression slope over 1M/3M/6M, so a persistent slide outranks flat), whether IV
+  is rich against its own history **and already deflating** (`ivStats.rank` ≥ 50 with
+  `chg5` < 0 — §2's preference, since selling into a falling vol puts short vega on the same
+  side as theta), the σ cushion, the credit, and the name's own record. A **vol-regime line**
+  states how many of the sellable names have IV falling versus rising and how many qualify as
+  deflating, so an absence of badges reads as "the preference is unavailable today" rather
+  than as an oversight. Prefaced by a stop-opening banner when §6.2 is breached.
   Everything is derived at read time (`force-dynamic`), so **a Sync is all it takes for the
   brief to say something different** — there is nothing to re-run, and a *re-analyse now*
   link forces a fresh read. Then the evidence sections:

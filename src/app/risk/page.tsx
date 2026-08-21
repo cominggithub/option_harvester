@@ -414,6 +414,31 @@ export default async function RiskPage() {
       <H2 id="targets" note={`Δ≈${TARGET_DELTA} · ${PROFILE.dteMin}–${PROFILE.dteMax} DTE · IV > ${PROFILE.ivMin}% · $${PROFILE.priceMin}–${PROFILE.priceMax} · ≥${(PROFILE.minVolume / 1e6).toFixed(0)}M shares`}>
         What to sell next
       </H2>
+      <p className="mt-2 max-w-4xl text-[12.5px] leading-relaxed text-ink-muted">
+        Ranked by <strong className="text-ink">preference fit</strong>, whose components are on every row: how hard the name is{" "}
+        <strong className="text-ink">grinding down</strong> (average regression slope over 1M/3M/6M, so a persistent slide
+        outranks flat), whether its IV is rich against its own history <em>and already deflating</em> (rank ≥ 50 with a fall over
+        the last five days — selling into a falling vol puts short vega on the same side as theta), the σ cushion at the proposed
+        strike, the credit, and the name&rsquo;s own record. Fit is a preference, never a permission: a{" "}
+        <span className="font-semibold text-emerald-800">clears every gate</span> row is sellable on the rules, a{" "}
+        <span className="font-semibold text-amber-800">one gate short</span> row names the gate it fails and needs a deliberate
+        override. The full stack with every gate margin is on{" "}
+        <Link href="/short-call/candidates" className="underline">
+          What to sell
+        </Link>
+        .
+      </p>
+      <p className="mt-2 max-w-4xl text-[12px] leading-relaxed text-ink-muted">
+        <span className="font-semibold text-ink-faint">Vol regime. </span>
+        Across the {brief.volRegime.n} sellable names with an IV history, {brief.volRegime.falling} have IV{" "}
+        <strong className="text-ink">falling</strong> over the last five observations and {brief.volRegime.rising} have it{" "}
+        <strong className="text-ink">rising</strong>; {brief.volRegime.deflating} are rich <em>and</em> deflating — the §2
+        preference.{" "}
+        {brief.volRegime.deflating === 0
+          ? "None qualify today, so nothing below earns the deflation points and the ranking is carried by trend and cushion. Selling into a rising vol means short vega fights theta: the premium is getting richer, so waiting is a legitimate choice."
+          : "Those carry an IV-deflating badge and rank above otherwise identical names."}
+      </p>
+
       {brief.openingBlockedBy.length > 0 && (
         <div className="mt-2 border-l-2 border-rose-600 bg-surface px-4 py-3 text-[13px] leading-relaxed text-ink">
           <span className="font-semibold text-rose-700">These are for after you have made room.</span> The book breaches{" "}
@@ -425,11 +450,30 @@ export default async function RiskPage() {
         {brief.targets.map((p) => (
           <div key={p.symbol} className="bg-surface px-4 py-3">
             <div className="flex flex-wrap items-baseline gap-x-2">
+              <span
+                className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                  p.tier === 1 && p.unknownGates.length === 0
+                    ? "bg-emerald-100 text-emerald-900"
+                    : p.tier === 1
+                      ? "bg-line text-ink-muted"
+                      : "bg-amber-50 text-amber-800"
+                }`}
+              >
+                {p.tier === 1 ? (p.unknownGates.length ? `no gate fails · ${p.unknownGates.length} unknown` : "clears every gate") : "one gate short"}
+              </span>
               <Link href={`/stock/${p.symbol}`} className="text-[13.5px] font-semibold text-ink hover:underline">
                 {p.symbol}
               </Link>
               <span className="text-[10.5px] text-ink-faint">{p.theme}</span>
+              {p.deflating && (
+                <span className="rounded bg-sky-50 px-1 text-[10px] font-semibold text-sky-800" title="IV rank ≥ 50 and falling over the last 5 days — short vega works with theta">
+                  IV deflating
+                </span>
+              )}
               <span className="text-[13px] text-ink">{p.headline}</span>
+              <span className="tnum ml-auto text-[11px] text-ink-faint" title={p.parts.map((x) => `${x.label} ${x.value}`).join(" · ")}>
+                fit {p.fit} ({p.parts.map((x) => `${x.label} ${x.value}`).join(" · ")})
+              </span>
             </div>
             <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5">
               {p.reasons.map((why, i) => (
