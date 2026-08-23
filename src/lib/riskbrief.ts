@@ -43,6 +43,7 @@ import { ACCEPTABLE_LOSS_MULTIPLE, PANIC_EXIT_DAYS, type LossReport } from "@/li
 import type { ChainTotals, ScChain } from "@/lib/sc-lifecycle";
 import type { ScTrade } from "@/lib/shortcall";
 import type { Candidate } from "@/lib/sc-candidates";
+import { MAX_DELIVERY_SHARE_OF_CASH } from "@/lib/acqputs";
 
 /** IB starts issuing margin calls around here; below ~5% it liquidates for you. */
 export const CUSHION_CRITICAL = 0.1;
@@ -218,19 +219,59 @@ export function buildRisks(book: BookRisk, asOf: Date): Finding[] {
     }
   }
 
-  // Direction: the program is short calls; a put-dominated book is a different strategy.
-  const callCredit = book.bySide.find((s) => s.key.toLowerCase().includes("call"))?.credit ?? 0;
-  const putCredit = book.bySide.find((s) => s.key.toLowerCase().includes("put"))?.credit ?? 0;
+  // Direction: the program is short calls; a put-dominated book is a different strategy —
+  // but a DECLARED acquisition put is not part of that program at all (see R-DELIVERY), so
+  // counting it here would report the plan as a breach of itself.
+  const callCredit = book.legs.filter((l) => l.right === "C").reduce((a, l) => a + (l.credit ?? 0), 0);
+  const putCredit = book.legs.filter((l) => l.right === "P" && l.intent === "premium").reduce((a, l) => a + (l.credit ?? 0), 0);
+  const acq = book.acquisition;
   if (putCredit > callCredit && t.credit > 0) {
     out.push({
       id: "R-INVERTED",
       severity: putCredit > callCredit * 1.5 ? "high" : "medium",
-      title: `The book has inverted: short puts are ${pc(putCredit / t.credit)} of credit against ${pc(callCredit / t.credit)} in calls.`,
-      evidence: [`puts ${usd(putCredit)} vs calls ${usd(callCredit)}`, `net share-equivalent delta ${usd(t.netDeltaDollar)}`],
+      title: `The premium book has inverted: short puts sold for income are ${usd(putCredit)} of credit against ${usd(callCredit)} in calls.`,
+      evidence: [
+        `premium puts ${usd(putCredit)} vs calls ${usd(callCredit)}`,
+        acq.credit > 0 ? `${usd(acq.credit)} of declared acquisition puts excluded — assignment is their goal, not their risk` : "",
+        `net share-equivalent delta ${usd(t.netDeltaDollar)}`,
+      ].filter(Boolean),
       mechanism:
         "The panic-put pivot is a separate book with the opposite exposure. When it dominates, the account is long the market while the strategy documentation and the target selection still describe a short-call program — the risk being run is not the risk being measured.",
       action: "Either rebalance toward calls or say explicitly that the put book is now the primary program, and judge it by its own rules.",
       rules: ["SC-B4"],
+    });
+  }
+
+  // The acquisition book: assignment is intended, so the risk is whether the cash is there
+  // to honour it — a question nothing asked while these were misfiled as premium trades.
+  if (acq.contracts > 0) {
+    const overCash = acq.deliveryVsCash != null && acq.deliveryVsCash > MAX_DELIVERY_SHARE_OF_CASH;
+    const cannot = acq.deliveryVsCash != null && acq.deliveryVsCash > 1;
+    const overName = acq.names.filter((n) => n.overCap);
+    out.push({
+      id: "R-DELIVERY",
+      severity: cannot ? "critical" : overCash ? "high" : overName.length ? "medium" : "info",
+      title: cannot
+        ? `The acquisition book has promised ${usd(acq.delivery)} of stock against ${usd(acq.cash)} of cash — it cannot take delivery on all of it.`
+        : `Taking delivery on every declared acquisition put costs ${usd(acq.delivery)}, ${pc(acq.deliveryVsCash)} of settled cash.`,
+      evidence: [
+        ...acq.names.map(
+          (n) =>
+            `${n.symbol}: ${plural(n.contracts, "contract")}, delivery ${usd(n.delivery)}, effective basis ${n.avgBasis == null ? "—" : `$${n.avgBasis.toFixed(2)}`}${
+              n.avgBasisVsSpot != null ? ` (${pc(n.avgBasisVsSpot, 1)} vs spot)` : ""
+            }, credit ${usd(n.credit)}${n.overCap ? " — over its share of cash" : ""}`,
+        ),
+        acq.itmLegs > 0
+          ? `${plural(acq.itmLegs, "leg")} already ITM: ${usd(acq.itmDelivery)} of that delivery is live, not hypothetical`
+          : "nothing ITM yet, so delivery is still hypothetical",
+        `${pc(acq.deliveryVsNlv)} of NLV if every one is assigned`,
+      ],
+      mechanism:
+        "These puts are limit orders that pay to wait, so the exposure is not the mark — it is the obligation. If several are assigned in the same week the cash has to be there simultaneously, and the same cash is currently backing the premium book's margin. An assignment you cannot fund is a forced sale of something else, at the worst moment.",
+      action: cannot
+        ? "Reduce the promised delivery or ring-fence cash for it: the current total exceeds settled cash, so a broad drawdown assigns more than the account can pay for."
+        : `Keep ${usd(acq.delivery)} of cash unencumbered while these are open, and treat that cash as spent for margin purposes.`,
+      rules: ["AP-1", "AP-4"],
     });
   }
 

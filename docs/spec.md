@@ -99,6 +99,13 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   because the broker acts before a thesis resolves. A closing block states **what the
   reading could not see** (missing balance snapshot, partial margin coverage, stale deltas,
   undated earnings, guessed roll links), so a silent gap never reads as safety.
+  (0a2) **Acquisition book** — the declared short puts (`lib/acqputs.ts`, spec
+  docs/acquisition-puts.md) where assignment is the *goal*: delivery cost per leg and per
+  name, **effective basis** (strike − premium) against spot, share of settled cash and NLV,
+  and which legs are already ITM so delivery is live. These legs are excluded from `SC-B4`'s
+  inversion test — being long is the plan — but remain in the theme and σ statistics, because
+  correlated exposure is real even when it is wanted. The finding `R-DELIVERY` is severity-driven
+  by *funding*, not by the mark.
   (0b) **Why the strategy fails** — diagnosis from the closed record, chain-wise: the
   missing per-chain loss cap, the buy-back-versus-expiry leak with its held-to-expiry
   counterfactual, roll quality, the avoidable-versus-market split under *today's* envelope,

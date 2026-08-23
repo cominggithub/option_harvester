@@ -18,6 +18,7 @@ import { analyzeShortOption, type LegSuggestion } from "@/lib/posanalysis";
 import { getPositionGroups } from "@/lib/positions";
 import { getDashboardData, type SecurityRow } from "@/lib/securities";
 import { getLatestBalance, type Balance } from "@/lib/balances";
+import { buildAcquisitionBook, isAcquisitionPut, type AcquisitionBook } from "@/lib/acqputs";
 
 // ── doctrine constants (one source of truth; never inline these numbers) ──────
 export const BOOK_HORIZON_DAYS = 365; // "< 1y": the book this page analyses
@@ -148,6 +149,12 @@ export type BookLeg = LegSuggestion & {
   sector: string;
   theme: string; // correlated cluster (semis / metals / crypto …) — sector when none
   instrumentType: string | null; // "etf" | "stock" | … — an ETF has no earnings print
+  /**
+   * Why the position exists. `acquisition` = a declared short put on a name the operator
+   * wants to own (docs/acquisition-puts.md), where assignment is the goal; everything else
+   * is premium selling, where it is the failure state. The two cannot share a verdict.
+   */
+  intent: "premium" | "acquisition";
   ivPct: number | null; // underlying IV (annualised, %)
   ivRank: number | null; // 0–100 percentile of that IV in its own history
   trend: TrendRead;
@@ -436,6 +443,13 @@ export type BookRisk = {
   };
   shocks: Shock[];
   verdicts: { verdict: Verdict; legs: BookLeg[] }[];
+  /**
+   * The declared acquisition book (docs/acquisition-puts.md). Reported separately because
+   * its success condition is the opposite of the premium book's: these puts are meant to be
+   * assigned, so the question is whether the cash can take delivery, not whether the strike
+   * holds.
+   */
+  acquisition: AcquisitionBook;
 };
 
 const DAY = 86_400_000;
@@ -509,6 +523,7 @@ export function buildBookRisk(
         sector: sec?.sector ?? "Unclassified",
         theme: themeOf(base.symbol, sec?.sector ?? "Unclassified"),
         instrumentType: sec?.type ?? null,
+        intent: isAcquisitionPut(base.symbol, base.right) ? "acquisition" : "premium",
         ivPct,
         ivRank: sec?.ivStats?.rank ?? null,
         trend: trendRead(sec),
@@ -595,7 +610,9 @@ export function buildBookRisk(
     bySector,
     byTheme,
     bySymbol,
-    bySide: tally(legs, (l) => (l.right === "C" ? "Short calls" : "Short puts")),
+    bySide: tally(legs, (l) =>
+      l.right === "C" ? "Short calls" : l.intent === "acquisition" ? "Short puts (acquisition)" : "Short puts (premium)",
+    ),
     byDte: tally(legs, (l) => l.dteBucket).sort((a, b) => DTE_BUCKETS.indexOf(a.key as DteBucket) - DTE_BUCKETS.indexOf(b.key as DteBucket)),
     byDelta: tally(legs, (l) => l.deltaBucket).sort((a, b) => DELTA_BUCKETS.indexOf(a.key as DeltaBucket) - DELTA_BUCKETS.indexOf(b.key as DeltaBucket)),
     byTrend: tally(legs, (l) => l.trend ?? "unknown"),
@@ -646,6 +663,10 @@ export function buildBookRisk(
         unknownLegs: legs.filter((l) => !l.earningsRisk && l.earningsDate == null && !isEtf(l)).length,
       };
     })(),
+    acquisition: buildAcquisitionBook(
+      legs.map((l) => ({ symbol: l.symbol, right: l.right, strike: l.strike, expiry: l.expiry, qty: l.qty, dte: l.dte, credit: l.credit, spot: l.spot, itm: l.itm })),
+      balance,
+    ),
     shocks: SHOCK_MOVES.map((m) => shockBook(legs, m)),
     verdicts: (Object.keys(VERDICT_META) as Verdict[])
       .sort((a, b) => VERDICT_META[a].rank - VERDICT_META[b].rank)

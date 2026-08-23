@@ -137,6 +137,11 @@ The screen must surface **naked-call targets** = the right side of this strategy
 4. **Diversification** — 20–30 uncorrelated weak sector ETFs (favorites/targets help track the basket).
 5. **Panic pivot (naked puts)** — a separate screen for QQQ/SPY-class quality at high IV (Deep-OTM puts,
    Delta 0.10–0.15). Distinct from the naked-call screen.
+6. **Acquisition puts (第三本帳)** — short puts on names the operator actually **wants to own**
+   (currently GDX and SOXX): 想在低點買進，所以賣 put 等於「付錢請人幫你掛限價單」。**Assignment
+   is the goal, not the failure**, so neither the naked-call rules nor the panic-pivot rules
+   apply to them; they are judged on the **effective basis** (strike − premium) and on whether
+   the cash can actually take delivery. Authority: **[acquisition-puts.md](acquisition-puts.md)**.
 
 So "Best Harvest" (generic high-IV + weekly ladder, all stocks) is **not** the strategy screen.
 The intended primary screen is **Naked Call = downtrending liquid sector ETFs**.

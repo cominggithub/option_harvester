@@ -168,8 +168,12 @@ export function buildGates(book: BookRisk): BookGate[] {
   const marginPct = t.accountMarginPctOfNlv ?? t.marginPctOfNlvExtrapolated ?? t.marginPctOfNlv;
   const marginSource = t.accountMarginPctOfNlv != null ? "IB account requirement" : t.marginPctOfNlvExtrapolated != null ? "extrapolated from synced legs" : "synced legs only (a floor)";
   const inside1Sigma = book.breaches.withinOneSigma.length;
-  const callCredit = book.bySide.find((s) => s.key.toLowerCase().includes("call"))?.credit ?? null;
-  const putCredit = book.bySide.find((s) => s.key.toLowerCase().includes("put"))?.credit ?? null;
+  // SC-B4 asks whether the PREMIUM program has inverted into a long book. A declared
+  // acquisition put (docs/acquisition-puts.md) is meant to be long and meant to be assigned,
+  // so counting it here would flag the plan as a breach of itself.
+  const callCredit = book.legs.filter((l) => l.right === "C").reduce((a, l) => a + (l.credit ?? 0), 0);
+  const putCredit = book.legs.filter((l) => l.right === "P" && l.intent === "premium").reduce((a, l) => a + (l.credit ?? 0), 0);
+  const acqCredit = book.acquisition.credit;
 
   const ctx = {
     maxThemeShare: c.maxTheme?.creditShare ?? null,
@@ -189,7 +193,9 @@ export function buildGates(book: BookRisk): BookGate[] {
       t.excessLiquidityPctOfNlv != null ? ` · excess liquidity $${Math.round(t.excessLiquidity ?? 0).toLocaleString()} = ${Math.round(t.excessLiquidityPctOfNlv * 100)}% cushion` : ""
     }`,
     "SC-B3": `${inside1Sigma} of ${t.legs} legs inside 1σ (limit ${Math.round(MAX_SHARE_INSIDE_1SIGMA * 100)}%)`,
-    "SC-B4": `calls $${Math.round(callCredit ?? 0).toLocaleString()} vs puts $${Math.round(putCredit ?? 0).toLocaleString()}`,
+    "SC-B4": `calls $${Math.round(callCredit).toLocaleString()} vs premium puts $${Math.round(putCredit).toLocaleString()}${
+      acqCredit > 0 ? ` · $${Math.round(acqCredit).toLocaleString()} of declared acquisition puts excluded (assignment is their goal)` : ""
+    }`,
     "SC-B5": marginPct != null ? `${Math.round((1 - marginPct) * 100)}% of NLV unused` : "not synced",
   };
 

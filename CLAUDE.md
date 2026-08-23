@@ -16,6 +16,7 @@ lives in the knowledge map below; read the row that matches your task before div
 | Understand a page, metric, formula, or table column | **`docs/spec.md`** — product & domain spec, data dictionary, P/L & position engines |
 | Verify a change before shipping | **`docs/test-plan.md`** — static gates, `*-check.ts` self-checks, manual steps |
 | Know *why* the strategy trades what it does | **`docs/strategy.md`** — trading rationale |
+| Work on the short puts written to ACQUIRE a name (GDX, SOXX) | **`docs/acquisition-puts.md`** — the third book: assignment is the goal, judged on effective basis and funding |
 | Work on short calls: entry rules, management, the per-target record | **`docs/short-call-strategy.md`** — the formal, versioned short-call spec (+ what the record proves) |
 | Work on the `/short-call/*` analyzer section (why each page exists, what was deliberately not built) | **`docs/short-call-analyzer-plan.md`** — the build plan, shipped 2026-08-20 |
 | Know what the instrument cannot yet tell you (and why a number may be wrong) | **`docs/system-gaps.md`** — the standing list of system insufficiencies, decision-impact ordered |

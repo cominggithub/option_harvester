@@ -1,3 +1,4 @@
+import React from "react";
 import Link from "next/link";
 import {
   getBookRisk,
@@ -280,6 +281,9 @@ export default async function RiskPage() {
 
   const toc: TocItem[] = [
     { id: "brief", label: "The brief", count: brief.level, tone: brief.level === "critical" ? "bad" : brief.level === "normal" ? "ok" : "warn" },
+    ...(r.acquisition.contracts > 0
+      ? ([{ id: "acquisition", label: "Acquisition book", count: money(r.acquisition.delivery), tone: (r.acquisition.deliveryVsCash ?? 0) > 0.8 ? "warn" : "ok" }] as TocItem[])
+      : []),
     { id: "why", label: "Why it fails", count: brief.failures.length, tone: brief.failures.some((f) => f.severity === "critical") ? "bad" : "warn" },
     { id: "targets", label: "What to sell next", count: brief.targets.length, tone: brief.openingBlockedBy.length ? "warn" : "ok" },
     { id: "evidence", label: "Evidence", group: true },
@@ -381,6 +385,87 @@ export default async function RiskPage() {
           </div>
         )}
       </div>
+
+      {/* ── the acquisition book: assignment is the plan ─────────────────── */}
+      {r.acquisition.contracts > 0 && (
+        <>
+          <H2
+            id="acquisition"
+            note={`${r.acquisition.contracts} contracts · ${money(r.acquisition.delivery)} to take delivery · ${pct(r.acquisition.deliveryVsCash)} of settled cash`}
+          >
+            Acquisition book
+          </H2>
+          <p className="mt-2 max-w-4xl text-[12.5px] leading-relaxed text-ink-muted">
+            Short puts on names you have <strong className="text-ink">declared you want to own</strong>
+            (<code>lib/acqputs.ts</code>, rules in{" "}
+            <Link href="/md/acquisition-puts.md" className="underline">
+              docs/acquisition-puts.md
+            </Link>
+            ). Assignment is the goal here, so the delta and cushion rules of the call program do not apply and these legs are
+            excluded from the <span className="font-semibold">SC-B4</span> inversion test — being long is the plan. What replaces
+            them is the balance sheet: a put is a limit order that pays you to wait, and that only holds if the cash to take
+            delivery is genuinely reserved. <strong className="text-ink">Effective basis</strong> — strike less the premium — is
+            the price you have agreed to pay, and the number this book is judged on.
+          </p>
+          <div className="mt-3 overflow-x-auto bg-surface">
+            <table className="w-full min-w-[820px] border-collapse text-[12px]">
+              <thead>
+                <tr className="border-b border-line text-left text-[10px] uppercase tracking-wider text-ink-faint">
+                  <th className="py-1.5 pl-3 pr-2 font-medium">Name</th>
+                  <th className="py-1.5 pr-2 font-medium">Leg</th>
+                  <th className="py-1.5 pr-2 text-right font-medium">DTE</th>
+                  <th className="py-1.5 pr-2 text-right font-medium">Spot</th>
+                  <th className="py-1.5 pr-2 text-right font-medium">Basis</th>
+                  <th className="py-1.5 pr-2 text-right font-medium">vs spot</th>
+                  <th className="py-1.5 pr-2 text-right font-medium">Credit</th>
+                  <th className="py-1.5 pr-3 text-right font-medium">Delivery</th>
+                </tr>
+              </thead>
+              <tbody className="text-ink-muted">
+                {r.acquisition.names.map((n) => (
+                  <React.Fragment key={n.symbol}>
+                    {n.legs.map((l) => (
+                      <tr key={`${n.symbol}-${l.expiry}-${l.strike}`} className="border-b border-line/50 hover:bg-canvas">
+                        <td className="py-1.5 pl-3 pr-2">
+                          <Link href={`/stock/${n.symbol}`} className="font-semibold text-ink hover:underline">
+                            {n.symbol}
+                          </Link>
+                        </td>
+                        <td className="tnum py-1.5 pr-2 whitespace-nowrap">
+                          <span className="text-sky-700">put</span> {l.strike} × {l.qty} · {l.expiry}
+                          {l.itm ? <span className="ml-1 rounded bg-amber-50 px-1 text-[10px] font-semibold text-amber-800">ITM — delivery live</span> : null}
+                        </td>
+                        <td className="tnum py-1.5 pr-2 text-right">{l.dte ?? "—"}d</td>
+                        <td className="tnum py-1.5 pr-2 text-right">{l.spot == null ? "—" : `$${l.spot.toFixed(0)}`}</td>
+                        <td className="tnum py-1.5 pr-2 text-right text-ink">{l.basis == null ? "—" : `$${l.basis.toFixed(2)}`}</td>
+                        <td className={`tnum py-1.5 pr-2 text-right ${(l.basisVsSpot ?? 0) < 0 ? "text-emerald-700" : "text-rose-700"}`}>
+                          {pct(l.basisVsSpot, 1)}
+                        </td>
+                        <td className="tnum py-1.5 pr-2 text-right">{money(l.credit)}</td>
+                        <td className="tnum py-1.5 pr-3 text-right">{money(l.delivery)}</td>
+                      </tr>
+                    ))}
+                    <tr className="border-b border-line bg-canvas/60 text-[11px]">
+                      <td className="py-1 pl-3 pr-2 font-semibold text-ink">{n.symbol} total</td>
+                      <td className="py-1 pr-2 text-ink-muted" colSpan={4}>
+                        {n.intent.why}
+                      </td>
+                      <td className="tnum py-1 pr-2 text-right">{pct(n.avgBasisVsSpot, 1)}</td>
+                      <td className="tnum py-1 pr-2 text-right">{money(n.credit)}</td>
+                      <td className={`tnum py-1 pr-3 text-right font-semibold ${n.overCap ? "text-rose-700" : "text-ink"}`}>{money(n.delivery)}</td>
+                    </tr>
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-1.5 text-[11px] leading-snug text-ink-faint">
+            Promised delivery {money(r.acquisition.delivery)} against {money(r.acquisition.cash)} of settled cash (
+            {pct(r.acquisition.deliveryVsCash)}) and {pct(r.acquisition.deliveryVsNlv)} of NLV. That cash is also what backs the
+            premium book&rsquo;s margin — nothing in the system ring-fences it, which is open question §7.3 of the spec.
+          </p>
+        </>
+      )}
 
       {/* ── why the strategy is failing ──────────────────────────────────── */}
       <H2 id="why" note={`${a.totals.chains} closed chains · ${money(a.totals.realized)} realized`}>

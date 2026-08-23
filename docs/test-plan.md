@@ -153,6 +153,15 @@ What they cover:
   everything else; the components sum exactly to the total (no hidden term); tier 1 outranks
   tier 2 regardless of fit; a near miss carries its gate id and margin; and an unevaluable
   gate becomes a caution rather than being swallowed.
+- **acqputs-check** — the acquisition book (`lib/acqputs.ts`): declaring a name changes only
+  its **puts** (a call on GDX is still a premium trade) and an undeclared put can never claim
+  the intent after the fact; every declaration carries a reason and a date; delivery cost and
+  effective basis (strike − premium per share, so always below the strike); the average basis
+  is weighted by **shares delivered**, not by leg count; the live GDX+SOXX shape promises
+  $109,400 against $117,581 of cash, which breaches the 80% book cap while still being
+  fundable — a different severity from "cannot pay"; GDX breaches the 40% single-name cap and
+  SOXX does not; an ITM leg's delivery is reported as live; and with no balance snapshot the
+  promise is known while its coverage is not, with no cap assumed breached.
 - **page-markdown-check** — approved UI-path ↔ `.md` URL mapping, API-path rejection,
   `#page-content` isolation, front matter/source URL, heading/table/link conversion,
   and removal of global navigation, scripts, and SVG internals.
