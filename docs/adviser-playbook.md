@@ -15,8 +15,17 @@ It does not place trades, does not touch `src/`, and does not present opinion as
 
 ## 1. Sources of truth, in precedence order
 
+**Three books.** The account runs three intents; judging one by another's rules is the
+commonest analytical error available here. Naked calls and income puts treat assignment as the
+failure state and are judged on credit kept; **acquisition puts** (declared per name in
+`lib/acqputs.ts` — currently GDX and SOXX) treat assignment as the **goal** and are judged on
+effective basis and on whether the cash can fund delivery. Never report a declared acquisition
+put as an inversion, an assignment risk or a §6.2 breach; do check `AP-4`/`R-DELIVERY`.
+
 | Rank | File | Status |
 | --- | --- | --- |
+| 0 | `docs/sessions/latest.md` | **Working memory.** Open threads, last measurements, and what was already rejected. Read before proposing anything. Its numbers are snapshots — re-measure. |
+| 0= | `docs/acquisition-puts.md` | Authoritative for the acquisition book (v1.0). |
 | 1 | `docs/short-call-strategy.md` | **Authoritative** for short calls (v1.1). Entry envelope, management, success criteria, the §6.4/§6.5 evidence — which is **frozen at 2026-08-19 on purpose** (see §2). |
 | 1= | `src/lib/sc-rules.ts` | The **machine mirror** of that spec: 21 rules with ids (`SC-S*`/`SC-E*`/`SC-M*`/`SC-B*`), spec references, `evaluate()` returning pass **and margin**, and `STRATEGY_VERSIONS` with `effectiveFrom`. `npm run check` fails if it and the spec's changelog disagree, so a drift is a build failure, not an opinion. |
 | 2 | `docs/strategy.md` | The wider doctrine (Chinese原文), including the panic-put pivot. § 五 is the same v2 rule set in memo form. Loses to #1 on conflict. |
@@ -186,6 +195,22 @@ COST      where it lands: doc rule, lib computation, page surface, or ingest
 
 Close with: what could **not** be verified and why. Then stop — no implementation of
 `src/` changes unless explicitly asked.
+
+## 6b. Session discipline
+
+Conversations end; the argument should not restart from zero. `docs/sessions/` is the working
+memory — protocol in its `README.md`, shape in `_template.md`.
+
+* **On start:** read `latest.md`, compare its recorded HEAD against the commits the `agentSpawn`
+  hook prints, and say so if code has moved since — a stale session quoted as live is exactly
+  the failure this folder is meant to prevent.
+* **On save:** write a dated archive file from the template, rewrite `latest.md` to point at it
+  with only what the next conversation needs, and report what you left out.
+* **Record rejections.** The most valuable line in a session file is an idea that was tested and
+  killed, because it is the one most likely to come back as a fresh proposal. "Stop buying back"
+  is the standing example.
+* **No trade instructions in a session file.** Analysis and hypotheses only; trading decisions
+  are taken by the operator against the live pages.
 
 ## 7. Guardrails
 

@@ -1,147 +1,111 @@
-# option_harvester — next-session recap (as of 2026-08-20)
+# option_harvester — next-session recap (as of 2026-08-23)
 
 **Status:** everything below is implemented, built, deployed to production
-(`114.33.62.221:19210`, systemd unit `option_harvester`), and **committed + pushed to
-`origin/master` in this handoff**. The working tree should be clean afterward **except**
-for daily-generated `predictions/cc-*.jsonl` (intentionally untracked cron output).
-
-Why this handoff is large: the previous session was killed by a WSL reboot with the whole
-short-call program **deployed and serving but never committed** — `/risk`, the eight
-`/short-call/*` pages, nine libs, four check scripts and four docs sat untracked. Nothing
-was lost; it is now in git.
+(`114.33.62.221:19210`, systemd unit `option_harvester`), and committed + pushed to
+`origin/master`. The working tree should be clean **except** daily-generated
+`predictions/cc-*.jsonl` (intentional cron output) and `data/` (ib-agent's local snapshot,
+gitignored).
 
 Ops reminder: deploy only with `npm run build` **immediately** followed by
-`sudo systemctl restart option_harvester` — prod and the test server share one `.next`,
-so a build without the restart breaks the live chunks. Read **CLAUDE.md** first.
+`sudo systemctl restart option_harvester` — prod and the test server share one `.next`, so a
+build without the restart breaks the live chunks. Read **CLAUDE.md** first.
 
-## What shipped (2026-08-19 → 08-20)
+**Two entry points depending on who is reading.** For the *strategy* (what to sell, why the
+record looks the way it does), the adviser's working memory is
+**`docs/sessions/latest.md`** — open threads, last measurements, and what was already
+rejected. For the *system*, keep reading here.
 
-A. **The short-call program became a specified, instrumented system.**
-   **`docs/short-call-strategy.md`** (v1.1, versioned + changelog + open questions) is the
-   authority for short calls; `strategy.md` § 五 points at it. The rules are **mirrored in
-   code** as a versioned registry (`lib/sc-rules.ts`, 21 ids `SC-S*/E*/M*/B*`) — every page
-   cites rule ids, every trade is stamped with the version in force **at its open date**, and
-   `npm run check` fails if registry and doc drift. Build plan and the two places it changed
-   under contact with the data: **`docs/short-call-analyzer-plan.md`**.
+## The account runs three books, and they do not share rules
 
-   Eight pages under one TopNav entry, one shared load (`lib/sc-data.ts`):
-   **Scorecard** (`/short-call`, the leg-level record: Δ/IV implied by each fill via
-   Black-Scholes inversion, cushion in σ, the path the underlying printed, one reason per
-   trade), **Lifecycle** (chains: sale → rolls → close/expiry/assignment, with a
-   `certain|likely|guess` link confidence because IB never labels a roll), **Loss lab**
-   (rule audit + the avoidable-vs-market split + held-to-expiry counterfactuals),
-   **Open book** (verdicts as instructions with rule id and margin, a constructed roll
-   target, §6.2 gates that say *stop opening*), **What to sell** (the NC universe as a gate
-   stack that names the gate it failed), **Timeline** (ISO weeks as cash *and* vintage),
-   **Cohorts** (every slice; low-`n` rows greyed, not hidden), **Strategy** (the registry
-   rendered, with each revision's hypothesis/test/measured effect).
+| Book | Assignment is | Judged by | Spec |
+| --- | --- | --- | --- |
+| Naked calls | the failure state | credit kept (§6) | `docs/short-call-strategy.md` **v1.2** |
+| Panic puts (income) | the failure state | credit kept | `docs/strategy.md` § 三 |
+| **Acquisition puts** — GDX, SOXX | **the goal** | effective basis, and whether cash funds delivery | `docs/acquisition-puts.md` **v1.0** |
 
-   Engines: `sc-rules`, `sc-lifecycle`, `sc-loss`, `sc-actions`, `sc-candidates`,
-   `sc-timeline`, `sc-data`, `sc-nav` + `shortcall.ts`/`blackscholes.ts`. Checks:
-   **`npm run check`** = 369 assertions over six scripts; **`npm run reconcile:sc`** is the
-   read-only live reconciliation (fails if leg and chain views disagree on money).
-   The `option-adviser` role (`.kiro/agents/option-adviser.json`, method in
-   **`docs/adviser-playbook.md`**) owns proposals — read-only on code and data, writes to
-   `docs/` only.
+This split is new (2026-08-23) and it fixed an analysis that was actively wrong: `/risk` had
+been reading the intended GDX/SOXX puts as "the program has inverted into a long book" and
+counting their delivery notional as pure risk. `SC-B4` now compares calls against **premium**
+puts only and names the credit it excluded; short-call spec **v1.2** retires the "no underlying
+is ever held" premise, because the account will now hold stock by design.
 
-B. **`/risk`** — the whole-book limit monitor for short premium inside 1 year
-   (`lib/bookrisk.ts`): credit/margin/Θ/net-Δ$ KPIs, doctrine conformance, σ-to-strike and
-   theme-HHI breach flags, a ±20% parallel shock, and the per-leg verdict ladder that
-   `/short-call/actions` restates as instructions. Calls **and** the panic-put side; the
-   analyzer section is short-calls-only and links here.
+## What shipped since 2026-08-20
 
-C. **Extension 0.9.2 → 0.9.5.**
-   * *Sync on IB login* (0.9.2): a 1-minute `loginwatch` alarm plus every IB-tab navigation
-     probe each open IB tab in-page, and the light pull fires on the not-authed → authed
-     edge. Popup checkbox, default on; runs log to `/sync` as `source: "login"`.
-   * *Login hardening* (0.9.3): "logged in" ≠ "usable", so readiness gates on
-     `/iserver/auth/status` **plus** an account **plus** the two portfolio reads the sync
-     consumes; the edge is only **spent on a productive run** (account + OH push
-     `pushed === total`), else the cooldown clears and the watcher retries —
-     `LOGIN_SYNC_MAX_TRIES` = 8 per login. Also: `verifyOhWatchlists` settles 2.5 s and
-     re-reads once when the only diff is `missing` conids (IB's read-back right after a push
-     can be short).
-   * *Self-reporting* (0.9.4/0.9.5): every status change and login-watcher decision POSTs to
-     the new **`/api/ext-log`** (new `ExtLog` model → `option_harvest_ext_logs`, 14-day
-     retention) with the extension's id + version, its `chrome.storage` state and **which
-     alarms are armed**. Failed posts queue (bounded 100) and flush later; identical
-     login-watch outcomes collapse for 15 minutes. Before this, a login sync that died early
-     left no trace anywhere except the popup.
+1. **`/risk` reads its own data** (`lib/riskbrief.ts`). Three sections above the evidence:
+   *the brief* (findings worst-first, each with its numbers, the **mechanism**, an action and
+   rule ids; liquidity first because the broker acts before a thesis resolves), *why the
+   strategy fails* (chain-wise diagnosis), and *what to sell next*. It is `force-dynamic`, so
+   **a Sync is all it takes to make it say something different** — nothing to re-run, plus a
+   *re-analyse now* link. It closes with **what the reading could not see**.
+2. **The exit finding was wrong and is corrected.** "The money is lost at the exit" was a
+   cohort **selection effect**. Re-cut by the state at the close: 71 of 124 buy-backs were
+   *mandated* (Δ>0.30 or ITM) costing −$31,359, and only 10 were discretionary — those made
+   **+$446**. All 71 forced exits were sold **inside the 1.5σ cushion floor** (avg 0.83σ, avg
+   Δ 0.26). The leak is the entry. Pinned so it cannot silently return.
+3. **`docs/system-gaps.md`** — 13 system insufficiencies, decision-impact ordered, each with
+   what is asserted, what is true, and the fix. §1 reconstructed greeks, §3 counterfactuals
+   that ignore assignment and margin, §4 the loss-cap backtest we cannot yet run.
+4. **What to sell next**: 20 picks in two tiers (no failing gate / one gate short, named),
+   ranked by a transparent **fit** whose five components print on the row — downtrend tilt from
+   regression slopes, IV **deflation** (`ivStats.chg5/offPeak20`: rank ≥50 *and* falling),
+   cushion, credit, own record. A vol-regime line says how many names qualify, so an absence of
+   badges reads as "unavailable today" rather than an oversight.
+5. **`/risk` left rail** (`components/PageToc.tsx`), and the margin KPI now leads with **IB's
+   own account requirement** (78% of NLV) instead of the partial what-if sum (44%).
+6. **Earnings before expiry** section on `/risk`, grouped by how soon the print lands.
+7. **The adviser role is current** (`.kiro/agents/option-adviser.json`): knows the pages and
+   engines, the three books, the session protocol, and has a standing rule against causal
+   claims from outcome-defined cohorts.
+8. Committed earlier by a parallel session and verified here: **delta provenance/staleness**
+   (`lib/greekage.ts`, `components/DeltaCell.tsx`) and the `/pnl-predict` **Week by week** table.
 
-D. **OH watchlist LEV (id 990011)** — leveraged **long** ETFs (2x/3x bulls) via
-   `lib/leveraged.ts`, name-based since Yahoo exposes no leverage field. **Inverse/short
-   funds are excluded by design** (selling calls on a −3x fund is a bullish index bet).
-   Appended last so `990001–990010` stay stable. Live: 18 rows, 0 missing.
+## Where the record stands (2026-08-23, `npm run reconcile:sc`)
 
-## Where the record actually stands (2026-08-20, `npm run reconcile:sc`)
+| View | Closed | Credit | Realized | Kept | Win |
+| --- | --- | --- | --- | --- | --- |
+| Legs | 201 | $47,319 | **−$7,069** | −14.9% | 63.7% |
+| Chains | 155 | $42,410 | −$7,392 | −17.4% | 67.7% |
 
-| View | Trades | Credit | Realized | Kept | Win | Breach |
-| --- | --- | --- | --- | --- | --- | --- |
-| Legs (contracts) | 193 closed | $44,275 | **−$10,113** | −22.8% | 62.2% | 21.8% |
-| Chains (rolls collapsed) | 147 closed | $39,268 | −$10,323 | −26.3% | 66.0% | 27.2% |
+46 open chains, $154,288 of credit. One MRNA chain (−$10,086, **14.9× its credit**) still
+dominates the deficit; the record improved $3,044 in the two days to 08-23. §6.4/§6.5 of the
+short-call spec are **frozen at 2026-08-19 on purpose** — they are the evidence that caused
+v1.0/v1.1, not the current record.
 
-Open: 54 chains, $157,332 credit (whole book incl. puts: $200,657 over 90 contracts).
-Invariants hold; 46 rolls across 38 chains, 34 `certain` / 4 `guess` links.
+**The book is not in a position to open anything:** maintenance margin is **78% of NLV**
+against a 60% limit, excess liquidity $17,247 = **13% cushion**, and all five §6.2 gates fail.
+The acquisition book separately promises **$109,400** of delivery against $117,581 of settled
+cash, with GDX alone at 57% against its 40% name cap — and that cash is not ring-fenced.
 
-Read this before trusting anything in § 6.4 of the spec, which is **frozen at 2026-08-19 on
-purpose** (it is the evidence that caused the v1.0/v1.1 rule changes) and now reads far too
-kindly:
+## Verification
 
-* **One trade owns the entire deficit.** MRNA (credit $678, opened 07-22, rolled once,
-  bought back 08-19) lost **$10,086 — 14.9× its credit**, against a § 6.1 tolerance of ~2×.
-  Without it the program is roughly flat-to-positive. The next worst are LABU −$1,550 and
-  ACN −$1,508.
-* **Buy-backs are the leak, and it is worse chain-wise than leg-wise:** bought-back chains
-  −$21,112 at 42.3% win vs expired +$10,550 at 92.5%, assigned +$239 (2).
-* **10 of 46 rolls were bad rolls** (debit, or not out-and-up, or past the 1-year wall).
-* **Every chain in the record is `v0.1`** — pre-spec. So the current envelope cannot be
-  reported as compliance; it is shown as a separate counterfactual.
-
-The open question this raises is not covered by the current rules: nothing in § 4 caps the
-*loss size* of a single chain now that the 2–2.5× mechanical stop was dropped (§ 7.5). One
-14.9× outcome is what "judge the book, not the trade" is supposed to survive, and it did
-not.
-
-## Verification done this session
-
-- `npm run check` → **369 assertions, exit 0** (sc-rules 73 · sc-lifecycle 51 ·
-  sc-analyzer 36 · shortcall 68 · bookrisk 62 · leveraged 79).
-- `npm run reconcile:sc` → invariants hold (realized, credit, leg counts, uniqueness,
-  rolls = legs − chains) against the live book.
-- Prod HTTP 200 on `/` and all eight `/short-call*` routes; `.next` build followed by the
-  systemd restart, in that order.
-- Earlier in the program: two live syncs `OH→IB 10/10 · verify ✓`; `/api/oh-watchlists`
-  shows `OH:ROIC` 990010 and `OH:LEV` 990011 (18 rows).
+- `npm run check` → **556 assertions, nine scripts** (sc-rules 76 · sc-lifecycle 51 ·
+  sc-analyzer 56 · shortcall 68 · bookrisk 77 · leveraged 79 · greeks 57 · riskbrief 65 ·
+  acqputs 30). `npm run reconcile:sc` invariants hold against the live book.
+- `npx tsc --noEmit` clean; build exit 0 followed immediately by the systemd restart; `/risk`,
+  `/short-call/*`, `/positions`, `/orders`, `/pnl-predict` all 200; UI changes read back from
+  headless screenshots.
 
 ## Environment notes
 
-- The daily ingest timer fires at **06:00 local (Asia/Taipei)** (`OnCalendar=*-*-* 06:00:00`,
-  `Persistent=true`). Prisma stores timestamps as **UTC-naive**; convert with
-  `col AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Taipei'` (a bare `AT TIME ZONE 'Asia/Taipei'`
-  double-shifts and reads 8 h early).
-- Extension is **v0.9.5** — reload in `chrome://extensions` only if its behavior changed;
-  **bump `manifest.json` on any extension edit**.
+- Daily ingest fires at **06:00 Asia/Taipei**. Prisma stores timestamps **UTC-naive**: convert
+  with `col AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Taipei'`.
+- Extension is **v0.9.5**; bump `manifest.json` on any extension edit.
+- `ib-agent` is the only sanctioned route to IBKR. Its Gateway is usually down — `ib-agent
+  status` first, and **ask before `gateway up`** (2FA tap).
 
 ## Known gaps / next
 
-- **Not built from the plan:** the frozen weekly `reviews/sc-<date>.json` artifact (§ 4.5) —
-  deferred until a revision exists that it could measure.
-- **Loss-size rule.** Backtest a per-chain stop (§ 7.5) against the delta-based roll on this
-  record; MRNA is the argument for it.
-- **Rolls vs closing** (§ 7.2) and **IV rank vs absolute IV** (§ 7.3) are still open, and now
-  have the lifecycle data to be answerable.
-- **Live greeks at fill time** (§ 7.4): entry Δ/IV remain reconstructed until the daily
-  per-contract greek snapshot is persisted.
-- **Write routes are unauthenticated** (`/api/positions`, `sync-log`, `ext-log`, …) and prod
-  listens outside the NAT. Worth fixing for all of them at once, not one route at a time.
-- Auto-sync skips the greeks pass, so RED/margin can lag on auto-only days.
-- **FISV → FI rename** in the S&P seed + conid re-resolve.
+1. **Free margin before anything else** — harvest the ≥70% winners, close the legs inside 1σ.
+2. **Decide GDX's delivery cap**: reduce contracts or raise the cap in `acqputs.ts` with a reason.
+3. **Ring-fence the acquisition cash** (`acquisition-puts.md` §7.3) so the margin KPI subtracts it.
+4. **Nothing has closed under v1.1+**, so no revision has been validated on its own trades.
+5. The rest of `docs/system-gaps.md`, in its order — and the unauthenticated write routes (§11)
+   remain live on a public port.
 
-## How to restart next session
+## How to restart
 
-1. Read `CLAUDE.md`, then this file, then `docs/short-call-strategy.md`.
-2. `git status` — only generated `predictions/cc-*.jsonl` should be untracked.
-3. `npm run check` before touching anything under `/short-call` or `/risk`;
-   `npm run reconcile:sc` after any change to `pnl.ts`, `shortcall.ts` or `sc-lifecycle.ts`.
-4. Read the live numbers off `/short-call`, never off § 6.4 of the spec.
-5. Check `/wl-log` for the day-over-day OH diffs.
+1. `CLAUDE.md`, then this file. For strategy work, `docs/sessions/latest.md`.
+2. `git status` — only `predictions/cc-*.jsonl` should be untracked.
+3. `npm run check` before touching `/short-call`, `/risk` or anything rendering a Δ;
+   `npm run reconcile:sc` after touching `pnl.ts`, `shortcall.ts` or `sc-lifecycle.ts`.
+4. Read live numbers off the pages, never off §6.4 of the spec.

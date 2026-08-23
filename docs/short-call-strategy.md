@@ -1,10 +1,16 @@
 # Short-call strategy (naked calls, all-cash) — formal spec
 
-**Version 1.1 · 2026-08-19 · status: active.** This is the authoritative, evolvable
+**Version 1.2 · 2026-08-23 · status: active.** This is the authoritative, evolvable
 specification of the **short-call program**: what to sell, when, how big, how to manage
 it, and how success is judged. The Chinese原文 of the wider doctrine (including the
 panic-put pivot) is **[strategy.md](strategy.md)**; § 五 there is the same rule set in
 summary form. Where the two disagree, **this file wins for short calls**.
+
+**Scope.** This file governs **short calls only**. The account runs three books and they
+do not share rules — see [acquisition-puts.md](acquisition-puts.md) §1 for the table.
+Short puts sold for income are the panic pivot (`strategy.md` § 三); short puts on names
+the operator intends to **own** are the acquisition book, where assignment is the goal and
+nothing in this document applies to them.
 
 Live instrumentation:
 
@@ -33,8 +39,17 @@ the rules that existed at the time — see `/short-call/strategy`.
 ## 1. Purpose and edge
 
 Sell **naked call options** on names that are not going up, and collect the premium.
-The account stays **100% cash / cash-equivalent**: no underlying is ever held, so there
-is no beta exposure to defend and cash is always free to redeploy.
+The **call** book holds no underlying: nothing is hedged with stock, so there is no beta
+exposure to defend and its margin is always free to redeploy.
+
+> **Amended in v1.2.** Until 2026-08-23 this section claimed the *account* was 100% cash
+> with "no underlying ever held". That is no longer true and should not be repaired by
+> pretending otherwise: the **acquisition book** ([acquisition-puts.md](acquisition-puts.md))
+> deliberately takes delivery of GDX and SOXX, so the account will hold stock by design.
+> Two consequences for this program: (a) cash is **not** all free — the delivery obligation
+> is a first claim on it (AP-4), and the margin available for calls is what remains; (b) a
+> name held as stock changes the call written on it from *naked* to *covered*, which is a
+> different trade with a different loss profile and must be recorded as such.
 
 Three sources of edge, in the order they matter:
 
@@ -234,3 +249,4 @@ Hence the refined entry envelope (§ 3):
 | --- | --- | --- |
 | 1.0 | 2026-08-19 | First formal spec. Codifies live practice (35–45 DTE, Δ0.15, roll-inside-1-year, harvest at 70%) and adds the cushion-in-σ rule, the per-target verdict loop, and the § 6.4 evidence that the edge lives at Δ ≤ 0.20. Supersedes the Δ0.30 + hard-stop rules in strategy.md § 二 for short calls. |
 | 1.1 | 2026-08-19 | Added the **expiry × delta zone map** (§ 6.5) and tightened § 3: Δ ≤ 0.20 may be sold 21–90 DTE, Δ0.20–0.30 only 21–34 DTE, nothing beyond 90 days. Same delta band is the best and worst cell in the grid depending on expiry. |
+| 1.2 | 2026-08-23 | **Scope and the all-cash premise.** Declares this file short-calls-only and names the three books; amends § 1, which claimed the account never holds the underlying — the new acquisition book (GDX, SOXX) intends to take delivery, so cash is no longer all free and a call on an assigned name is covered, not naked. `SC-B4`'s inversion test now counts **premium** puts only, since a declared acquisition put is meant to be long. No entry, management or success criterion for short calls changed. |

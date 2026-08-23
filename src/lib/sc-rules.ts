@@ -520,6 +520,29 @@ export const SC_VERSIONS: ScVersion[] = [
       { ruleId: "SC-E2", change: `never sell beyond ${DTE_NEVER} days`, why: "6 trades, −$3,317, 0% win — all far-dated rolls.", test: ">90d cohort stays empty", minTrades: 1 },
     ],
   },
+  {
+    version: "1.2",
+    date: "2026-08-23",
+    effectiveFrom: "2026-08-23",
+    summary:
+      "Scope: this spec is short-calls-only, and the account's all-cash premise is retired. The acquisition book (docs/acquisition-puts.md) intends to take delivery of GDX and SOXX, so cash is not all free and a call on an assigned name is covered rather than naked. SC-B4 counts premium puts only.",
+    source: "docs/short-call-strategy.md changelog 1.2",
+    changes: [
+      {
+        ruleId: "SC-B4",
+        change: "the inversion test compares calls against PREMIUM put credit; declared acquisition puts are excluded",
+        why: "A put written to acquire a name is meant to be long and meant to be assigned, so counting it as an inversion reported the plan as a breach of itself.",
+        test: "call vs premium-put credit split with an acquisition book open",
+        minTrades: 1,
+      },
+      {
+        change: "§1 amended: the call book holds no underlying, but the ACCOUNT will, by design",
+        why: "The claim 'no underlying is ever held' became false the moment an acquisition put was declared; leaving it would have made the delivery obligation invisible to the program that shares the cash.",
+        test: "delivery obligation reported against settled cash (AP-4, R-DELIVERY)",
+        minTrades: 1,
+      },
+    ],
+  },
 ];
 
 export const CURRENT_VERSION = SC_VERSIONS[SC_VERSIONS.length - 1].version;
