@@ -338,31 +338,49 @@ effective value, with `deltaRead` alongside carrying the provenance. When a leg 
 barely moved, measurement and model land in the same place — that is how you can see the
 fallback isn't inventing risk.
 
+**Two things the delta is *not* allowed to pretend** (both added 2026-08-27, after the
+six-day sync gap showed what the first version still let through — defect record § 9–10):
+
+1. **Receipt is not measurement.** IB's snapshot carries no computation time for the greek
+   fields, and outside US trading hours IB serves the *last session's* greeks — so stamping
+   the delta with "now" reproduced the original lie one layer up (a value from yesterday's
+   close reading as ten minutes old). `marketMomentFor` attributes every receipt to the
+   moment the market actually priced it: itself during regular hours (09:30–16:00 ET),
+   otherwise the most recent weekday 16:00 ET. `ageH` counts from there, `receivedAt` keeps
+   the raw receipt, and `atLastClose` says which case applies. Weekends and DST are handled
+   (`etClock` reads New York wall-clock via `Intl`); US holidays are not, so a holiday
+   receipt can overstate freshness by up to one session.
+2. **A model value needs contemporaneous inputs.** σ is inverted out of the leg's mark
+   against the current spot, so both must describe the same moment. They arrive by
+   different pipes — the mark from the IB positions sync, the spot from the 06:00 ingest —
+   and when one stalls the mismatch is absorbed into σ. `MARK_SPOT_SKEW_HOURS` (12) draws
+   the line: past it `markStale` is set, `confidence` drops to `"low"`, and the number is
+   still offered but visibly qualified. Both inputs being *equally* old is a different,
+   milder condition — the answer is then simply *as of then*, and coherent. A skewed model
+   also can't overrule a fresh measurement on divergence alone, since the disagreement may
+   be its own fault.
+
+`confidence` is therefore the second axis, independent of `source`: `measured` (IB, recent),
+`modeled` (the intended fallback, contemporaneous inputs), `low` (best available, but the
+inputs don't line up).
+
 **In the UI** (`components/DeltaCell.tsx`): a Δ with no mark is IB's own measurement; a Δ
-marked **ᵐ** is model-derived; hovering either shows both numbers, the implied σ and the
-age. `/positions` also has a **Δ age** column per leg, and `/positions`, `/pnl-predict`
-and `/risk` carry a one-line **Δ provenance** banner (how many legs from each source, how
-many measurements are stale, the oldest age). `/sync`'s greeks card is dated by the
-newest `delta_at` with the oldest in its detail line.
+marked **ᵐ** is model-derived; a Δ marked **ᵐ?** in amber is low-confidence and good only to
+the first decimal. Hovering any of them gives both values, the implied σ, the ages, whether
+the measurement is a close rather than a live print, and the skew. `/positions` also has a
+**Δ age** column per leg, and `/positions`, `/pnl-predict` and `/risk` carry a one-line
+**Δ provenance** banner (sources, stale measurements, low-confidence count, worst skew).
+`/sync`'s greeks card is dated by the newest `delta_at` with the oldest in its detail line.
 
-**Two limitations to read the numbers against** (both found 2026-08-27, neither guarded in
-code yet — see the defect record § 9):
-
-1. **`deltaAt` is when we *received* the value, not when IB *computed* it.** IB's snapshot
-   exposes no computation time for the greek fields. A greeks sync run outside US market
-   hours therefore stamps a fresh timestamp on last-close values, and `stale` will read
-   false. What still protects the gate is `diverged`: a value that is old at source will
-   disagree with a live mark and yield to the model anyway. **Operational rule: re-measure
-   during US market hours** (21:30–04:00 GMT+8) if you want `source: "ib"` to mean current.
-2. **The model fallback assumes the *mark* is fresh.** σ is inverted out of the leg's mark
-   against the current spot, so if the mark is stale and the spot is not, the mismatch is
-   absorbed into σ and the delta degrades quietly. Marks come from the positions sync
-   (minutes old in normal operation); spots come from the 06:00 ingest. Measured on
-   2026-08-27 after six days without an IB sync — marks from 08-21, spots from 08-26 — the
-   implied σ on MRVL C320 had inflated to 103% and NOW C145 read 0.286 against 0.308 six
-   days earlier. The fallback is a bridge across a missed greeks sync, **not** across a
-   missed positions sync. `npm run audit:greeks` prints the σ, so an implausible σ column is
-   the tell.
+**The condition above all of them** — `StaleBookBanner`, fed by `getBookFreshness()`
+(`positions.ts`, `BOOK_STALE_HOURS` = 24): if the IB book itself hasn't synced, every mark,
+P/L, margin and greek on the page dates from that sync while the spots are current, and the
+page would otherwise look completely normal. It says so at the top of `/positions`, `/risk`
+and `/pnl-predict`. `/sync` pairs it with an **extension condition panel**
+(`getExtCondition()`, `synclog.ts`) that answers *why* — auto-sync on/off, login-sync,
+IB-session state, IB tabs seen, which alarms are armed and the login watcher's last reason,
+read from `option_harvest_ext_logs`. That panel exists because "no IB sync in six days"
+previously showed up only as a wall of amber cards with no explanation.
 
 Checks: `scripts/greeks-check.ts` (pure, in `npm run check`) pins the thresholds, the
 model inversion and the decision; `npm run audit:greeks` prints the live per-leg

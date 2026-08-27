@@ -2,6 +2,7 @@ import Link from "next/link";
 import {
   getPositionGroups,
   buildOptionPnlByExpiry,
+  getBookFreshness,
   buildOptionPnlByWeek,
   splitChartOutliers,
   CHART_OUTLIER_FACTOR,
@@ -12,7 +13,7 @@ import {
 import { getPnlReport } from "@/lib/transactions";
 import type { ContractPnl } from "@/lib/pnl";
 import { DELTA_STALE_HOURS, summarizeDeltaProvenance } from "@/lib/greekage";
-import { DeltaProvenanceNote, DeltaValue } from "@/components/DeltaCell";
+import { DeltaProvenanceNote, DeltaValue, StaleBookBanner } from "@/components/DeltaCell";
 import { CumulativePnlByExpiry, EarnUnearnByExpiry } from "@/components/CumulativePnlChart";
 
 export const dynamic = "force-dynamic";
@@ -465,7 +466,7 @@ function WeeklyTable({ weeks, offChart }: { weeks: PnlWeek[]; offChart?: Set<str
 }
 
 export default async function PnlPredictPage() {
-  const [groups, report] = await Promise.all([getPositionGroups(), getPnlReport()]);
+  const [groups, report, freshness] = await Promise.all([getPositionGroups(), getPnlReport(), getBookFreshness()]);
   const byExpiry = buildOptionPnlByExpiry(groups);
   // The weekly table is keyed on EXPIRY date and needs both halves of the book: the open
   // legs (above) and every already-exited contract, so a not-yet-expired week can report
@@ -612,6 +613,8 @@ export default async function PnlPredictPage() {
             <Link href="/upload" className="text-accent hover:underline">upload</Link>{" "}
             (see the <Link href="/positions" className="text-accent hover:underline">Positions</Link> page for per-leg detail).
           </p>
+
+          <StaleBookBanner f={freshness} className="mt-3 max-w-4xl" />
 
           {legCount === 0 ? (
             <p className="mt-10 rounded-lg border border-dashed border-line bg-surface px-6 py-12 text-center text-[14px] text-ink-muted">

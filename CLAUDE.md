@@ -302,15 +302,24 @@ because IB never books it on the option leg; invariant Σ chain realized = Σ le
 **`sc-data.ts`** (one section-wide load), `blackscholes.ts`
 (`bsPrice`/`bsDelta`/`impliedVol`/`volAndDelta` — pure BS + bisection IV, the only way to
 recover the greeks of a historical fill), **`greekage.ts`** (`readDelta` — the only way a
-delta reaches a page or a gate: how old IB's measurement is (`deltaAt`), what the leg's own
-mark implies right now (BS), and which of the two to act on. `DELTA_STALE_HOURS` 18,
-`DELTA_DIVERGE_ABS` 0.05, `source` `ib`|`model`; `summarizeDeltaProvenance`/`ageLabel`/
-`deltaTitle` feed `components/DeltaCell.tsx`. Exists because an IB snapshot is an event,
+delta reaches a page or a gate: how old IB's measurement really is, what the leg's own mark
+implies right now (BS), and which of the two to act on. `DELTA_STALE_HOURS` 18,
+`DELTA_DIVERGE_ABS` 0.05, `source` `ib`|`model`, plus a second axis `confidence`
+`measured`|`modeled`|`low`. Two things it refuses to pretend: **receipt is not measurement**
+(`marketMomentFor` attributes a snapshot taken outside 09:30–16:00 ET to the last weekday
+close — DST/weekends handled, holidays not — so `ageH` counts from when the market priced it
+and `receivedAt` keeps the raw stamp), and **a model value needs contemporaneous inputs**
+(`MARK_SPOT_SKEW_HOURS` 12 → `markStale` → `confidence: "low"`, since σ silently absorbs a
+mark/spot mismatch). `summarizeDeltaProvenance`/`ageLabel`/`deltaTitle` feed
+`components/DeltaCell.tsx` (`DeltaValue` ᵐ / amber ᵐ?, `DeltaAge`, `DeltaProvenanceNote`,
+`StaleBookBanner`). Exists because an IB snapshot is an event,
 not a feed: on 2026-08-21 the book's deltas were 45h old beside minute-old marks, and 17
 of 51 were off by more than 0.05 — one of them across the 0.30 roll line),
 `positions.ts` (positions/orders/trades views + `analyzeOrders`;
 `getPositionGroups` joins per-contract greeks + exact IB margin by conid, and every option
 leg carries `delta` = the effective delta + `deltaRead` = its provenance;
+`getBookFreshness`/`BOOK_STALE_HOURS` — how old the synced book is, for the stale-book
+banner the pages lead with;
 `buildOptionPnlByExpiry` groups
 the option book by expiry with cumulative P/L/credit + net greeks for P&L Predict),
 `news.ts` (headlines + lexicon), `score.ts` (Signal), `ccscore.ts` (Δ0.30 Call-Edge
@@ -329,7 +338,7 @@ push route + the `oh-verify` read-back diff),
 `securities.conid`; used by `security-conids` + `underlying-conids`),
 `ohhistory.ts` (`snapshotOhScreen` — daily per-ticker screen snapshot; `getOhChangeLog`
 — per-OH-list day-over-day add/remove diff with reasons, for /wl-log),
-`synclog.ts` (`getSyncSummary` — /sync dataset freshness + run history),
+`synclog.ts` (`getSyncSummary` — /sync dataset freshness + run history; `getExtCondition` — the extension's own last word out of `option_harvest_ext_logs` (auto/login toggles, IB session, tabs seen, armed alarms, the watcher's reason) so "why hasn't it synced?" is answered on the page, not by hand),
 `balances.ts` (`getLatestBalance`/`getBalanceHistory` — daily IB account balances),
 `enrich.ts` (shared ingest pipeline), `ibparse.ts`/`txparse.ts` (IB CSV +
 Client-Portal JSON parsers: `parseIbPortal{Positions,Orders,Watchlists}`,
@@ -347,7 +356,7 @@ Scripts (`scripts/`):
   `docs/cc-target-strategy.md`. Predictions written to `predictions/cc-*.jsonl`.
 - Entrypoints: `daily.sh`, `spreads.sh`, `server.sh`.
 - Self-checks: `*-check.ts` (`pnl`, `posanalysis`, `positions`, `trades`, `news`, `roic`,
-  `leveraged`, `bookrisk`, `riskbrief`, `shortcall`, `sc-rules`, `sc-lifecycle`, `sc-analyzer`, `greeks`) —
+  `leveraged`, `bookrisk`, `riskbrief`, `shortcall`, `sc-rules`, `sc-lifecycle`, `sc-analyzer`, `greeks`, `riskbrief`, `acqputs`) —
   see test plan. **`npm run check`** runs the short-call suite + the delta-freshness and
   risk-brief checks (493 assertions over eight scripts) and is the gate for any change under `/short-call`,
   `/risk` or anything that renders a Δ; `npm run check:sc`
@@ -368,10 +377,10 @@ held-option greeks refresh without a separate step; **Auto-sync** and **login sy
 run the same light pull and take greeks **too, but only while the IB tab is the one on
 screen** (`tabInForeground` — active tab in a focused window; Chrome throttles the
 in-page 500ms poll loop in a background tab). When it's skipped the run records
-`greeksSkipped` instead of silently leaving an old delta looking fresh. **A greeks sync is
-only worth trusting inside US market hours** (21:30–04:00 GMT+8): outside them IB serves the
-last close's greeks and `deltaAt` — which records receipt, not IB's computation time — will
-call them fresh (docs/spec.md § 4.9).
+`greeksSkipped` instead of silently leaving an old delta looking fresh. **Sync greeks inside US market hours**
+(21:30–04:00 GMT+8) if you want a live delta: outside them IB serves the last close's greeks,
+and while `readDelta` now attributes them to that close rather than to the receipt
+(docs/spec.md § 4.9), attributed-to-the-close is still a day behind the book.
 **Sync on IB login** (popup checkbox, on by default)
 runs that same light pull **once per login**: a 1-minute `loginwatch` alarm + every
 IB-tab navigation probe the tab's *readiness* (`/iserver/auth/status` not

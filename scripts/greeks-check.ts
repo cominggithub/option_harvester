@@ -11,8 +11,11 @@ import assert from "node:assert/strict";
 import {
   DELTA_DIVERGE_ABS,
   DELTA_STALE_HOURS,
+  MARK_SPOT_SKEW_HOURS,
   ageLabel,
   daysToExpiry,
+  etClock,
+  marketMomentFor,
   deltaTitle,
   modelDeltaFromMark,
   readDelta,
@@ -28,10 +31,13 @@ const near = (a: number | null, b: number, tol: number, msg: string) =>
   ok(a != null && Math.abs(a - b) <= tol, `${msg} (got ${a}, want ${b}±${tol})`);
 
 const NOW = new Date("2026-08-21T02:00:00Z");
-const MEASURED = new Date("2026-08-19T05:55:22Z"); // 44h before NOW
+const FRESH_RTH = new Date("2026-08-20T18:00:00Z"); // 14:00 ET Thu — mid-session, 8h before NOW
+const MEASURED = new Date("2026-08-19T05:55:22Z"); // received 44h before NOW — but at
+// 01:55 ET, so the market last priced those greeks at the Tue 08-18 close (20:00Z),
+// which is 54h before NOW. That attribution is the point of marketMomentFor.
 
 // ── 1. the motivating leg: NOW C145 10-02, measured off the 08-18 close ───────
-// spot 129.75, mark 4.19 → the mark implies δ≈0.31; IB's 44h-old measurement says 0.178.
+// spot 129.75, mark 4.19 → the mark implies δ≈0.31; IB's 08-18-close measurement says 0.178.
 {
   const r = readDelta({
     ibDelta: 0.178,
@@ -43,8 +49,11 @@ const MEASURED = new Date("2026-08-19T05:55:22Z"); // 44h before NOW
     mark: 4.19,
     now: NOW,
   });
-  near(r.ageH, 44, 0.5, "NOW C145: measurement age in hours");
-  ok(r.stale, "NOW C145: 44h is past the stale line");
+  near(r.ageH, 54, 0.5, "NOW C145: age counts from the close that priced it, not from receipt");
+  ok(r.atLastClose, "NOW C145: received outside RTH → attributed to the last close");
+  ok(r.measuredAt === "2026-08-18T20:00:00.000Z", `NOW C145: priced at the Tue 08-18 close (got ${r.measuredAt})`);
+  ok(r.receivedAt === "2026-08-19T05:55:22.000Z", "NOW C145: receipt time is still carried");
+  ok(r.stale, "NOW C145: 54h is past the stale line");
   near(r.modelDelta, 0.308, 0.02, "NOW C145: mark-implied delta");
   ok(r.diverged, "NOW C145: measurement and model disagree past the threshold");
   ok(r.source === "model", "NOW C145: a stale, diverged measurement yields to the model");
@@ -79,7 +88,7 @@ const MEASURED = new Date("2026-08-19T05:55:22Z"); // 44h before NOW
 
 // ── 3. fresh measurement wins even when the model argues ──────────────────────
 {
-  const fresh = new Date(NOW.getTime() - 2 * 3_600_000);
+  const fresh = FRESH_RTH;
   const r = readDelta({
     ibDelta: 0.20,
     deltaAt: fresh,
@@ -90,7 +99,8 @@ const MEASURED = new Date("2026-08-19T05:55:22Z"); // 44h before NOW
     mark: 4.19,
     now: NOW,
   });
-  ok(!r.stale, "fresh measurement: not stale at 2h");
+  ok(!r.stale, "fresh measurement: taken in-session, not stale");
+  ok(!r.atLastClose, "fresh measurement: priced live, not at a close");
   ok(r.diverged, "fresh measurement: model still disagrees");
   ok(r.source === "model", "fresh but diverged: the model still takes over");
   ok(r.diff != null && r.diff > DELTA_DIVERGE_ABS, "fresh measurement: gap is reported");
@@ -99,7 +109,7 @@ const MEASURED = new Date("2026-08-19T05:55:22Z"); // 44h before NOW
   // Fresh and agreeing → IB, untouched.
   const r = readDelta({
     ibDelta: 0.31,
-    deltaAt: new Date(NOW.getTime() - 3_600_000),
+    deltaAt: FRESH_RTH,
     right: "C",
     spot: 129.75,
     strike: 145,
@@ -187,7 +197,7 @@ const MEASURED = new Date("2026-08-19T05:55:22Z"); // 44h before NOW
 {
   const legs = [
     readDelta({ ibDelta: 0.178, deltaAt: MEASURED, right: "C", spot: 129.75, strike: 145, expiry: "2026-10-02", mark: 4.19, now: NOW }), // model (diverged)
-    readDelta({ ibDelta: 0.062, deltaAt: new Date(NOW.getTime() - 3_600_000), right: "C", spot: 160.74, strike: 195, expiry: "2026-09-11", mark: 0.51, now: NOW }), // ib (fresh, agrees)
+    readDelta({ ibDelta: 0.062, deltaAt: FRESH_RTH, right: "C", spot: 160.74, strike: 195, expiry: "2026-09-11", mark: 0.51, now: NOW }), // ib (fresh, agrees)
     readDelta({ ibDelta: null, deltaAt: null, right: "C", spot: 100, strike: 130, expiry: "2026-10-16", mark: 0.9, now: NOW }), // model, never synced
     readDelta({ ibDelta: null, deltaAt: null, right: "P", spot: null, strike: 10, expiry: null, mark: null, now: NOW }), // missing
   ];
@@ -198,9 +208,141 @@ const MEASURED = new Date("2026-08-19T05:55:22Z"); // 44h before NOW
   ok(p.missing === 1, "provenance: one leg with no delta");
   ok(p.stale === 1, "provenance: one measured leg is past the stale line");
   ok(p.diverged === 1, "provenance: one disagreement");
-  near(p.oldestAgeH, 44, 0.5, "provenance: oldest measurement age");
-  near(p.newestAgeH, 1, 0.1, "provenance: newest measurement age");
+  near(p.oldestAgeH, 54, 0.5, "provenance: oldest measurement age");
+  near(p.newestAgeH, 8, 0.1, "provenance: newest measurement age (in-session receipt)");
   ok(summarizeDeltaProvenance([]).legs === 0, "provenance: empty book");
+}
+
+// ── 9. a stale MARK makes the model's answer low-confidence ──────────────────
+// The fallback inverts σ out of the mark against the current spot, so both have to
+// describe the same moment. Six days without a positions sync (marks 08-21, spots
+// 08-26) is the case that motivated this: the model still answers, but flagged.
+{
+  const markAt = new Date("2026-08-21T00:55:00Z");
+  const spotAt = new Date("2026-08-26T22:07:00Z");
+  const skewed = readDelta({
+    ibDelta: 0.178,
+    deltaAt: MEASURED,
+    right: "C",
+    spot: 129.75,
+    strike: 145,
+    expiry: "2026-10-02",
+    mark: 4.19,
+    markAt,
+    spotAt,
+    now: NOW,
+  });
+  near(skewed.skewH, 141.2, 1, "skew is the mark-vs-spot gap in hours");
+  ok(skewed.markStale, "mark and spot 5.9d apart is past MARK_SPOT_SKEW_HOURS");
+  ok(skewed.confidence === "low", "a model value off skewed inputs is low confidence");
+  ok(skewed.delta === skewed.modelDelta, "…but it is still the number offered (age beats skew)");
+  ok(/Low confidence/.test(deltaTitle(skewed)), "the tooltip says low confidence");
+  ok(/Sync the IB book/.test(deltaTitle(skewed)), "…and names the remedy");
+
+  // Contemporaneous inputs → the ordinary modeled case, no flag.
+  const clean = readDelta({
+    ibDelta: 0.178,
+    deltaAt: MEASURED,
+    right: "C",
+    spot: 129.75,
+    strike: 145,
+    expiry: "2026-10-02",
+    mark: 4.19,
+    markAt: new Date("2026-08-20T20:00:00Z"),
+    spotAt: new Date("2026-08-20T22:07:00Z"),
+    now: NOW,
+  });
+  near(clean.skewH, 2.1, 0.2, "a 2h gap is normal (close, then the ingest)");
+  ok(!clean.markStale && clean.confidence === "modeled", "contemporaneous inputs are trusted");
+
+  // Both equally old is NOT the same defect: the answer is coherent, just as of then.
+  const bothOld = readDelta({
+    ibDelta: 0.178,
+    deltaAt: MEASURED,
+    right: "C",
+    spot: 129.75,
+    strike: 145,
+    expiry: "2026-10-02",
+    mark: 4.19,
+    markAt: new Date("2026-08-18T20:00:00Z"),
+    spotAt: new Date("2026-08-18T22:00:00Z"),
+    now: NOW,
+  });
+  ok(!bothOld.markStale, "equally old mark and spot are still contemporaneous");
+  ok(bothOld.confidence === "modeled", "…so the model value keeps normal confidence");
+
+  // Callers that pass no timestamps aren't punished (markAt/spotAt are optional).
+  const undated = readDelta({ ibDelta: 0.178, deltaAt: MEASURED, right: "C", spot: 129.75, strike: 145, expiry: "2026-10-02", mark: 4.19, now: NOW });
+  ok(!undated.markStale && undated.skewH === null, "no mark/spot timestamps → no skew claim");
+  ok(undated.confidence === "modeled", "…and the ordinary modeled verdict stands");
+}
+
+// ── 10. a skewed model can't overrule a FRESH measurement on divergence alone ──
+// If the disagreement may be the model's own fault, the measurement wins.
+{
+  const fresh = FRESH_RTH;
+  const r = readDelta({
+    ibDelta: 0.20,
+    deltaAt: fresh,
+    right: "C",
+    spot: 129.75,
+    strike: 145,
+    expiry: "2026-10-02",
+    mark: 4.19,
+    markAt: new Date("2026-08-21T00:55:00Z"),
+    spotAt: new Date("2026-08-26T22:07:00Z"),
+    now: NOW,
+  });
+  ok(r.diverged && r.markStale, "fresh measurement, diverged, but the model is skewed");
+  ok(r.source === "ib" && r.delta === 0.20, "the measurement is kept — the gap may be the model's fault");
+  ok(r.confidence === "measured", "a fresh measurement is still a measurement");
+}
+
+// ── 11. provenance counts the low-confidence legs ────────────────────────────
+{
+  const markAt = new Date("2026-08-21T00:55:00Z");
+  const spotAt = new Date("2026-08-26T22:07:00Z");
+  const legs = [
+    readDelta({ ibDelta: 0.178, deltaAt: MEASURED, right: "C", spot: 129.75, strike: 145, expiry: "2026-10-02", mark: 4.19, markAt, spotAt, now: NOW }),
+    readDelta({ ibDelta: 0.062, deltaAt: MEASURED, right: "C", spot: 160.74, strike: 195, expiry: "2026-09-11", mark: 0.51, markAt, spotAt, now: NOW }),
+    readDelta({ ibDelta: 0.31, deltaAt: FRESH_RTH, right: "C", spot: 129.75, strike: 145, expiry: "2026-10-02", mark: 4.19, now: NOW }),
+  ];
+  const p = summarizeDeltaProvenance(legs);
+  ok(p.lowConfidence === 2, "provenance: two legs resting on a stale mark");
+  ok(p.markStale === 2, "provenance: two skewed marks");
+  near(p.worstSkewH, 141.2, 1, "provenance: worst skew reported");
+  ok(MARK_SPOT_SKEW_HOURS === 12, "documented skew tolerance");
+}
+
+// ── 12. receipt time vs the moment the market priced it ──────────────────────
+// IB serves last-computed greeks, so a receipt outside regular hours describes the
+// previous close. Getting this wrong is the original defect one layer up: the value
+// would claim to be minutes old when it is half a day old.
+{
+  const mm = (iso: string) => marketMomentFor(new Date(iso));
+
+  // Mid-session Thursday → live, itself.
+  const live = mm("2026-08-20T18:00:00Z"); // 14:00 ET Thu
+  ok(!live.atLastClose && live.at.toISOString() === "2026-08-20T18:00:00.000Z", "in-session receipt is its own moment");
+  // The open and the close are inclusive edges.
+  ok(!mm("2026-08-20T13:30:00Z").atLastClose, "09:30 ET is in-session");
+  ok(!mm("2026-08-20T20:00:00Z").atLastClose, "16:00 ET is in-session");
+  // A minute before the open → the previous day's close.
+  ok(mm("2026-08-20T13:29:00Z").at.toISOString() === "2026-08-19T20:00:00.000Z", "pre-open → yesterday's close");
+  // A minute after the close → today's close.
+  ok(mm("2026-08-20T20:01:00Z").at.toISOString() === "2026-08-20T20:00:00.000Z", "after-hours → today's close");
+  // The overnight case from the incident: 01:55 ET Wed → Tue's close.
+  ok(mm("2026-08-19T05:55:22Z").at.toISOString() === "2026-08-18T20:00:00.000Z", "overnight → the prior session's close");
+  // Weekends skip back to Friday's close (2026-08-22 is a Saturday, 08-23 a Sunday).
+  ok(mm("2026-08-22T14:00:00Z").at.toISOString() === "2026-08-21T20:00:00.000Z", "Saturday → Friday's close");
+  ok(mm("2026-08-23T14:00:00Z").at.toISOString() === "2026-08-21T20:00:00.000Z", "Sunday → Friday's close");
+  ok(mm("2026-08-24T12:00:00Z").at.toISOString() === "2026-08-21T20:00:00.000Z", "Monday pre-open → Friday's close");
+  // Winter: ET is UTC-5, so the close is 21:00Z. (Nov 2 2026 is a Monday.)
+  ok(mm("2026-11-03T03:00:00Z").at.toISOString() === "2026-11-02T21:00:00.000Z", "DST handled — the close moves to 21:00Z");
+
+  // And the wall-clock helper the rule is built on.
+  const c = etClock(new Date("2026-08-20T18:30:00Z"));
+  ok(c.minutes === 14 * 60 + 30 && c.weekday === 4, "etClock: 14:30 ET on a Thursday");
 }
 
 console.log(`greeks-check: ${pass} assertions passed`);

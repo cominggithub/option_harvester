@@ -11,7 +11,14 @@
  * Exit code 0 always — this is a report, not a gate. The gate is scripts/greeks-check.ts.
  */
 import { prisma } from "../src/lib/db";
-import { DELTA_DIVERGE_ABS, DELTA_STALE_HOURS, ageLabel, readDelta, summarizeDeltaProvenance } from "../src/lib/greekage";
+import {
+  DELTA_DIVERGE_ABS,
+  DELTA_STALE_HOURS,
+  MARK_SPOT_SKEW_HOURS,
+  ageLabel,
+  readDelta,
+  summarizeDeltaProvenance,
+} from "../src/lib/greekage";
 
 const f = (n: number | null, d = 3) => (n == null ? "—" : n.toFixed(d));
 const pad = (s: string, n: number) => s.padStart(n);
@@ -21,10 +28,11 @@ async function main() {
   const [pos, greeks, quotes] = await Promise.all([
     prisma.position.findMany({ where: { NOT: { right: null } }, orderBy: [{ symbol: "asc" }, { expiry: "asc" }] }),
     prisma.optionGreek.findMany(),
-    prisma.quote.findMany({ select: { ticker: true, price: true } }),
+    prisma.quote.findMany({ select: { ticker: true, price: true, asOf: true } }),
   ]);
   const gByConid = new Map(greeks.map((g) => [g.conid, g]));
   const spot = new Map(quotes.map((q) => [q.ticker.toUpperCase(), q.price != null ? Number(q.price) : null]));
+  const spotAt = new Map(quotes.map((q) => [q.ticker.toUpperCase(), q.asOf ?? null]));
 
   const rows: { line: string; diff: number }[] = [];
   const reads = [];
@@ -50,6 +58,8 @@ async function main() {
       strike: p.strike != null ? Number(p.strike) : null,
       expiry: p.expiry,
       mark,
+      markAt: p.uploadedAt,
+      spotAt: spotAt.get(p.symbol.toUpperCase()) ?? null,
       now,
     });
     reads.push(read);
@@ -69,6 +79,7 @@ async function main() {
         `gap ${pad(f(read.diff), 6)}`,
         `→ ${pad(f(read.delta), 6)} (${read.source ?? "none"})`,
         read.diverged ? " DIVERGED" : "",
+        read.markStale ? ` LOW-CONF mark ${ageLabel(read.markAgeH)} vs spot ${ageLabel(read.spotAgeH)}` : "",
       ].join("  "),
     });
   }
@@ -87,6 +98,8 @@ async function main() {
       `IB measurements past ${DELTA_STALE_HOURS}h: ${p.stale}` +
         (p.oldestAgeH != null ? ` (oldest ${ageLabel(p.oldestAgeH)}, newest ${ageLabel(p.newestAgeH)})` : ""),
       `disagreements over ${DELTA_DIVERGE_ABS}: ${p.diverged}`,
+      `LOW CONFIDENCE (mark and spot over ${MARK_SPOT_SKEW_HOURS}h apart): ${p.lowConfidence}` +
+        (p.worstSkewH != null ? ` · worst skew ${ageLabel(p.worstSkewH)}` : ""),
       `greek rows ${greeks.length} · ${orphans} for contracts no longer held · ${greeks.filter((g) => g.deltaAt == null).length} with no Δ timestamp yet`,
     ].join("\n"),
   );

@@ -51,6 +51,65 @@ export type OhVerifyResult = {
 
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
 
+/**
+ * Why isn't anything syncing? The extension self-reports every status change and every
+ * login-watcher decision to `/api/ext-log` (`option_harvest_ext_logs`), including its
+ * `chrome.storage` state and which alarms are armed. Until now that was only queryable
+ * by hand — so a book that quietly stopped syncing for six days (2026-08-21 → 08-27,
+ * "not ready: no IB tab" every 15 minutes, auto-sync off) looked, on this page, like a
+ * set of amber dataset cards with no explanation. This turns the extension's own last
+ * word into the answer.
+ *
+ * Diagnostics only, and NOT trusted: `state` is whatever the extension sent.
+ */
+export type ExtCondition = {
+  at: string; // ISO of the extension's last report
+  version: string | null;
+  event: string | null;
+  level: string | null;
+  status: string | null; // its last human-readable line
+  autoOn: boolean | null; // auto-sync toggle
+  autoMin: number | null; // its period, minutes
+  loginSyncOn: boolean | null; // sync-on-IB-login toggle
+  ibAuthed: boolean | null; // was the brokerage session usable at that moment
+  ibTabs: number | null; // IB tabs the watcher could see
+  reason: string | null; // why the last login-watch probe said "not ready"
+  alarms: string[]; // alarm names actually armed
+  lastSyncAt: string | null; // its own record of the last login sync
+};
+
+export async function getExtCondition(): Promise<ExtCondition | null> {
+  const rows = await prisma.extLog
+    .findMany({ orderBy: { at: "desc" }, take: 40 })
+    .catch(() => [] as { at: Date; version: string | null; event: string | null; level: string | null; status: string | null; state: unknown; raw: unknown }[]);
+  if (!rows.length) return null;
+  const latest = rows[0];
+  // The newest row carries the state; the newest login-watch row carries the reason.
+  const watch = rows.find((r) => r.event === "login-watch");
+  const st = (latest.state ?? {}) as Record<string, unknown>;
+  const raw = (watch?.raw ?? {}) as Record<string, unknown>;
+  const bool = (v: unknown): boolean | null => (typeof v === "boolean" ? v : null);
+  const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
+  return {
+    at: latest.at.toISOString(),
+    version: latest.version ?? null,
+    event: latest.event ?? null,
+    level: latest.level ?? null,
+    status: latest.status ?? null,
+    autoOn: bool(st.autoOn),
+    autoMin: num(st.autoMin),
+    loginSyncOn: bool(st.loginSyncOn),
+    ibAuthed: bool(st.ibAuthed),
+    ibTabs: num(raw.ibTabs),
+    reason: str(raw.reason) ?? (watch ? str(watch.status) : null),
+    alarms: Array.isArray(st.alarms)
+      ? (st.alarms as { name?: unknown }[]).map((a) => String(a?.name ?? "")).filter(Boolean)
+      : [],
+    lastSyncAt: str(st.lastLoginSyncAt),
+  };
+}
+
 export async function getSyncSummary(): Promise<{ datasets: SyncDataset[]; runs: SyncRunRow[]; ohVerify: OhVerifyResult | null }> {
   // Greeks freshness is judged on the DELTA measurement (`deltaAt`), not on the row:
   // `at` moves when any greek arrives, but delta is the field the strategy gates on,

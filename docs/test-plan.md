@@ -23,7 +23,7 @@ Each pure engine ships one `assert`-based `_selfCheck`, run via a tiny script. A
 must print `... self-check OK`:
 
 ```bash
-npm run check                         # the short-call suite + delta freshness (441 assertions, seven scripts)
+npm run check                         # the short-call suite + delta freshness (629 assertions, nine scripts)
 npm run check:sc                      # just the analyzer engines (rules, lifecycle, pages)
 npm run check:greeks                  # delta freshness / model cross-check (also inside `npm run check`)
 npx tsx scripts/pnl-check.ts          # P/L engine
@@ -92,7 +92,16 @@ What they cover:
   never-measured leg gets the model; no mark and no measurement → no delta; an **undated**
   measurement counts as stale; past expiry / zero spot → no model value; `|δ| > 1` is
   discarded; σ and δ from the mark are monotone in spot; and `summarizeDeltaProvenance`
-  counts sources / stale / diverged / oldest-newest ages for the page banners.
+  counts sources / stale / diverged / oldest-newest ages for the page banners. Then the two
+  things it refuses to pretend: **receipt is not measurement** (`marketMomentFor` — in-session
+  receipts stand for themselves, the 09:30/16:00 ET edges are inclusive, pre-open and
+  after-hours attribute to the right close, Saturday/Sunday/Monday-pre-open all fall back to
+  Friday's, and a November receipt proves DST moves the close to 21:00Z; the incident's own
+  08-19 05:55Z receipt derives to the Tue 08-18 20:00Z close that § 4 of the defect record
+  found empirically) and **a model needs contemporaneous inputs** (a 5.9d mark/spot skew →
+  `markStale` + `confidence: "low"` + a tooltip naming the remedy; a 2h gap is normal; two
+  equally-old inputs stay coherent and keep normal confidence; missing timestamps make no
+  claim; and a skewed model can't overrule a fresh measurement on divergence alone).
 - **roic-check** — `computeRoic` = NOPAT ÷ invested capital on real-shaped inputs
   (AAPL ≈ 82%, KO ≈ 22%, negative-EBIT year stays negative), `operatingIncome` EBIT
   fallback, null on negative/zero invested capital or missing EBIT/equity, effective

@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { getSyncSummary, type SyncDataset, type SyncRunRow, type OhVerifyResult } from "@/lib/synclog";
+import { getExtCondition, getSyncSummary, type ExtCondition, type SyncDataset, type SyncRunRow, type OhVerifyResult } from "@/lib/synclog";
+import { getBookFreshness, type BookFreshness } from "@/lib/positions";
 import { getBalanceSeries, type BalancePoint } from "@/lib/balances";
 import { BalanceLines } from "@/components/charts";
 import { formatTimestamp } from "@/lib/format";
@@ -270,8 +271,66 @@ function RunsTable({ runs }: { runs: SyncRunRow[] }) {
   );
 }
 
+/**
+ * "Why hasn't anything synced?" — answered from the extension's own reports
+ * (`/api/ext-log`) instead of leaving a wall of amber cards unexplained. Shown only
+ * when the book is actually stale, since in normal operation it's noise.
+ * Diagnostics: `state` is whatever the extension sent, and is not trusted.
+ */
+function ExtConditionPanel({ ext, f }: { ext: ExtCondition | null; f: BookFreshness }) {
+  if (!f.stale) return null;
+  const flag = (on: boolean | null, label: string) => (
+    <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${on === null ? "bg-line text-ink-muted" : on ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700"}`}>
+      {label} {on === null ? "?" : on ? "on" : "off"}
+    </span>
+  );
+  return (
+    <div className="mt-6 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-[12px] leading-relaxed text-amber-900">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <strong className="text-[12.5px] font-semibold">
+          The IB book is {f.positionsAgeH != null ? `${Math.round(f.positionsAgeH / 24)}d old` : "not synced"} — nothing has pulled it in
+        </strong>
+        {ext && <span className="tnum text-[11px]">extension {ext.version ?? "?"} · last reported {ago(ext.at)}</span>}
+      </div>
+      {ext ? (
+        <>
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            {flag(ext.autoOn, "auto-sync")}
+            {flag(ext.loginSyncOn, "login sync")}
+            {flag(ext.ibAuthed, "IB session")}
+            <span className="rounded bg-white/60 px-1.5 py-0.5 text-[10px] font-semibold">
+              IB tabs {ext.ibTabs ?? "?"}
+            </span>
+            {ext.alarms.length > 0 && (
+              <span className="rounded bg-white/60 px-1.5 py-0.5 text-[10px]">armed: {ext.alarms.join(", ")}</span>
+            )}
+          </div>
+          <p className="mt-1.5">
+            Its last word: <span className="font-medium">{ext.reason ?? ext.status ?? "—"}</span>
+            {ext.autoOn === false ? " Auto-sync is off, so nothing will run on a timer." : ""}
+            {ext.ibTabs === 0 ? " With no IB portal tab open, the login watcher has nothing to probe." : ""}
+          </p>
+        </>
+      ) : (
+        <p className="mt-1.5">
+          The extension hasn&rsquo;t reported at all — it may not be loaded. Check <code>chrome://extensions</code>.
+        </p>
+      )}
+      <p className="mt-1.5 text-[11px]">
+        Fix: open the IB portal, log in, then <strong>Sync now</strong> from the popup — during US market hours
+        (21:30–04:00 GMT+8) if you also want the greeks re-measured, since outside them IB serves the last close.
+      </p>
+    </div>
+  );
+}
+
 export default async function SyncPage() {
-  const [{ datasets, runs, ohVerify }, series] = await Promise.all([getSyncSummary(), getBalanceSeries()]);
+  const [{ datasets, runs, ohVerify }, series, ext, freshness] = await Promise.all([
+    getSyncSummary(),
+    getBalanceSeries(),
+    getExtCondition(),
+    getBookFreshness(),
+  ]);
   const balance = series.latest;
   const lastRun = runs[0] ?? null;
   const anySynced = datasets.some((d) => d.lastAt != null);
@@ -293,6 +352,8 @@ export default async function SyncPage() {
         current row count and freshness; the log below is the per-run history (reported by the extension on every{" "}
         <strong className="text-ink">Sync now</strong> / auto-sync). Green = refreshed within 24h, amber = older.
       </p>
+
+      <ExtConditionPanel ext={ext} f={freshness} />
 
       {/* Account balances (daily snapshot) */}
       <div className="mt-6 flex items-baseline justify-between gap-3">

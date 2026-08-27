@@ -3,13 +3,14 @@ import {
   getPositionGroups,
   getUploads,
   getOrders,
+  getBookFreshness,
   analyzeCallProtection,
   type PositionGroupLeg,
   type CallProtection,
 } from "@/lib/positions";
 import { analyzeShortOption, ACTION_META, type ActionKind, type LegSuggestion } from "@/lib/posanalysis";
 import { DELTA_STALE_HOURS, summarizeDeltaProvenance } from "@/lib/greekage";
-import { DeltaAge, DeltaProvenanceNote, DeltaValue } from "@/components/DeltaCell";
+import { DeltaAge, DeltaProvenanceNote, DeltaValue, StaleBookBanner } from "@/components/DeltaCell";
 import { formatTimestamp } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -205,7 +206,12 @@ function ActionTable({ rows, protByContract }: { rows: LegSuggestion[]; protByCo
 }
 
 export default async function PositionsPage() {
-  const [groups, uploads, orders] = await Promise.all([getPositionGroups(), getUploads(), getOrders()]);
+  const [groups, uploads, orders, freshness] = await Promise.all([
+    getPositionGroups(),
+    getUploads(),
+    getOrders(),
+    getBookFreshness(),
+  ]);
   const lastUpload = uploads[0] ? formatTimestamp(new Date(uploads[0].uploadedAt)) : null;
   const legCount = groups.reduce((a, g) => a + g.legs.length, 0);
 
@@ -278,6 +284,8 @@ export default async function PositionsPage() {
           {lastUpload && <span className="text-ink-faint"> · from {lastUpload}</span>}
         </span>
       </div>
+
+      <StaleBookBanner f={freshness} className="mt-3 max-w-4xl" />
 
       <p className="mt-2 max-w-3xl text-[13.5px] leading-relaxed text-ink-muted">
         Holdings from your latest{" "}

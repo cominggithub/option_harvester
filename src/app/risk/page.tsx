@@ -20,7 +20,8 @@ import {
   type Slice,
 } from "@/lib/bookrisk";
 import { THIN_FILL_DELTA } from "@/lib/acqputs";
-import { DeltaProvenanceNote, DeltaValue } from "@/components/DeltaCell";
+import { DeltaProvenanceNote, DeltaValue, StaleBookBanner } from "@/components/DeltaCell";
+import { getBookFreshness } from "@/lib/positions";
 import { summarizeDeltaProvenance } from "@/lib/greekage";
 import { PageToc, type TocItem } from "@/components/PageToc";
 import { getScAnalyzer } from "@/lib/sc-data";
@@ -249,7 +250,12 @@ function FindingCard({ f }: { f: Finding }) {
 }
 
 export default async function RiskPage() {
-  const [r, a, dash] = await Promise.all([getBookRisk(), getScAnalyzer(), getDashboardData()]);
+  const [r, a, dash, freshness] = await Promise.all([
+    getBookRisk(),
+    getScAnalyzer(),
+    getDashboardData(),
+    getBookFreshness(),
+  ]);
   const t = r.totals;
   const c = r.concentration;
   const b = r.breaches;
@@ -342,6 +348,7 @@ export default async function RiskPage() {
         also live on <Link href="/positions" className="underline">Positions</Link>; this page frames them against the doctrine.
       </p>
 
+      <StaleBookBanner f={freshness} className="mt-3 max-w-4xl" />
       <DeltaProvenanceNote p={deltaProvenance} className="mt-2 max-w-4xl" />
 
       {/* The rail plus every section beside it. Anchors only — no client JS. */}

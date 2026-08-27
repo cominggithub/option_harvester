@@ -249,3 +249,47 @@ freshly-marked one. (b) Surface "no IB sync in N days" on `/positions` and `/ris
 per-dataset on `/sync`; a six-day-old book is a bigger problem than a stale greek and is
 currently only visible if you go looking. (c) Decide whether auto-sync being off should be
 reported as a condition on `/sync` rather than only inside the extension popup.
+
+## 10. Closed out — 2026-08-27, same day
+
+All three open items above are done, and the fix ran in its intended mode for the first time.
+
+**It works.** A manual sync at 07:52Z (15:52 GMT+8) finally pulled 42 legs with greeks:
+
+```
+greek rows 202 · 42 with a dated Δ · newest 2026-08-27 07:47:07
+audit: legs 42 · Δ from IB 42 · Δ from the mark 0 · no Δ 0
+       disagreements over 0.05: 0 · low confidence: 0
+```
+
+Every leg is now `source: "ib"`, and every model value agrees with IB's to 0.000 — the
+strongest possible statement that the fallback wasn't inventing risk: given the same fresh
+mark and spot, the two methods land on the same number.
+
+**(a) The model fallback now knows when its inputs don't line up.** `MARK_SPOT_SKEW_HOURS`
+(12) plus `markStale` / `confidence: "low"`, rendered as an amber **ᵐ?** and counted in the
+provenance banner. A skewed model can no longer overrule a fresh measurement on divergence
+alone either — the disagreement may be its own fault.
+
+**(b) `StaleBookBanner`** (`getBookFreshness`, `BOOK_STALE_HOURS` = 24) sits at the top of
+`/positions`, `/risk` and `/pnl-predict`: if the book itself hasn't synced, that fact now
+precedes every number derived from it.
+
+**(c) `/sync` explains itself.** `getExtCondition()` reads the extension's own last report
+out of `option_harvest_ext_logs` — auto-sync on/off, login sync, IB session, IB tabs, armed
+alarms, the watcher's last reason — and shows it as a panel whenever the book is stale. The
+six-day silence would have read, in one line: *auto-sync off · IB tabs 0 · "not ready: no IB
+tab"*.
+
+**And one more layer of the same lie, caught on the way.** With the book freshly synced the
+audit briefly showed all 42 deltas as "10m old" — but the sync ran at 03:47 ET, when the US
+market was shut, so IB had served the **08-26 close's** greeks. Receipt time was standing in
+for measurement time, exactly as `at` had stood in for `delta_at` in the original defect.
+`marketMomentFor` now attributes a receipt to the moment the market priced it (itself in
+regular hours, else the last weekday 16:00 ET; weekends and DST handled, US holidays not),
+so those same legs read a truthful **12h** and `receivedAt` keeps the raw stamp. The
+incident's own fixture proves the rule: the 08-19 05:55Z receipt is attributed to the Tue
+08-18 20:00Z close — which is precisely the close the § 4 evidence showed those values came
+from, derived this time instead of discovered.
+
+`scripts/greeks-check.ts` is now 91 assertions (`npm run check`: 629 over nine scripts).

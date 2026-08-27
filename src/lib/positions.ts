@@ -34,6 +34,45 @@ export async function getHeldSymbols(): Promise<Set<string>> {
   return new Set(rows.map((r) => r.symbol.toUpperCase()));
 }
 
+/**
+ * How old is the book on this page? Every mark, P/L, margin and greek shown on
+ * /positions, /risk and /pnl-predict comes from the last IB sync, while spots come from
+ * the 06:00 ingest — so when the sync stalls the page keeps rendering with no visible
+ * change (2026-08-21 → 08-27: six days, silently). This is what the pages warn with.
+ * See docs/defects/2026-08-21-stale-delta.md § 9.
+ */
+export const BOOK_STALE_HOURS = 24;
+
+export type BookFreshness = {
+  positionsAt: string | null; // ISO — last IB positions sync (the marks' timestamp)
+  positionsAgeH: number | null;
+  quotesAt: string | null; // ISO — last screen ingest (the spots' timestamp)
+  quotesAgeH: number | null;
+  legs: number;
+  stale: boolean; // positions older than BOOK_STALE_HOURS (or never synced)
+};
+
+export async function getBookFreshness(): Promise<BookFreshness> {
+  const [pos, quote] = await Promise.all([
+    prisma.position.aggregate({ _count: { _all: true }, _max: { uploadedAt: true } }).catch(() => null),
+    prisma.quote.aggregate({ _max: { asOf: true } }).catch(() => null),
+  ]);
+  const now = Date.now();
+  const ageH = (d: Date | null | undefined): number | null =>
+    d == null ? null : Math.max(0, (now - d.getTime()) / 3_600_000);
+  const pAt = pos?._max.uploadedAt ?? null;
+  const qAt = quote?._max.asOf ?? null;
+  const pAge = ageH(pAt);
+  return {
+    positionsAt: pAt ? pAt.toISOString() : null,
+    positionsAgeH: pAge,
+    quotesAt: qAt ? qAt.toISOString() : null,
+    quotesAgeH: ageH(qAt),
+    legs: pos?._count._all ?? 0,
+    stale: pAge == null ? true : pAge > BOOK_STALE_HOURS,
+  };
+}
+
 // Per-underlying aggregate of the user's holdings, grouped spot/call/put, for the
 // analyzer's Position column + the expanded-row leg detail.
 export type PositionKind = "spot" | "call" | "put" | "opt";
@@ -96,16 +135,18 @@ export async function getPositionSummaries(): Promise<Map<string, PositionSummar
         quantity: true,
         avgCost: true,
         marketValue: true,
+        uploadedAt: true, // when this mark was synced — the model delta's other input
         raw: true, // carries conid → join per-contract greeks, and the current mark
       },
     }),
     prisma.optionGreek
       .findMany({ select: { conid: true, delta: true, deltaAt: true, at: true } })
       .catch(() => [] as { conid: string; delta: unknown; deltaAt: Date | null; at: Date }[]),
-    prisma.quote.findMany({ select: { ticker: true, price: true } }).catch(() => []),
+    prisma.quote.findMany({ select: { ticker: true, price: true, asOf: true } }).catch(() => []),
   ]);
   const greekByConid = new Map(greekRows.map((g) => [g.conid, g]));
   const spotByTicker = new Map(quotes.map((q) => [q.ticker.toUpperCase(), q.price != null ? Number(q.price) : null]));
+  const spotAtByTicker = new Map(quotes.map((q) => [q.ticker.toUpperCase(), q.asOf ?? null]));
   const now = new Date();
 
   const m = new Map<string, PositionSummary>();
@@ -134,6 +175,8 @@ export async function getPositionSummaries(): Promise<Map<string, PositionSummar
         strike: r.strike != null ? Number(r.strike) : null,
         expiry: r.expiry,
         mark: firstNum(r.raw, ["Close Price", "marketPrice", "mktPrice"]),
+        markAt: r.uploadedAt,
+        spotAt: spotAtByTicker.get(key) ?? null,
         now,
       });
       if (read.stale) s.deltaStale = true;
@@ -225,7 +268,7 @@ const firstNum = (raw: unknown, keys: string[]): number | null => {
 export async function getPositionGroups(): Promise<PositionGroup[]> {
   const [rows, quotes, greekRows] = await Promise.all([
     prisma.position.findMany({ orderBy: { symbol: "asc" } }),
-    prisma.quote.findMany({ select: { ticker: true, ivPct: true, price: true, nextEarnings: true } }),
+    prisma.quote.findMany({ select: { ticker: true, ivPct: true, price: true, asOf: true, nextEarnings: true } }),
     prisma.optionGreek.findMany(),
   ]);
   const marginRows = await prisma.positionMargin.findMany().catch(() => []); // table may be unprovisioned
@@ -233,6 +276,7 @@ export async function getPositionGroups(): Promise<PositionGroup[]> {
   const margins = new Map(marginRows.map((m) => [m.conid, m]));
   const iv = new Map(quotes.map((q) => [q.ticker.toUpperCase(), q.ivPct != null ? Number(q.ivPct) : null]));
   const px = new Map(quotes.map((q) => [q.ticker.toUpperCase(), q.price != null ? Number(q.price) : null]));
+  const spotAt = new Map(quotes.map((q) => [q.ticker.toUpperCase(), q.asOf ?? null]));
   const earn = new Map(
     quotes.map((q) => [q.ticker.toUpperCase(), q.nextEarnings ? q.nextEarnings.toISOString().slice(0, 10) : null]),
   );
@@ -271,6 +315,8 @@ export async function getPositionGroups(): Promise<PositionGroup[]> {
       strike: r.strike != null ? Number(r.strike) : null,
       expiry: r.expiry,
       mark: closePrice,
+      markAt: r.uploadedAt,
+      spotAt: spotAt.get(key) ?? null,
       now,
     });
 
