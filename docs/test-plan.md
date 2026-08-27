@@ -62,26 +62,25 @@ What they cover:
   tested call → defend; far-OTM loser → watch; ITM put → roll; long/stock legs ignored.
 - **news-check** — bearish headlines flagged, positive ones not.
 - **positions-check** — pure block: IB's awkward symbol shapes recover the true
-  underlying (`C UBSE 20291221 28 M` → UBSG; single-letter tickers like `C` survive), and
-  the P&L-Predict **weekly roll-up** (`buildOptionPnlByWeek`): the lookback window is
-  contiguous from 2 months back through the current week (a quiet week is emitted, empty,
-  net 0), two expiries in one Mon–Sun week collapse into a single row whose
-  legs/credit/P/L/win split/net greeks equal their sum (ISO label, DTE span, greeks stay
-  `null` when unsynced), **closed contracts land in their `closeDate` week — a LEAP bought
-  back at a loss hits the week it was paid, not its 2028 expiry week** (asserted: no 2028
-  row is created), realizations outside the window or without a `closeDate` are excluded,
-  the expired/bought-back split and win counts are right, `fail` fires when the week's
-  losses outweigh its profits, and `cumulativeNet` == Σ weekly net. The **activity lens**
-  is asserted on the case that motivated it: a week that closes two contracts *and* sells
-  a position expiring later owns all three (2 closed + 1 open), its win rate and P/L span
-  both, the sold-and-still-open position is owned by its sale week (role `opened`) *and*
-  its expiry week (role `expiring`) with the same mark, a position sold before the window
-  appears only in its expiry week, an already-closed trade is never counted back in the
-  week it was sold, the listing is ordered worst-P/L-first, and the book roll-up stays
-  realized-only for that week. Then a **read-only
-  reconcile** of the latest positions upload against `getPositionGroups` (file == display,
-  leg for leg) — routed by upload shape, since extension pushes archive Client-Portal
-  **JSON** while hand uploads are **CSV**.
+  underlying (`C UBSE 20291221 28 M` → UBSG; single-letter tickers like `C` survive), then
+  the P&L-Predict **weekly roll-up by expiry week** (`buildOptionPnlByWeek`). Everything is
+  filed under its **expiry**, open legs and closed contracts alike: two expiries in one
+  Mon–Sun week collapse into a single row whose legs/credit/unrealized/net greeks equal
+  their sum (ISO label, DTE span, greeks stay `null` when unsynced); **a contract bought
+  back on 10 Aug against a 21 Aug expiry lands on the 21 Aug row — and the week the cash
+  moved owns nothing** (the close-week lens is gone, and that is asserted, not assumed);
+  a **not-yet-expired** week reports realized +200 next to unrealized +100 for net +300
+  (the hole that motivated the rewrite); a past expiry inside the window carries its
+  expired contracts; expiries before the window and contracts with no expiry are excluded;
+  the win split spans open and closed together; `fail` fires when the week's loss outweighs
+  its profit; the lookback is contiguous through the current week (a quiet week is emitted,
+  empty, net 0); each position is counted exactly **once**, so Σ weekly net == the
+  cumulative; and the position list is ordered worst-P/L-first. **Chart outliers**
+  (`splitChartOutliers`): a week 22× the next largest is pulled out, one merely 2.5× the
+  next is kept, two runaway weeks both go, and degenerate input (a zero comparison base, a
+  single week) drops nothing. Then a **read-only reconcile** of the latest positions upload
+  against `getPositionGroups` (file == display, leg for leg) — routed by upload shape, since
+  extension pushes archive Client-Portal **JSON** while hand uploads are **CSV**.
 - **greeks-check** — delta freshness (`lib/greekage.ts`), fixtures taken from the real
   book of 2026-08-21 with IB measurements from the 08-19 05:55Z snapshot: the 44h age is
   read off `deltaAt`; a stale+diverged measurement yields to the **mark-implied** delta

@@ -165,15 +165,17 @@ Pages (all `force-dynamic`):
 - `src/app/pnl-predict/page.tsx` — **P&L Predict**: open option book grouped by expiry
   (near→far) with per-date + cumulative unrealized P/L, premium, **earned%/unearned$/%**,
   current underlying **Spot before Strike** on each detail row, per-position greeks
-  (Δ/Θ/Γ; per-leg delta colour-coded by risk), a **Week by week** table (one row per
-  Mon–Sun week, 2 months back → farthest expiry, expandable to its positions; **three
-  lenses**: *activity* = every position the week touched [closed + sold-still-open +
-  expiring] with one win% / P/L and a **FAIL** badge when losses outweigh profits,
-  *closed* = realized by close week, *open* = unrealized by expiry week, plus a
-  non-overlapping book roll-up that carries the cumulative — `buildOptionPnlByWeek`),
-  sticky section nav,
-  interactive charts (cumulative P/L/credit + earned-vs-unearned amount & %,
-  `CumulativePnlChart.tsx`), and an open-book win/loss matrix (inferred from unrealized
+  (Δ/Θ/Γ; per-leg delta colour-coded by risk), a **Week by week** table — one row per
+  Mon–Sun week keyed on the **expiry date** (2 months of expiries back → the farthest),
+  owning every position expiring in it, open *and* already closed: closed/open counts,
+  wins/loss, win%, credit, realized, unreal, profit, loss, net, and a **FAIL** badge when
+  the loss outweighs the profit; click a row to jump to that week in the by-expiry
+  section (`buildOptionPnlByWeek`) — sticky section nav,
+  interactive charts on the **same weekly buckets** (P/L, realized, credit,
+  earned-vs-unearned amount & %, `CumulativePnlChart.tsx`; a week whose net is >3× the
+  next largest is charted-out by `splitChartOutliers` and tagged "off chart" in the table),
+  a by-expiry detail list that includes **closed-only** expiries so every week row has a
+  target, and an open-book win/loss matrix (inferred from unrealized
   P/L). Built by `buildOptionPnlByExpiry` in `positions.ts`.
 - `src/app/upload/page.tsx` — IB CSV upload; `src/app/wiki/page.tsx`.
 - `src/app/risk/page.tsx` — **Book risk**: portfolio read on the short premium book

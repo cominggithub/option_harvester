@@ -235,43 +235,57 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   your favour) with gross winning/losing/net columns. Sticky section nav throughout. Data:
   `buildOptionPnlByExpiry` (`positions.ts`); greeks from `option_harvest_option_greeks`.
   A **Week by week** table (right under the stat band) is the page's record *and*
-  projection in one shape: one row per **Mon–Sun (ISO) week**, from
-  `WEEKLY_LOOKBACK_MONTHS` (2) back through the farthest expiry, each row expandable to
-  the positions behind it. It carries **three lenses in separate column groups**,
-  because collapsing them into one number would be wrong:
-  - **Activity — every position the week touched** (the week's verdict): contracts it
-    **closed** (realized P/L), positions it **sold** that are still open, and open legs
-    **expiring** in it (unrealized P/L) — deduped by contract, with one **win %** and one
-    **P/L** (plus the gross +profit/−loss split) over that union. This exists because the
-    active week does two things at once: it closes losers *and* writes new premium that
-    expires weeks later, and neither of the other lenses shows both in one number. A
-    contract that is already closed is **not** counted back in the week it was sold, so
-    no week is blamed for a trade someone closed later; a still-open position *does*
-    appear in both its sale week and its expiry week (roles are labelled per row), which
-    is why activity totals are never accumulated — the footer says so instead of summing.
-  - **Closed — realized, by close week**: contracts (expired/bought-back split), credit,
-    realized P/L, kept %. Filed under the week the trade was **closed out**, so a short
-    bought back at a loss hits the week you paid for it, not the far-dated expiry it was
-    written against (which also keeps a LEAP buy-back from distorting a near week).
-    Realized is the contract's **full trade result** (Σ net cash of all its legs), so its
-    premium half may have been taken in earlier — trade-result attribution, not a
-    cash-flow statement; the per-fill cash view is `/transactions`.
-  - **Open — unrealized, by expiry week**: expiries, legs c/p, credit, unrealized P/L,
-    earn %.
-  - **Book roll-up**: `Net P/L` = realized (close week) + unrealized (expiry week) and a
-    running `Cum net`. This lens counts every position exactly once, which is why it is
-    the only one with a cumulative.
-  A week whose **losses outweigh its profits** (activity lens) is marked **FAIL** and the
-  row is tinted rose. Quiet past weeks are emitted (they are part of the record); future
-  weeks appear only when they hold an expiry, since a book carrying LEAPs a year out
-  would otherwise be mostly empty rows. A week made only of **long** legs (zero credit)
-  shows "·" for credit/earn rather than a divide-by-zero ratio. The expanded listing is a
-  native `<details>` (the page stays server-only) showing per position: symbol, type,
-  strike, expiry, qty, opened, closed, state, why it belongs to the week, credit, P/L and
-  P/L ÷ credit — sorted **worst P/L first**, so the trade that decided the week reads at
-  the top. Data: `buildOptionPnlByWeek` (`positions.ts`), which joins IB position legs to
-  the transaction-derived contracts by `legKey` (symbol|right|strike|expiry) to date each
-  open position's sale.
+  projection in one shape: one row per **Mon–Sun (ISO) week**, keyed on the **expiry
+  date** — `WEEKLY_LOOKBACK_MONTHS` (2) months of expiries back through the farthest one.
+  A week owns **every position expiring in it**, whatever its state: the legs still open
+  (unrealized, on current marks) and the contracts of that same expiry already closed out,
+  expired or bought back early (realized, booked). Columns, one value each so the digits
+  line up: `Week` (range, links into By-expiry detail), `Wk` (ISO number), `Closed`,
+  `Open`, `Wins/Loss` (counts), `Win %` (wins ÷ positions with a P/L, so a position at
+  exactly zero counts in neither), `Credit`, `Realized`, `Unreal`, `Profit`, `Loss`,
+  `Net P/L` (= realized + unrealized) and `Result` — **FAIL**, with the row tinted rose,
+  when the week's loss outweighs its profit. Every position lands in exactly one week, so
+  the rows sum to the totals row and the cumulative is honest.
+  - **Why expiry and not the trade date.** Filing a close under the week its cash was
+    booked was built first and dropped: it split one expiry's story across two rows, and
+    every not-yet-expired week showed no realized P/L at all even where part of that
+    expiry had already been closed out. Closing a September short early therefore does not
+    move it to the week you paid — it stays on its September row. Realized is the
+    contract's **full trade result** (Σ net cash of all its legs), so its premium half may
+    have been taken in earlier: trade-result attribution, not a cash-flow statement. The
+    per-fill/trade-date view is `/transactions`.
+  - **Clicking a row** jumps to that week in **By expiry · detail** below (whole-row
+    overlay link; the week label is the same link, so it works from the keyboard).
+  - Quiet weeks inside the lookback are emitted (they are part of the record); future
+    weeks appear only when they hold a position, since a book carrying LEAPs a year out
+    would otherwise be mostly empty rows. A week with no premium taken in shows "·"
+    rather than a divide-by-zero ratio.
+  - Data: `buildOptionPnlByWeek` (`positions.ts`), which joins IB position legs to the
+    transaction-derived contracts by `legKey` (symbol|right|strike|expiry) — that join is
+    what dates each position and lets one row carry both halves. It also returns each
+    week's `positions` list (worst P/L first) behind the aggregate.
+
+  **Charts share the table's buckets.** Every chart on the page is binned by those same
+  Mon–Sun expiry weeks over the same span, so bar *i* is row *i*: P/L by week (bars = net,
+  line = cumulative), realized-only by week, premium collected by week, and earned-vs-
+  unearned by week (amount and % of credit). One week can carry a position an order of
+  magnitude larger than the rest of the book — a rolled-up LEAP block — and a single such
+  bar sets the y-scale for everything else, so `splitChartOutliers` pulls a week out of the
+  **charts only** when its |net P/L| exceeds `CHART_OUTLIER_FACTOR` (3) × the next largest
+  week's; the test re-runs after each removal and stops as soon as the top week is merely
+  the biggest rather than an outlier, so a genuinely bad week stays visible. Nothing is
+  removed from the table or any total: the row keeps an amber **off chart** tag and the
+  chart caption names what it dropped and by how much. The charted cumulative runs over
+  the charted weeks, since a book-wide cumulative would step by an amount no visible bar
+  explains.
+
+  **By expiry · detail** lists one card per expiry date, oldest first, so every week row
+  has a place to land. An expiry with open legs renders its full group (with any
+  already-closed contracts of the same date beneath it); an expiry that is now **fully
+  closed** renders as a dashed, closed-only card — date, days ago, contracts, credit,
+  realized, kept %, win rate and the expired-vs-bought-back split. In both, each closed
+  contract's **realized P/L is coloured by sign** (green won, red lost) and the rows sort
+  worst-first, alongside its credit and kept %.
   Each expiry-detail row shows current underlying **Spot immediately before Strike**.
   The **closed** (realized) P/L chart is windowed to the last `CLOSED_WINDOW_MONTHS` (2) of
   expiries and is **bounded at both ends**: a contract exited early keeps its own expiry,
