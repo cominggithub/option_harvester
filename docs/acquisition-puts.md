@@ -1,6 +1,6 @@
 # Acquisition puts — buying low on purpose
 
-**Version 1.0 · 2026-08-23 · status: active.** The authority for short puts written on
+**Version 1.1 · 2026-08-23 · status: active.** The authority for short puts written on
 names the operator **wants to own**. Assignment is the intended outcome, not the failure
 state, which makes almost every judgement in the other two books wrong for these positions.
 
@@ -38,6 +38,13 @@ the market, and it is only an advantage if the cash is genuinely reserved.
 **Currently declared:** `GDX` (gold-miner accumulation), `SOXX` (semiconductor index
 accumulation), both since 2026-08-23.
 
+**Cap decisions taken** (the alternative to reducing is always to raise the cap and say why —
+recording which was chosen is what stops the cap from drifting):
+
+| Date | Name | Decision | Reason |
+| --- | --- | --- | --- |
+| 2026-08-23 | GDX | **Reduce contracts. The 40% cap stands.** | GDX promised $67,400 = 57% of settled cash. Raising the cap would have been raising it for the weakest legs in the book: at Δ0.03–0.09 those strikes carry ~6% of the name's delivery in fill-weighted terms, so the cap would have been relaxed to keep positions that were reserving cash without accumulating anything. AP-7 gives up 3 contracts (2× 78P Sep, 1 of 5× 78P Oct) for ≈$115, releasing $23,400 → GDX 37%, book 73%. |
+
 ## 3. Entry rules
 
 | # | Rule | Id |
@@ -66,6 +73,20 @@ the constraint is the balance sheet, not the probability.
 4. **Close** when the reason to own the name has gone — not when the mark looks bad.
 5. If the total promised delivery breaches AP-4 because cash fell, **reduce contracts** before
    opening anything anywhere else in the account.
+6. **Give up the contracts least likely to deliver, first** (**AP-7**) — not the biggest winner
+   and not the biggest loser, both of which are mark-driven and therefore forbidden by §4.4. The
+   weakest claim on reserved cash is the leg whose |Δ| says the limit order is not going to
+   fill: it consumes the whole funding cap while contributing almost no chance of the purchase
+   it exists to make. Where a leg's delta cannot be measured it ranks as the *strongest* claim,
+   so an unmeasurable position is never the one the system tells you to give up. | **AP-7** |
+7. **The mark is never a trigger in this book.** No verdict here may be produced by captured
+   percentage, cost-to-close or unrealised P/L. There are exactly three reasons to act: the
+   assignment arrived (§4.2), the thesis died (§4.4), or the funding cap binds (§4.5/AP-7).
+
+`|Δ|` is read **inversely** to the premium books: high is good, because it is the market's own
+estimate that the limit order fills. Below **0.10** the position is collecting premium while
+reserving cash — §5's "the strikes are too far away to be a real accumulation plan" — and at or
+above **0.30** delivery is a live prospect, so the cash has to be present rather than promised.
 
 ## 5. Success criteria
 
@@ -88,6 +109,18 @@ as a loss.
   basis versus spot, what share of cash and NLV the promise represents, and which legs are
   already ITM so delivery is live rather than hypothetical. Severity is driven by funding,
   not by the mark.
+* `/risk` → **What to do now** runs a *separate ladder* for these legs (`acquisitionVerdictFor`
+  in `lib/bookrisk.ts`), which can only return **Take delivery**, **Reduce contracts (AP-4)** or
+  **Hold**. The premium verdicts — close, roll, defend, let expire — are unreachable for a
+  declared leg and `bookrisk-check` asserts it in every state. This is the fix for a live defect:
+  until 2026-08-23 the harvest rule printed *"kept 80% of the credit — close, free the margin,
+  re-sell at 35–45 DTE"* on declared GDX puts, which is §4.4 violated by the page itself.
+* The **fill-weighted delivery** figure (Σ delivery × |Δ|) says how much of the promise is a
+  live accumulation. It is an acquisition-quality measure and **never** a funding one: the cash
+  reserve is always the full obligation, because one theme's deltas rise together.
+* The **AP-7 reduction plan** is computed whenever a cap binds (`planReduction`), contract by
+  contract, and states what it releases, what buying it back costs, and which caps it actually
+  clears — plus any it cannot.
 * `SC-B4` (side inversion) now compares calls against **premium** puts only, and says how
   much acquisition credit it excluded.
 * `bySide` splits *Short puts (premium)* from *Short puts (acquisition)*.
@@ -103,9 +136,17 @@ as a loss.
 3. **Cash earmarking is a convention, not a mechanism.** Nothing in the system stops the
    premium book from using the same cash as margin. The honest fix is a reserved-cash figure
    the margin KPI subtracts.
+4. **Is |Δ| the right measure of "will this fill"?** It is a risk-neutral probability, not a
+   forecast, and this book's deltas are reconstructed where IB's are stale (`system-gaps.md`
+   §1). AP-7's ordering therefore inherits that error — it is right about *rank* far more
+   confidently than about the percentages it prints. Two legs shown as "0.07" can order
+   differently because the unrounded values differ.
+5. **A reduction is not measured yet either.** Nothing records whether contracts given up
+   under AP-7 would have delivered, so the rule is reasoned rather than evidenced.
 
 ## Changelog
 
 | Version | Date | Change |
 | --- | --- | --- |
+| 1.1 | 2026-08-23 | **AP-7** and §4.7: the mark can no longer produce a verdict in this book, and a funding-driven reduction gives up the contracts least likely to deliver. Adds the fill-weighted delivery measure, the computed reduction plan, and the separate verdict ladder on `/risk` — closing the defect where declared legs were still being told to harvest at 70% captured. Records the GDX cap decision: reduce, do not raise. |
 | 1.0 | 2026-08-23 | First spec. Declares GDX and SOXX as acquisition names, defines effective basis as the measure, replaces delta/cushion gates with the funding cap AP-4, forbids rolling to avoid assignment, and removes these legs from `SC-B4`'s inversion test. Prompted by the pages reading an intended long position as a doctrine breach. |

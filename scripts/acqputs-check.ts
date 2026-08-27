@@ -5,8 +5,10 @@
 import assert from "node:assert/strict";
 import {
   ACQUISITION_PUTS,
+  LIKELY_FILL_DELTA,
   MAX_DELIVERY_SHARE_OF_CASH,
   MAX_NAME_DELIVERY_SHARE_OF_CASH,
+  THIN_FILL_DELTA,
   buildAcquisitionBook,
   deliveryCost,
   effectiveBasis,
@@ -43,11 +45,11 @@ const leg = (o: Partial<Parameters<typeof buildAcquisitionBook>[0][number]>) =>
   ({ symbol: "GDX", right: "P" as const, strike: 78, expiry: "2026-09-18", qty: -2, dte: 26, credit: 215, spot: 99.85, itm: false, ...o });
 
 const legs = [
-  leg({}),
-  leg({ strike: 78, qty: -5, credit: 612, expiry: "2026-10-16", dte: 54 }),
-  leg({ strike: 63, qty: -1, credit: 587, expiry: "2027-06-17", dte: 298 }),
-  leg({ strike: 65, qty: -1, credit: 644, expiry: "2027-06-17", dte: 298 }),
-  leg({ symbol: "SOXX", strike: 420, qty: -1, credit: 2726, expiry: "2026-12-18", dte: 117, spot: 522.35 }),
+  leg({ costToClose: 43, absDelta: 0.03 }),
+  leg({ strike: 78, qty: -5, credit: 612, expiry: "2026-10-16", dte: 54, costToClose: 359, absDelta: 0.07 }),
+  leg({ strike: 63, qty: -1, credit: 587, expiry: "2027-06-17", dte: 298, costToClose: 174, absDelta: 0.07 }),
+  leg({ strike: 65, qty: -1, credit: 644, expiry: "2027-06-17", dte: 298, costToClose: 205, absDelta: 0.09 }),
+  leg({ symbol: "SOXX", strike: 420, qty: -1, credit: 2726, expiry: "2026-12-18", dte: 117, spot: 522.35, costToClose: 1499, absDelta: 0.17 }),
   leg({ symbol: "NVDA", strike: 195, qty: -1, credit: 292, itm: false }), // premium put, must not appear
   leg({ symbol: "GDX", right: "C", strike: 160, qty: -1, credit: 100 }), // call on a declared name
 ];
@@ -75,6 +77,58 @@ ok(gdx.legs.map((l) => l.expiry).join(",") === "2026-09-18,2026-10-16,2027-06-17
 const live = buildAcquisitionBook([leg({ itm: true, qty: -2, strike: 78 })], bal);
 ok(live.itmLegs === 1 && live.itmDelivery === 15_600, "an ITM leg's delivery is reported as live");
 ok(buildAcquisitionBook([leg({})], bal).itmDelivery === 0, "and an OTM one is not");
+
+// ── fill odds: is this a real accumulation plan, or premium wearing a story? ────
+// Δ means the opposite here to what it means to a premium leg: high = likely to get the shares.
+ok(THIN_FILL_DELTA < LIKELY_FILL_DELTA, "the thin-fill line sits below the likely-fill line");
+const withDelta = buildAcquisitionBook(
+  [
+    leg({ qty: -2, strike: 78, absDelta: 0.03 }),
+    leg({ symbol: "SOXX", strike: 420, qty: -1, credit: 2726, absDelta: 0.17 }),
+  ],
+  bal,
+);
+ok(withDelta.delivery === 57_600, `delivery is unweighted — the funding claim is the whole promise (got ${withDelta.delivery})`);
+ok(Math.abs(withDelta.weightedDelivery - (15_600 * 0.03 + 42_000 * 0.17)) < 1e-6, `weighted delivery is Σ delivery × |Δ| (got ${withDelta.weightedDelivery})`);
+ok(withDelta.weightedDelivery < withDelta.delivery * 0.2, "a book struck this far out is promising cash for an accumulation that mostly will not happen");
+ok(buildAcquisitionBook([leg({ absDelta: null })], bal).weightedDelivery === 0, "with no delta the weighted figure is not invented");
+
+// ── AP-7: which contracts the funding cap gives up, and why ────────────────────
+// GDX is 57% of cash against a 40% name cap and the book is 93% against 80%, so a plan
+// must exist; and it must take the legs least likely to ever deliver, not the ones whose
+// mark looks best — closing on the mark is the premium book's rule (§4.4).
+const plan = book.reduction!;
+ok(plan != null, "an over-cap book produces the §4.5 reduction plan");
+ok(plan.cuts.every((c) => c.symbol === "GDX"), `the cuts come from the name that is over its cap (got ${plan.cuts.map((c) => c.symbol).join(",")})`);
+ok(plan.cuts[0].absDelta === 0.03, `the first contract given up is the least likely to deliver (got |Δ| ${plan.cuts[0].absDelta})`);
+ok(plan.releases >= 20_368, `the plan releases at least the ${Math.round(67_400 - 117_581 * 0.4)} of GDX excess (got ${plan.releases})`);
+ok(plan.deliveryAfter === 109_400 - plan.releases, "delivery after equals the promise less what was released");
+ok(plan.shareAfter != null && plan.shareAfter <= MAX_DELIVERY_SHARE_OF_CASH, `and it leaves the book inside its ${MAX_DELIVERY_SHARE_OF_CASH * 100}% cap (got ${plan.shareAfter})`);
+ok(plan.clears.some((c) => c.startsWith("GDX")), `the plan states which caps it clears (got ${plan.clears.join(" · ")})`);
+ok(plan.stillOver.length === 0, "and does not claim to clear a cap it cannot");
+ok(plan.cost != null && plan.cost < 2_000, `the cost of the reduction is priced from the marks (got ${plan.cost})`);
+ok(plan.cuts.every((c) => c.contracts >= 1 && c.contracts <= 5), "cuts are whole contracts");
+ok(/weakest claim/.test(plan.cuts[0].why), "each cut carries the reason it was chosen");
+// Partial reduction: a single 5-lot over the cap gives up only the contracts needed.
+const oneLeg = buildAcquisitionBook([leg({ qty: -5, strike: 78, credit: 612, costToClose: 359, absDelta: 0.07 })], { totalCash: 60_000, netLiquidation: 70_000 } as Balance);
+const part = oneLeg.reduction!;
+ok(part.cuts.length === 1 && part.cuts[0].contracts === 2, `39,000 against a 24,000 name cap gives up 2 of 5 contracts, not the leg (got ${part.cuts[0]?.contracts})`);
+ok(Math.abs((part.cuts[0].cost ?? 0) - (359 / 5) * 2) < 1e-9, "the cost is pro-rated per contract");
+ok(part.releases === 15_600 && part.deliveryAfter === 23_400, `and the remainder is inside the cap (got ${part.deliveryAfter})`);
+// A compliant book must not produce a plan at all — the instruction is a remedy, not advice.
+const small = buildAcquisitionBook([leg({ qty: -1, strike: 78, absDelta: 0.2 })], bal);
+ok(small.reduction === null, "a book inside every cap has no reduction plan");
+ok(buildAcquisitionBook(legs, null).reduction === null, "and no plan is invented when cash is unknown");
+// The least-likely-to-fill ordering must not be a disguised mark rule: give the deep leg
+// the best mark and it still goes last if its delta says it may actually deliver.
+const ordered = buildAcquisitionBook(
+  [
+    leg({ strike: 78, qty: -5, credit: 612, absDelta: 0.35, costToClose: 5_000 }),
+    leg({ strike: 63, qty: -5, credit: 587, absDelta: 0.02, costToClose: 10 }),
+  ],
+  bal,
+).reduction!;
+ok(ordered.cuts[0].strike === 63, "the 0.02-delta leg is given up before the 0.35 one, whatever their marks say");
 
 // ── degenerate inputs ─────────────────────────────────────────────────────────
 const noBal = buildAcquisitionBook(legs, null);

@@ -21,13 +21,23 @@ rejected. For the *system*, keep reading here.
 | --- | --- | --- | --- |
 | Naked calls | the failure state | credit kept (§6) | `docs/short-call-strategy.md` **v1.2** |
 | Panic puts (income) | the failure state | credit kept | `docs/strategy.md` § 三 |
-| **Acquisition puts** — GDX, SOXX | **the goal** | effective basis, and whether cash funds delivery | `docs/acquisition-puts.md` **v1.0** |
+| **Acquisition puts** — GDX, SOXX | **the goal** | effective basis, and whether cash funds delivery | `docs/acquisition-puts.md` **v1.1** |
 
 This split is new (2026-08-23) and it fixed an analysis that was actively wrong: `/risk` had
 been reading the intended GDX/SOXX puts as "the program has inverted into a long book" and
 counting their delivery notional as pure risk. `SC-B4` now compares calls against **premium**
 puts only and names the credit it excluded; short-call spec **v1.2** retires the "no underlying
 is ever held" premise, because the account will now hold stock by design.
+
+**The split is enforced in code, not just documented** (2026-08-23, second session). A declared
+leg can only be told to **take delivery**, **reduce contracts (AP-4)** or **hold**:
+`acquisitionVerdictFor` in `lib/bookrisk.ts` and the matching branch in `lib/posanalysis.ts`,
+pinned by `bookrisk-check` (no premium verdict is reachable in any state) and the `posanalysis`
+self-check. Before this, `/risk` told the operator to harvest GDX puts at 70–80% captured and
+`/positions` offered to roll an ITM one down-and-out — both forbidden by `acquisition-puts.md`
+§4.4 and §4.1 respectively. `acquisition-puts.md` **v1.1** adds **AP-7** (a funding-driven
+reduction gives up the contracts least likely to deliver), §4.7 (the mark may never produce a
+verdict here) and a cap-decision table.
 
 ## What shipped since 2026-08-20
 
@@ -74,13 +84,17 @@ v1.0/v1.1, not the current record.
 **The book is not in a position to open anything:** maintenance margin is **78% of NLV**
 against a 60% limit, excess liquidity $17,247 = **13% cushion**, and all five §6.2 gates fail.
 The acquisition book separately promises **$109,400** of delivery against $117,581 of settled
-cash, with GDX alone at 57% against its 40% name cap — and that cash is not ring-fenced.
+cash, with GDX alone at 57% against its 40% name cap — and that cash is not ring-fenced. The
+AP-4 remedy is now costed on the page: give up 2× GDX 78P (Sep) and 1 of the 5× 78P (Oct) to
+release **$23,400 for ≈$115**, which takes GDX to 37% and the book to 73%. Fill-weighted, the
+whole promise buys only **$11,403** of accumulation — 10% of the cash it reserves.
 
 ## Verification
 
-- `npm run check` → **556 assertions, nine scripts** (sc-rules 76 · sc-lifecycle 51 ·
-  sc-analyzer 56 · shortcall 68 · bookrisk 77 · leveraged 79 · greeks 57 · riskbrief 65 ·
-  acqputs 30). `npm run reconcile:sc` invariants hold against the live book.
+- `npm run check` → **595 assertions, nine scripts** (sc-rules 76 · sc-lifecycle 51 ·
+  sc-analyzer 56 · shortcall 68 · bookrisk 91 · leveraged 79 · greeks 57 · riskbrief 65 ·
+  acqputs 52), plus `scripts/posanalysis-check.ts`. `npm run reconcile:sc` invariants hold
+  against the live book.
 - `npx tsc --noEmit` clean; build exit 0 followed immediately by the systemd restart; `/risk`,
   `/short-call/*`, `/positions`, `/orders`, `/pnl-predict` all 200; UI changes read back from
   headless screenshots.
@@ -95,8 +109,9 @@ cash, with GDX alone at 57% against its 40% name cap — and that cash is not ri
 
 ## Known gaps / next
 
-1. **Free margin before anything else** — harvest the ≥70% winners, close the legs inside 1σ.
-2. **Decide GDX's delivery cap**: reduce contracts or raise the cap in `acqputs.ts` with a reason.
+1. **Execute the AP-4 reduction** — the only action that is both costed and unambiguous
+   (≈$115 releases $23,400 and clears both delivery caps). Operator trade.
+2. **Free margin** — harvest the 10 remaining ≥70% winners, close the legs inside 1σ.
 3. **Ring-fence the acquisition cash** (`acquisition-puts.md` §7.3) so the margin KPI subtracts it.
 4. **Nothing has closed under v1.1+**, so no revision has been validated on its own trades.
 5. The rest of `docs/system-gaps.md`, in its order — and the unauthenticated write routes (§11)

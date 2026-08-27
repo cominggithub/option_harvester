@@ -18,7 +18,7 @@ import { analyzeShortOption, type LegSuggestion } from "@/lib/posanalysis";
 import { getPositionGroups } from "@/lib/positions";
 import { getDashboardData, type SecurityRow } from "@/lib/securities";
 import { getLatestBalance, type Balance } from "@/lib/balances";
-import { buildAcquisitionBook, isAcquisitionPut, type AcquisitionBook } from "@/lib/acqputs";
+import { buildAcquisitionBook, isAcquisitionPut, LIKELY_FILL_DELTA, THIN_FILL_DELTA, type AcquisitionBook } from "@/lib/acqputs";
 
 // ── doctrine constants (one source of truth; never inline these numbers) ──────
 export const BOOK_HORIZON_DAYS = 365; // "< 1y": the book this page analyses
@@ -69,14 +69,16 @@ export function themeOf(symbol: string, sector: string): string {
   return THEME_OF.get(symbol.toUpperCase()) ?? sector;
 }
 
-export type Verdict = "close" | "roll" | "defend" | "let_expire" | "hold";
+export type Verdict = "close" | "roll" | "defend" | "reduce" | "take_delivery" | "let_expire" | "hold";
 
 export const VERDICT_META: Record<Verdict, { label: string; cls: string; rank: number }> = {
   defend: { label: "Close / defend", cls: "bg-rose-100 text-rose-800", rank: 0 },
   roll: { label: "Roll out", cls: "bg-amber-100 text-amber-800", rank: 1 },
-  close: { label: "Close (harvest)", cls: "bg-emerald-100 text-emerald-800", rank: 2 },
-  let_expire: { label: "Let expire", cls: "bg-emerald-50 text-emerald-700", rank: 3 },
-  hold: { label: "Hold", cls: "bg-line text-ink-muted", rank: 4 },
+  reduce: { label: "Reduce contracts (AP-4)", cls: "bg-amber-100 text-amber-900", rank: 2 },
+  close: { label: "Close (harvest)", cls: "bg-emerald-100 text-emerald-800", rank: 3 },
+  take_delivery: { label: "Take delivery", cls: "bg-sky-100 text-sky-800", rank: 4 },
+  let_expire: { label: "Let expire", cls: "bg-emerald-50 text-emerald-700", rank: 5 },
+  hold: { label: "Hold", cls: "bg-line text-ink-muted", rank: 6 },
 };
 
 export const DTE_BUCKETS = ["≤7", "8–21", "22–34", "35–45", "46–90", "91–180", "181–365"] as const;
@@ -175,12 +177,19 @@ export type BookLeg = LegSuggestion & {
 
 // One short leg → verdict. Ordered by severity: a real breach outranks a winner,
 // and "no room to roll inside 1y" downgrades a roll to a close.
+//
+// `intent` decides which ladder runs. A declared acquisition put is judged by the balance
+// sheet, never by the mark (`acquisition-puts.md` §4.4), so it must never be handed the
+// premium ladder — "kept 70% of the credit, close it" is the harvest rule and applying it
+// here quietly abandons the acquisition. Absent intent means premium, matching §2: an
+// undeclared put is a premium trade.
 export function verdictFor(
   leg: Pick<
     BookLeg,
     "right" | "dte" | "absDelta" | "moneyness" | "itm" | "capturedPct" | "credit" | "costToClose" | "ivPct" | "rollRoomDays" | "sigmas" | "earningsRisk"
-  >,
+  > & { intent?: BookLeg["intent"]; notional?: number | null },
 ): { verdict: Verdict; why: string; priority: number } {
+  if (leg.intent === "acquisition") return acquisitionVerdictFor(leg);
   const { right, dte, absDelta, moneyness, itm, capturedPct, credit, costToClose, ivPct, rollRoomDays } = leg;
   const pc = (n: number | null) => (n == null ? "?" : `${Math.round(n * 100)}%`);
   const d2 = (n: number | null) => (n == null ? "?" : n.toFixed(2));
@@ -241,7 +250,62 @@ export function verdictFor(
   };
 }
 
-const fmtUsd = (n: number | null) => (n == null ? "$?" : `$${Math.abs(Math.round(n))}`);
+const fmtUsd = (n: number | null) => (n == null ? "$?" : `$${Math.abs(Math.round(n)).toLocaleString("en-US")}`);
+
+/**
+ * The acquisition ladder — a **declared** short put on a name the operator wants to own
+ * (`docs/acquisition-puts.md`). Everything the premium ladder reacts to means the opposite
+ * here, so none of its verdicts may appear:
+ *
+ * * ITM is not a breach, it is the fill — `take_delivery`, and §4.1 forbids rolling to dodge it.
+ * * A high delta is good news: the limit order is likely to fill, so the cash must be present.
+ * * A leg deep in profit is a limit order that did **not** fill (§5: a partial win at best).
+ *   Closing it because the mark looks good is a premium reason, which §4.4 rules out.
+ *
+ * That leaves only two per-leg outcomes — take the delivery, or keep waiting with the cash
+ * reserved. The one close this book allows is funding-driven (AP-4/AP-7) and needs the whole
+ * book to decide, so it is applied in `buildBookRisk` from `AcquisitionBook.reduction`, and
+ * the one nobody can compute — "the reason to own the name has gone" (§4.4) — is the
+ * operator's, not the engine's.
+ */
+export function acquisitionVerdictFor(
+  leg: Pick<BookLeg, "dte" | "absDelta" | "moneyness" | "itm" | "capturedPct"> & { notional?: number | null },
+): { verdict: Verdict; why: string; priority: number } {
+  const { dte, absDelta, moneyness, itm, capturedPct } = leg;
+  const cash = leg.notional ?? null;
+  const pc = (n: number | null) => (n == null ? "?" : `${Math.round(n * 100)}%`);
+  const d2 = (n: number | null) => (n == null ? "?" : n.toFixed(2));
+  const reserve = `${fmtUsd(cash)} of cash has to be unencumbered for it`;
+
+  if (itm) {
+    return {
+      verdict: "take_delivery",
+      why: `ITM by ${pc(Math.abs(moneyness ?? 0))} — this is the fill you asked for, not a breach: ${reserve}, and rolling down-and-out to dodge assignment is forbidden (AP §4.1). Covered calls against the shares are a separate decision afterwards.`,
+      priority: 2,
+    };
+  }
+  if (absDelta != null && absDelta >= LIKELY_FILL_DELTA) {
+    return {
+      verdict: "take_delivery",
+      why: `|Δ| ${d2(absDelta)} — delivery is a live prospect${dte != null ? ` inside ${dte}d` : ""}, which is the objective: ${reserve} now rather than promised.`,
+      priority: 1,
+    };
+  }
+  if (absDelta != null && absDelta < THIN_FILL_DELTA) {
+    return {
+      verdict: "hold",
+      why: `|Δ| ${d2(absDelta)} — about a ${pc(absDelta)} chance this ever delivers, so it is reserving ${fmtUsd(cash)} to collect premium${
+        capturedPct != null ? ` (${pc(capturedPct)} of it kept)` : ""
+      }. That is a partial win at best (AP §5) and not a reason to close: §4.4 closes on the thesis, never on the mark. If you still want the shares, re-strike closer as a purchase decision (AP-5/AP-6); if the cap binds, AP-7 gives this up first.`,
+      priority: 0,
+    };
+  }
+  return {
+    verdict: "hold",
+    why: `|Δ| ${d2(absDelta)} is the chance of the fill you want${dte != null ? `, ${dte}d out` : ""} — a limit order that pays to wait, so ${reserve}.`,
+    priority: 0,
+  };
+}
 
 // ── distributions ────────────────────────────────────────────────────────────
 
@@ -504,6 +568,7 @@ export function buildBookRisk(
       const deltaDollar = base.delta != null && base.qty != null && base.spot != null ? base.delta * base.qty * 100 * base.spot : null;
       const rollRoomDays = dte != null ? horizonDays - dte : null;
       const sigmas = sigmasToStrike(base.right, base.spot, base.strike, ivPct, dte);
+      const intent = isAcquisitionPut(base.symbol, base.right) ? "acquisition" : "premium";
       const v = verdictFor({
         right: base.right,
         dte,
@@ -517,13 +582,15 @@ export function buildBookRisk(
         rollRoomDays,
         sigmas,
         earningsRisk: base.earningsRisk,
+        intent,
+        notional,
       });
       legs.push({
         ...base,
         sector: sec?.sector ?? "Unclassified",
         theme: themeOf(base.symbol, sec?.sector ?? "Unclassified"),
         instrumentType: sec?.type ?? null,
-        intent: isAcquisitionPut(base.symbol, base.right) ? "acquisition" : "premium",
+        intent,
         ivPct,
         ivRank: sec?.ivStats?.rank ?? null,
         trend: trendRead(sec),
@@ -549,6 +616,41 @@ export function buildBookRisk(
   }
 
   legs.sort((a, b) => (a.dte ?? 1e9) - (b.dte ?? 1e9) || a.symbol.localeCompare(b.symbol));
+
+  // The acquisition book, and the one close it sanctions. AP-4 is a limit on *cash*, so which
+  // contracts to give up cannot be decided leg by leg — it needs the whole book. This pass
+  // turns the plan into per-leg verdicts so "What to do now" carries the funding instruction
+  // instead of the harvest one it used to print on these legs.
+  const acquisition = buildAcquisitionBook(
+    legs.map((l) => ({
+      symbol: l.symbol,
+      right: l.right,
+      strike: l.strike,
+      expiry: l.expiry,
+      qty: l.qty,
+      dte: l.dte,
+      credit: l.credit,
+      spot: l.spot,
+      itm: l.itm,
+      costToClose: l.costToClose,
+      absDelta: l.absDelta,
+    })),
+    balance,
+  );
+  const cutKey = (symbol: string, strike: number | null, expiry: string | null) => `${symbol}|${strike}|${expiry}`;
+  const cuts = new Map((acquisition.reduction?.cuts ?? []).map((c) => [cutKey(c.symbol, c.strike, c.expiry), c]));
+  if (cuts.size) {
+    for (const l of legs) {
+      const cut = cuts.get(cutKey(l.symbol, l.strike, l.expiry));
+      if (l.intent !== "acquisition" || !cut) continue;
+      const held = Math.abs(l.qty ?? 0);
+      l.verdict = "reduce";
+      l.priority = 2;
+      l.verdictWhy = `AP-4: the promised delivery is over its cap, and §4.5 says reduce contracts before opening anything anywhere else. Give up ${cut.contracts} of ${held} here — ${fmtUsd(
+        cut.releases,
+      )} of cash released for about ${cut.cost == null ? "an unknown cost" : fmtUsd(cut.cost)} — because ${cut.why} This is a balance-sheet close, not a harvest.`;
+    }
+  }
 
   const sum = (f: (l: BookLeg) => number | null) => legs.reduce((a, l) => a + (f(l) ?? 0), 0);
   const credit = sum((l) => l.credit);
@@ -663,10 +765,7 @@ export function buildBookRisk(
         unknownLegs: legs.filter((l) => !l.earningsRisk && l.earningsDate == null && !isEtf(l)).length,
       };
     })(),
-    acquisition: buildAcquisitionBook(
-      legs.map((l) => ({ symbol: l.symbol, right: l.right, strike: l.strike, expiry: l.expiry, qty: l.qty, dte: l.dte, credit: l.credit, spot: l.spot, itm: l.itm })),
-      balance,
-    ),
+    acquisition,
     shocks: SHOCK_MOVES.map((m) => shockBook(legs, m)),
     verdicts: (Object.keys(VERDICT_META) as Verdict[])
       .sort((a, b) => VERDICT_META[a].rank - VERDICT_META[b].rank)

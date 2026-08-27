@@ -14,17 +14,19 @@
  *     is usually just IV, not real danger).
  */
 import type { PositionGroupLeg } from "./positions";
+import { isAcquisitionPut } from "./acqputs";
 import { NO_DELTA_READ, type DeltaRead } from "./greekage";
 
-export type ActionKind = "defend" | "roll" | "harvest" | "let_expire" | "watch" | "hold";
+export type ActionKind = "defend" | "roll" | "harvest" | "take_delivery" | "let_expire" | "watch" | "hold";
 
 export const ACTION_META: Record<ActionKind, { label: string; cls: string; rank: number }> = {
   defend: { label: "Buy spot / defend", cls: "bg-rose-100 text-rose-800", rank: 0 },
   roll: { label: "Roll", cls: "bg-amber-100 text-amber-800", rank: 1 },
   harvest: { label: "Close / harvest", cls: "bg-emerald-100 text-emerald-800", rank: 2 },
-  let_expire: { label: "Let expire", cls: "bg-emerald-50 text-emerald-700", rank: 3 },
-  watch: { label: "Watch", cls: "bg-sky-50 text-sky-700", rank: 4 },
-  hold: { label: "Hold", cls: "bg-line text-ink-muted", rank: 5 },
+  take_delivery: { label: "Take delivery", cls: "bg-sky-100 text-sky-800", rank: 3 },
+  let_expire: { label: "Let expire", cls: "bg-emerald-50 text-emerald-700", rank: 4 },
+  watch: { label: "Watch", cls: "bg-sky-50 text-sky-700", rank: 5 },
+  hold: { label: "Hold", cls: "bg-line text-ink-muted", rank: 6 },
 };
 
 export type LegSuggestion = {
@@ -56,7 +58,7 @@ export type LegSuggestion = {
 
 const DAY = 86_400_000;
 const pc = (n: number) => `${Math.round(n * 100)}%`;
-const usd = (n: number) => `$${Math.abs(Math.round(n))}`;
+const usd = (n: number) => `$${Math.abs(Math.round(n)).toLocaleString("en-US")}`;
 
 // Analyze one SHORT option leg. Returns null for stock / long / non-option legs.
 export function analyzeShortOption(
@@ -91,7 +93,28 @@ export function analyzeShortOption(
   let why = "";
   let urgency = 0;
 
-  if (itm && moneyness != null) {
+  // A **declared** acquisition put (docs/acquisition-puts.md) is not judged by this ladder at
+  // all: assignment is the goal there, so "roll down-and-out for credit" and "kept 70% —
+  // harvest" are instructions its own spec forbids (§4.1, §4.4). One page must not contradict
+  // another, so these legs get the two honest reads — the fill arrived, or it has not — and
+  // /risk carries the funding view (AP-4) that decides whether to reduce.
+  const symbol = leg.contract.split(" ")[0];
+  const acquisition = isAcquisitionPut(symbol, right);
+  const delivery = leg.strike != null ? leg.strike * 100 * Math.abs(qty) : null;
+
+  if (acquisition && itm) {
+    action = "take_delivery";
+    why = `Declared acquisition put ${pc(-(moneyness ?? 0))} ITM — this is the fill you wanted: keep ${
+      delivery != null ? usd(delivery) : "the delivery cash"
+    } unencumbered and take the assignment at ${leg.strike}. Rolling to dodge it is forbidden (AP §4.1).`;
+    urgency = 2;
+  } else if (acquisition) {
+    action = "hold";
+    why = `Declared acquisition put, ${moneyness != null ? pc(moneyness) : ""} below spot — a limit order that pays to wait, so ${
+      delivery != null ? usd(delivery) : "the delivery cash"
+    } stays reserved${captured != null ? `; the ${pc(captured)} captured is not a reason to close (AP §4.4)` : ""}. Funding and any AP-4 reduction are on /risk.`;
+    urgency = 0;
+  } else if (itm && moneyness != null) {
     const deep = -moneyness; // how far in-the-money
     if (right === "C") {
       if (dte != null && dte <= 7) {
@@ -174,6 +197,21 @@ export function _selfCheck(): void {
   // ITM short put → roll
   a = analyzeShortOption(mk({ right: "P", strike: 100, marketValue: -600, unrealizedPnl: -400 }), 90, asOf)!;
   assert(a.action === "roll", `expected roll, got ${a.action}`);
+
+  // A DECLARED acquisition put is judged by acquisition-puts.md, not by this ladder:
+  // ITM is the fill, and 75% captured is not a harvest (§4.1, §4.4).
+  a = analyzeShortOption(mk({ right: "P", contract: "GDX 18SEP26 78 P", strike: 78, marketValue: -600, unrealizedPnl: -400 }), 70, asOf)!;
+  assert(a.action === "take_delivery", `declared put ITM should take delivery, got ${a.action}`);
+  assert(/§4\.1/.test(a.why), "and must say rolling to dodge assignment is forbidden");
+  a = analyzeShortOption(mk({ right: "P", contract: "GDX 18SEP26 78 P", strike: 78, unitCost: 2, marketValue: -50, unrealizedPnl: 150 }), 103, asOf)!;
+  assert(a.action === "hold", `declared put at 75% captured must not harvest, got ${a.action}`);
+  assert(/§4\.4/.test(a.why), "and must cite the rule that forbids closing on the mark");
+  // An UNdeclared put in the same state is a premium trade and still harvests (§2).
+  a = analyzeShortOption(mk({ right: "P", contract: "NVDA 18SEP26 195 P", strike: 195, unitCost: 2, marketValue: -50, unrealizedPnl: 150 }), 260, asOf)!;
+  assert(a.action === "harvest", `undeclared put at 75% captured still harvests, got ${a.action}`);
+  // A CALL on a declared name is still a premium trade.
+  a = analyzeShortOption(mk({ right: "C", contract: "GDX 18SEP26 160 C", strike: 160, unitCost: 2, marketValue: -50, unrealizedPnl: 150 }), 103, asOf)!;
+  assert(a.action === "harvest", `a call on a declared name stays premium, got ${a.action}`);
 
   // long / stock legs ignored
   assert(analyzeShortOption(mk({ quantity: 1 }), 90, asOf) === null, "long leg should be null");

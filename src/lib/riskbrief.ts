@@ -248,6 +248,7 @@ export function buildRisks(book: BookRisk, asOf: Date): Finding[] {
     const overCash = acq.deliveryVsCash != null && acq.deliveryVsCash > MAX_DELIVERY_SHARE_OF_CASH;
     const cannot = acq.deliveryVsCash != null && acq.deliveryVsCash > 1;
     const overName = acq.names.filter((n) => n.overCap);
+    const plan = acq.reduction;
     out.push({
       id: "R-DELIVERY",
       severity: cannot ? "critical" : overCash ? "high" : overName.length ? "medium" : "info",
@@ -265,13 +266,35 @@ export function buildRisks(book: BookRisk, asOf: Date): Finding[] {
           ? `${plural(acq.itmLegs, "leg")} already ITM: ${usd(acq.itmDelivery)} of that delivery is live, not hypothetical`
           : "nothing ITM yet, so delivery is still hypothetical",
         `${pc(acq.deliveryVsNlv)} of NLV if every one is assigned`,
+        // The funding claim is the full promise; this line is about whether the book is
+        // actually acquiring anything. Both can be bad at once, and here they are.
+        acq.weightedDelivery > 0 && acq.delivery > 0
+          ? `weighted by the market's own odds of filling, the promise is worth ${usd(acq.weightedDelivery)} of acquisition — ${pc(
+              acq.weightedDelivery / acq.delivery,
+            )} of the ${usd(acq.delivery)} it reserves. The cash still has to cover the full amount (the deltas of one theme rise together); what this says is that the strikes are barely accumulating anything`
+          : "no measured deltas, so how much of this promise is a live accumulation is unknown",
+        ...(plan
+          ? [
+              `AP-7 reduction available: give up ${plan.cuts
+                .map((c) => `${c.contracts}× ${c.symbol} ${c.strike}P ${c.expiry}`)
+                .join(", ")} → releases ${usd(plan.releases)} for about ${plan.cost == null ? "an unknown cost" : usd(plan.cost)}, leaving ${usd(
+                plan.deliveryAfter,
+              )} (${pc(plan.shareAfter)} of cash)`,
+            ]
+          : []),
       ],
       mechanism:
         "These puts are limit orders that pay to wait, so the exposure is not the mark — it is the obligation. If several are assigned in the same week the cash has to be there simultaneously, and the same cash is currently backing the premium book's margin. An assignment you cannot fund is a forced sale of something else, at the worst moment.",
-      action: cannot
-        ? "Reduce the promised delivery or ring-fence cash for it: the current total exceeds settled cash, so a broad drawdown assigns more than the account can pay for."
-        : `Keep ${usd(acq.delivery)} of cash unencumbered while these are open, and treat that cash as spent for margin purposes.`,
-      rules: ["AP-1", "AP-4"],
+      action: plan
+        ? `AP-4 binds, so §4.5 says reduce contracts before opening anything anywhere else: close ${plan.cuts
+            .map((c) => `${c.contracts}× ${c.symbol} ${c.strike}P (${c.expiry})`)
+            .join(" and ")} for about ${plan.cost == null ? "an unknown cost" : usd(plan.cost)} — ${plan.clears.join("; ") || "it does not clear the caps on its own"}${
+            plan.stillOver.length ? `, but ${plan.stillOver.join("; ")}` : ""
+          }. Then keep the remaining ${usd(plan.deliveryAfter)} unencumbered. Do not close these as harvests — §4.4 forbids acting on the mark here, and the cheapness of the buy-back is not the reason, the cap is.`
+        : cannot
+          ? "Reduce the promised delivery or ring-fence cash for it: the current total exceeds settled cash, so a broad drawdown assigns more than the account can pay for."
+          : `Keep ${usd(acq.delivery)} of cash unencumbered while these are open, and treat that cash as spent for margin purposes.`,
+      rules: plan ? ["AP-1", "AP-4", "AP-7"] : ["AP-1", "AP-4"],
     });
   }
 

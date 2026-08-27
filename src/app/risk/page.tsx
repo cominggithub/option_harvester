@@ -19,6 +19,7 @@ import {
   type BookRisk,
   type Slice,
 } from "@/lib/bookrisk";
+import { THIN_FILL_DELTA } from "@/lib/acqputs";
 import { DeltaProvenanceNote, DeltaValue } from "@/components/DeltaCell";
 import { summarizeDeltaProvenance } from "@/lib/greekage";
 import { PageToc, type TocItem } from "@/components/PageToc";
@@ -397,15 +398,17 @@ export default async function RiskPage() {
           </H2>
           <p className="mt-2 max-w-4xl text-[12.5px] leading-relaxed text-ink-muted">
             Short puts on names you have <strong className="text-ink">declared you want to own</strong>
-            (<code>lib/acqputs.ts</code>, rules in{" "}
-            <Link href="/md/acquisition-puts.md" className="underline">
-              docs/acquisition-puts.md
-            </Link>
-            ). Assignment is the goal here, so the delta and cushion rules of the call program do not apply and these legs are
+            (<code>lib/acqputs.ts</code>, rules in <code>docs/acquisition-puts.md</code> — in the repo; the{" "}
+            <code>/md/*</code> mirror only serves pages, not docs). Assignment is the goal here, so the delta and cushion rules of
+            the call program do not apply and these legs are
             excluded from the <span className="font-semibold">SC-B4</span> inversion test — being long is the plan. What replaces
             them is the balance sheet: a put is a limit order that pays you to wait, and that only holds if the cash to take
             delivery is genuinely reserved. <strong className="text-ink">Effective basis</strong> — strike less the premium — is
-            the price you have agreed to pay, and the number this book is judged on.
+            the price you have agreed to pay, and the number this book is judged on. These legs are also kept out of the harvest
+            ladder in <Link href="#actions" className="underline">What to do now</Link>: &ldquo;kept 70% of the credit&rdquo; is a
+            premium reason and §4.4 forbids acting on the mark here, so they read{" "}
+            <span className="font-semibold">Take delivery</span>, <span className="font-semibold">Reduce contracts</span> or{" "}
+            <span className="font-semibold">Hold</span> instead.
           </p>
           <div className="mt-3 overflow-x-auto bg-surface">
             <table className="w-full min-w-[820px] border-collapse text-[12px]">
@@ -417,6 +420,7 @@ export default async function RiskPage() {
                   <th className="py-1.5 pr-2 text-right font-medium">Spot</th>
                   <th className="py-1.5 pr-2 text-right font-medium">Basis</th>
                   <th className="py-1.5 pr-2 text-right font-medium">vs spot</th>
+                  <th className="py-1.5 pr-2 text-right font-medium">Fill |Δ|</th>
                   <th className="py-1.5 pr-2 text-right font-medium">Credit</th>
                   <th className="py-1.5 pr-3 text-right font-medium">Delivery</th>
                 </tr>
@@ -441,6 +445,17 @@ export default async function RiskPage() {
                         <td className={`tnum py-1.5 pr-2 text-right ${(l.basisVsSpot ?? 0) < 0 ? "text-emerald-700" : "text-rose-700"}`}>
                           {pct(l.basisVsSpot, 1)}
                         </td>
+                        <td className="tnum py-1.5 pr-2 text-right">
+                          {l.absDelta == null ? (
+                            "—"
+                          ) : l.absDelta < THIN_FILL_DELTA ? (
+                            <span className="text-amber-700" title="Under 0.10 — the limit order is not realistically filling, so this is reserving cash to collect premium (AP §5)">
+                              {l.absDelta.toFixed(2)}
+                            </span>
+                          ) : (
+                            <span className="text-ink">{l.absDelta.toFixed(2)}</span>
+                          )}
+                        </td>
                         <td className="tnum py-1.5 pr-2 text-right">{money(l.credit)}</td>
                         <td className="tnum py-1.5 pr-3 text-right">{money(l.delivery)}</td>
                       </tr>
@@ -451,6 +466,9 @@ export default async function RiskPage() {
                         {n.intent.why}
                       </td>
                       <td className="tnum py-1 pr-2 text-right">{pct(n.avgBasisVsSpot, 1)}</td>
+                      <td className="tnum py-1 pr-2 text-right" title="Delivery weighted by the market's own odds of filling, as a share of the cash the name reserves">
+                        {n.delivery > 0 ? pct(n.weightedDelivery / n.delivery) : "—"}
+                      </td>
                       <td className="tnum py-1 pr-2 text-right">{money(n.credit)}</td>
                       <td className={`tnum py-1 pr-3 text-right font-semibold ${n.overCap ? "text-rose-700" : "text-ink"}`}>{money(n.delivery)}</td>
                     </tr>
@@ -462,8 +480,42 @@ export default async function RiskPage() {
           <p className="mt-1.5 text-[11px] leading-snug text-ink-faint">
             Promised delivery {money(r.acquisition.delivery)} against {money(r.acquisition.cash)} of settled cash (
             {pct(r.acquisition.deliveryVsCash)}) and {pct(r.acquisition.deliveryVsNlv)} of NLV. That cash is also what backs the
-            premium book&rsquo;s margin — nothing in the system ring-fences it, which is open question §7.3 of the spec.
+            premium book&rsquo;s margin — nothing in the system ring-fences it, which is open question §7.3 of the spec.{" "}
+            {r.acquisition.delivery > 0 && r.acquisition.weightedDelivery > 0 && (
+              <>
+                Weighted by the market&rsquo;s own odds of filling, the promise buys{" "}
+                {money(r.acquisition.weightedDelivery)} of accumulation —{" "}
+                {pct(r.acquisition.weightedDelivery / r.acquisition.delivery)} of the cash it reserves. The reserve still has to
+                be the full amount, because one theme&rsquo;s deltas rise together; the low share is a verdict on the strikes,
+                not permission to reserve less.
+              </>
+            )}
           </p>
+          {r.acquisition.reduction && (
+            <div className="mt-2 border-l-2 border-amber-400 bg-amber-50/60 px-3 py-2 text-[12px] leading-relaxed text-ink">
+              <div className="font-semibold">AP-4 binds — §4.5 says reduce contracts before opening anything anywhere else</div>
+              <ul className="mt-1 space-y-0.5 text-ink-muted">
+                {r.acquisition.reduction.cuts.map((c) => (
+                  <li key={`${c.symbol}-${c.strike}-${c.expiry}`}>
+                    · Give up <span className="tnum font-semibold text-ink">{c.contracts}×</span> {c.symbol} {c.strike}P{" "}
+                    {c.expiry} — releases <span className="tnum">{money(c.releases)}</span> for about{" "}
+                    <span className="tnum">{c.cost == null ? "?" : money(c.cost)}</span>. {c.why}
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-1 text-ink-muted">
+                Leaves <span className="tnum font-semibold text-ink">{money(r.acquisition.reduction.deliveryAfter)}</span> of
+                delivery ({pct(r.acquisition.reduction.shareAfter)} of cash)
+                {r.acquisition.reduction.clears.length > 0 && <> — {r.acquisition.reduction.clears.join("; ")}</>}
+                {r.acquisition.reduction.stillOver.length > 0 && (
+                  <span className="text-rose-700">, but {r.acquisition.reduction.stillOver.join("; ")}</span>
+                )}
+                . These are <strong className="text-ink">balance-sheet closes, not harvests</strong>: the reason is the cap, and
+                after them the freed cash is not a re-sell budget — re-striking closer to spot is a purchase decision under
+                AP-5/AP-6.
+              </div>
+            </div>
+          )}
         </>
       )}
 

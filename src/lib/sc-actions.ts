@@ -124,6 +124,8 @@ const INSTRUCTION: Record<string, (l: BookLeg) => string> = {
   defend: (l) => (l.itm ? "Close it — the call is in the money" : "Close it — delta is past the give-up line"),
   close: () => "Close it and free the margin",
   roll: () => "Roll out and up for credit",
+  reduce: () => "Reduce contracts — the delivery promise is over its cap",
+  take_delivery: () => "Let it be assigned — keep the cash for delivery",
   let_expire: () => "Leave it to lapse",
   hold: () => "Hold — theta is doing the work",
 };

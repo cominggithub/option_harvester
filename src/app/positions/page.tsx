@@ -133,11 +133,13 @@ function SectionNav({ items }: { items: { id: string; label: string; count?: num
 }
 
 // One section of the suggested-action board.
-const ACTION_ORDER: ActionKind[] = ["defend", "roll", "harvest", "let_expire", "watch", "hold"];
+const ACTION_ORDER: ActionKind[] = ["defend", "roll", "harvest", "take_delivery", "let_expire", "watch", "hold"];
 const ACTION_BLURB: Record<ActionKind, string> = {
   defend: "ITM or tested short calls — buy 100×|qty| shares to cap the loss as a covered call, or roll up-and-out.",
   roll: "ITM/tested — roll out (and up for calls / down for puts) for fresh credit, or accept assignment.",
   harvest: "Most of the premium is already captured — buy back to lock the gain and free buying power.",
+  take_delivery:
+    "A declared acquisition put (docs/acquisition-puts.md) whose fill has arrived — keep the delivery cash unencumbered and take the assignment; rolling to dodge it is forbidden.",
   let_expire: "Won, near expiry, pennies to close — let it lapse.",
   watch: "Underwater but still well OTM — likely IV, not danger. Keep an eye on the strike.",
   hold: "OTM and on track — nothing to do.",

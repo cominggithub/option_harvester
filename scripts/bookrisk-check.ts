@@ -25,7 +25,9 @@ import {
   EARNINGS_NEAR_DAYS,
   HARVEST_CAPTURED,
   TARGET_DELTA,
+  VERDICT_META,
   type BookLeg,
+  type Verdict,
 } from "../src/lib/bookrisk";
 import type { PositionGroup, PositionGroupLeg } from "../src/lib/positions";
 import type { SecurityRow } from "../src/lib/securities";
@@ -85,6 +87,33 @@ ok(v({ moneyness: 0.3, absDelta: 0.16, sigmas: 0.7, dte: 120 }) === "hold", "sam
 // The ITM message must offer the roll while room remains, and priority must be top.
 const itmCall = verdictFor({ ...base, itm: true, moneyness: -0.05 });
 ok(itmCall.priority === 3 && /roll out-and-away/.test(itmCall.why), "ITM verdict is urgent and names the roll option");
+ok(verdictFor({ ...base, intent: "premium" }).verdict === "hold" && v({}) === "hold", "no declared intent is a premium leg (acquisition-puts.md §2)");
+
+// ── the acquisition ladder: assignment is the goal, so the premium rules invert ──
+// The defect this pins: a declared GDX put at 80% captured used to be told to "close, free
+// the margin, re-sell at 35–45 DTE" — the harvest rule, on a book whose §4.4 forbids acting
+// on the mark at all.
+const acq = { ...base, right: "P" as const, intent: "acquisition" as const, notional: 15_600 };
+type AcqCase = Partial<Parameters<typeof verdictFor>[0]>;
+const av = (o: AcqCase) => verdictFor({ ...acq, ...o });
+ok(av({ capturedPct: 0.8, absDelta: 0.03 }).verdict === "hold", "80% of the credit kept is NOT a close here — the limit order simply has not filled");
+ok(/§4\.4/.test(av({ capturedPct: 0.8, absDelta: 0.03 }).why), "and the reason cites the rule that forbids closing on the mark");
+ok(/AP-5|AP-6/.test(av({ capturedPct: 0.8, absDelta: 0.03 }).why), "…offering the re-strike as a purchase decision instead");
+ok(av({ itm: true, moneyness: -0.04 }).verdict === "take_delivery", "ITM is the fill, not a breach");
+ok(/§4\.1/.test(av({ itm: true, moneyness: -0.04 }).why), "and the ITM text forbids rolling to dodge assignment");
+ok(av({ absDelta: 0.45 }).verdict === "take_delivery", "a high delta is good news here — it means the shares are coming");
+ok(av({ absDelta: 0.45 }).verdict !== "defend", "…and never the give-up verdict the call program would use");
+ok(av({ absDelta: 0.18 }).verdict === "hold", "a mid delta waits, paid to do so");
+ok(/15600/.test(av({ absDelta: 0.18 }).why.replace(/[$,]/g, "")), "every acquisition verdict names the cash that must stay unencumbered");
+const premiumOnly: Verdict[] = ["close", "roll", "defend", "let_expire"];
+const acqCases: AcqCase[] = [
+  {}, { itm: true, moneyness: -0.2 }, { absDelta: 0.9 }, { absDelta: 0.05, capturedPct: 0.95 }, { absDelta: null },
+  { dte: 3, costToClose: 5, capturedPct: 0.99 }, { moneyness: 0.01, absDelta: 0.29, sigmas: 0.2 }, { rollRoomDays: 0, absDelta: 0.4 },
+];
+ok(acqCases.every((c) => !premiumOnly.includes(av(c).verdict)), "no acquisition leg can ever be handed a premium verdict, in any state");
+ok(acqCases.every((c) => ["take_delivery", "hold"].includes(av(c).verdict)), "the per-leg ladder has exactly two outcomes: take the delivery, or keep waiting");
+ok(VERDICT_META.reduce != null && VERDICT_META.take_delivery != null, "the two acquisition verdicts have labels of their own, so the page cannot mislabel them");
+ok(VERDICT_META.reduce.rank < VERDICT_META.close.rank, "a funding-driven reduction outranks a harvest in the action list");
 
 // ── themes: the correlated cluster, not the sector label ─────────────────────
 ok(themeOf("SOXX", "Information Technology") === "Semiconductors", "SOXX is a semis bet, not just Info Tech");
