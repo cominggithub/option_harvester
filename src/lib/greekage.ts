@@ -26,6 +26,18 @@
  *      which is how you can tell the fallback is not inventing risk.)
  *
  * Pure — no DB, no clock beyond an injected `now`. Pinned by scripts/greeks-check.ts.
+ *
+ * Two limitations, both real and neither guarded here (docs/spec.md § 4.9,
+ * docs/defects/2026-08-21-stale-delta.md § 9):
+ *   • `deltaAt` is when we RECEIVED the value, not when IB computed it — its snapshot
+ *     carries no timestamp for the greek fields. A greeks sync outside US market hours
+ *     therefore stamps a fresh time on last-close values and `stale` reads false; only
+ *     `diverged` still catches it. Re-measure inside 21:30–04:00 GMT+8.
+ *   • The model path assumes the MARK is fresh. σ is inverted out of the mark against the
+ *     current spot, so a stale mark beside a live spot pushes the error into σ and the
+ *     delta degrades quietly (measured 2026-08-27, six days without a positions sync:
+ *     MRVL C320's implied σ read 103%). This bridges a missed *greeks* sync, not a missed
+ *     *positions* sync.
  */
 import { volAndDelta } from "./blackscholes";
 

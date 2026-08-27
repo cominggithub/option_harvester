@@ -345,6 +345,25 @@ and `/risk` carry a one-line **Δ provenance** banner (how many legs from each s
 many measurements are stale, the oldest age). `/sync`'s greeks card is dated by the
 newest `delta_at` with the oldest in its detail line.
 
+**Two limitations to read the numbers against** (both found 2026-08-27, neither guarded in
+code yet — see the defect record § 9):
+
+1. **`deltaAt` is when we *received* the value, not when IB *computed* it.** IB's snapshot
+   exposes no computation time for the greek fields. A greeks sync run outside US market
+   hours therefore stamps a fresh timestamp on last-close values, and `stale` will read
+   false. What still protects the gate is `diverged`: a value that is old at source will
+   disagree with a live mark and yield to the model anyway. **Operational rule: re-measure
+   during US market hours** (21:30–04:00 GMT+8) if you want `source: "ib"` to mean current.
+2. **The model fallback assumes the *mark* is fresh.** σ is inverted out of the leg's mark
+   against the current spot, so if the mark is stale and the spot is not, the mismatch is
+   absorbed into σ and the delta degrades quietly. Marks come from the positions sync
+   (minutes old in normal operation); spots come from the 06:00 ingest. Measured on
+   2026-08-27 after six days without an IB sync — marks from 08-21, spots from 08-26 — the
+   implied σ on MRVL C320 had inflated to 103% and NOW C145 read 0.286 against 0.308 six
+   days earlier. The fallback is a bridge across a missed greeks sync, **not** across a
+   missed positions sync. `npm run audit:greeks` prints the σ, so an implausible σ column is
+   the tell.
+
 Checks: `scripts/greeks-check.ts` (pure, in `npm run check`) pins the thresholds, the
 model inversion and the decision; `npm run audit:greeks` prints the live per-leg
 comparison (read-only). The defect record that produced all of this — including why nothing

@@ -202,3 +202,50 @@ npm run audit:greeks     # per-leg: IB Δ + its age vs the mark-implied Δ, and 
 npm run check:greeks     # the pure gate (57 assertions)
 npm run check            # full suite (441)
 ```
+
+## 9. Follow-up — 2026-08-27, six days later
+
+**The re-measure never happened, and the record has to say so.** State on 2026-08-27 15:19:
+
+```
+greek rows 199 · 0 with a Δ timestamp · newest row still 2026-08-19 05:55:22
+option_harvest_sync_runs: nothing since 2026-08-21 00:56 (login)
+option_harvest_positions: uploaded_at max 2026-08-21 00:55:56
+GET /api/ext-log?event=login-watch  → "not ready: no IB tab", every 15 min, all day
+                                      (and `armed: auto OFF · login-sync on`)
+```
+
+So the fix has never once run in its intended mode: no greeks sync since the incident, no
+delta has ever carried a timestamp, and `source` has been `"model"` for all 52 legs for six
+days. The app is telling the truth about this — the Δ provenance banner reads "52 implied by
+the leg's own mark" and the ages read `8d` — which is the whole point of the change. But the
+underlying cause of the original defect (greeks refresh only when a sync runs) is not
+*solved*, only *disclosed*, and the extension's cadence improvement can't help while the IB
+portal tab is closed and auto-sync is off.
+
+**Why the manual attempt on 08-21 failed** (`manual: not logged in (no account)`): IB's own
+`/iserver/auth/status` reported the brokerage session unauthenticated — not competing, one
+tab open. The morning session had simply expired; the portal page kept rendering a
+logged-in-looking shell over a dead session. The diagnosis came from `GET /api/ext-log`,
+which is the intended way to answer "why didn't it sync?" without asking the user to relay
+popup text.
+
+**Two limitations of the fix, found while re-auditing today.** Both are documented in
+docs/spec.md § 4.9; neither is guarded in code:
+
+1. `deltaAt` records **receipt**, not IB's computation time — IB's snapshot carries no
+   timestamp for the greek fields. A sync outside US market hours stamps a fresh time on
+   last-close values and `stale` reads false. The divergence check is what still saves the
+   gate. Operational rule: re-measure inside 21:30–04:00 GMT+8.
+2. The model fallback **assumes the mark is fresh**. With marks 6 days old and spots
+   current, the inversion pushes the mismatch into σ: MRVL C320's implied σ read 103%,
+   NOW C145 drifted 0.308 → 0.286, and 19 legs (up from 17) now register as diverged. The
+   fallback bridges a missed *greeks* sync, not a missed *positions* sync — and nothing
+   currently says so on screen.
+
+**Open, in priority order.** (a) Carry a mark age into `readDelta` and flag/refuse the model
+value when the mark itself is stale — today a doubly-stale leg looks as trustworthy as a
+freshly-marked one. (b) Surface "no IB sync in N days" on `/positions` and `/risk`, not just
+per-dataset on `/sync`; a six-day-old book is a bigger problem than a stale greek and is
+currently only visible if you go looking. (c) Decide whether auto-sync being off should be
+reported as a condition on `/sync` rather than only inside the extension popup.

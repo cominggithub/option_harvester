@@ -368,7 +368,10 @@ held-option greeks refresh without a separate step; **Auto-sync** and **login sy
 run the same light pull and take greeks **too, but only while the IB tab is the one on
 screen** (`tabInForeground` — active tab in a focused window; Chrome throttles the
 in-page 500ms poll loop in a background tab). When it's skipped the run records
-`greeksSkipped` instead of silently leaving an old delta looking fresh.
+`greeksSkipped` instead of silently leaving an old delta looking fresh. **A greeks sync is
+only worth trusting inside US market hours** (21:30–04:00 GMT+8): outside them IB serves the
+last close's greeks and `deltaAt` — which records receipt, not IB's computation time — will
+call them fresh (docs/spec.md § 4.9).
 **Sync on IB login** (popup checkbox, on by default)
 runs that same light pull **once per login**: a 1-minute `loginwatch` alarm + every
 IB-tab navigation probe the tab's *readiness* (`/iserver/auth/status` not
