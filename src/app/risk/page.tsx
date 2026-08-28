@@ -614,7 +614,7 @@ export default async function RiskPage() {
               >
                 {p.tier === 1 ? (p.unknownGates.length ? `no gate fails · ${p.unknownGates.length} unknown` : "clears every gate") : "one gate short"}
               </span>
-              <Ticker symbol={p.symbol} size="lede" />
+              <Ticker symbol={p.symbol} variant="target" />
               <span className="text-micro text-ink-muted">{p.theme}</span>
               {p.deflating && (
                 <span className="rounded bg-sky-50 px-1 text-micro font-semibold text-sky-800" title="IV rank ≥ 50 and falling over the last 5 days — short vega works with theta">
