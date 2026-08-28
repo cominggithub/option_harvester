@@ -1,6 +1,6 @@
 # System insufficiencies — what this instrument cannot yet tell you
 
-**Status: living document. Last reviewed 2026-08-21.** Every entry is a limitation of the
+**Status: living document. Last reviewed 2026-08-28.** Every entry is a limitation of the
 *system*, not of the market: something the pages assert, imply, or silently omit that the
 data does not actually support. Ordered by how much a wrong decision it can cause.
 
@@ -168,6 +168,41 @@ consider reporting the window length beside the rank wherever it is used to rank
 independent samples than rows; current S&P constituents only. Every cohort conclusion
 inherits this and the pages say so, but no number here has been tested out of sample.
 
+## 14. The open side of the record is ledger-derived, and the broker does not agree
+
+*New 2026-08-28. By decision impact it belongs above §1 — it is kept last so the existing
+section numbers other docs cite stay stable.*
+
+`npm run reconcile:sc` reports **37 open short-call chains holding $151,926 of open credit**.
+The live broker snapshot does not contain that book. `/risk` → *Outside this analysis* reports
+**0** option legs expiring beyond 365 days, and `/positions` (IB snapshot 2026-08-27 16:16)
+lists **42 legs / 40 short options** whose entire credit is **$18,675** — a larger leg count
+than the ledger's open set, at an eighth of the credit.
+
+Measured directly off `buildChains` (throwaway probe, 2026-08-28): **$144,463 — 95% of that
+open credit — sits in 8 chains expiring 2028–2029**: GLD ×3 (2028-01-21) $44,004 + $45,346 +
+$29,273, PAAS $12,087, HL $7,012, UBSG (2029-12-21) $3,504, PPLT $1,887, GDX (2028-12-15)
+$1,350. None of them appears anywhere in the broker snapshot, which holds only two *long*
+2028-12-15 calls (§7). Inside a year the ledger's open set is $7,463 across 29 chains, and even
+that is 29 chains against IB's 18 open short calls.
+
+Why it matters, and it is not cosmetic:
+
+- Every "open credit" figure quoted from `reconcile:sc` — including the `46 open chains /
+  $154,288` headline that stood in `NEXT-SESSION.md` and `sessions/latest.md` until this was
+  found — is **95% long-dated residue**, not premium at risk.
+- If those legs did close, the closing trades never reached the ledger, so the **closed record
+  (−$5,162 over 164 chains) is silent about the fate of $144,463 of credit** — an amount an
+  order of magnitude larger than the deficit it reports. The record cannot currently say
+  whether the program's realized number is complete.
+- The reconciliation script's invariants pass throughout: they check that money does not move
+  between the leg and chain views, not that either view matches the broker.
+
+**Fix.** Reconcile the ledger-open set against the IB position snapshot inside
+`scripts/sc-reconcile.ts` and fail when they disagree — per symbol/expiry/quantity, not just
+in total. Until that exists, quote open premium from `/risk` or `/positions` and treat
+`reconcile:sc` as authoritative for the **closed** record only.
+
 ---
 
 ## How to use this list
@@ -178,5 +213,7 @@ inherits this and the pages say so, but no number here has been tested out of sa
   assertion, not a comment. The exit-audit inversion above is now pinned by
   `scripts/riskbrief-check.ts` ("the finding no longer claims the loss happens AT the exit",
   "no exit claim is made when no leg-level exit data was supplied").
-- Ordering is by decision impact, and it is expected to change. Items 1, 3 and 4 are the
-  ones currently blocking a real answer to "should the program keep buying back?".
+- Ordering is by decision impact, and it is expected to change. **§14 is the current worst**:
+  until the open set is reconciled against the broker, no open-book number from
+  `reconcile:sc` can be quoted. After it, items 1, 3 and 4 are the ones blocking a real answer
+  to "should the program keep buying back?".
