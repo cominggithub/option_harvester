@@ -1,0 +1,50 @@
+
+> option_harvester@0.1.0 reconcile:sc
+> tsx scripts/sc-reconcile.ts
+
+
+=== LEG view (contracts — what /short-call shows today) ===
+trades=211  credit=$49,878  realized=−$5,793  kept=-11.6%  win=64.9%  breach=20.4%  open legs=40
+=== CHAIN view (lifecycle — rolls collapsed into one bet) ===
+chains=164  credit=$45,543  realized=−$5,873  kept=-12.9%  win=68.9%  loss=31.1%  breach=25.0%  open chains=40  open credit=$152,642
+legs=251  rolls=47  rolled chains=39  expired=75  bought back=87  assigned=2  worst chain=−$10,086  avg/chain=−$36
+
+✓ invariants hold: realized, credit, leg counts, uniqueness, rolls = legs − chains
+
+link confidence over the 39 rolled chains: certain=35  guess=4
+
+worst chains by realized:
+  MRNA   2026-07-22→2026-08-19  realized= −$10,086  credit=    $678  rolls=1  bought_back  79@08-28 → 80@09-25
+  LABU   2026-08-14→2026-08-19  realized=  −$1,550  credit=    $540  rolls=0  bought_back  370@09-25
+  ACN    2026-06-22→2026-07-28  realized=  −$1,508  credit=  $1,772  rolls=2  bought_back  135@07-31 → 145@09-18 → 200@06-17
+  PLTR   2026-06-12→2026-08-04  realized=  −$1,335  credit=  $2,312  rolls=3  bought_back  140@07-10 → 135@08-07 → 150@10-16 → 175@01-15
+  CHTR   2026-06-22→2026-06-29  realized=  −$1,171  credit=    $480  rolls=0  bought_back  150@07-31
+  UBSG   2026-04-01→2026-06-09  realized=    −$790  credit=    $129  rolls=0  bought_back  35@06-19
+  USO    2026-06-29→2026-08-19  realized=    −$745  credit=    $717  rolls=2  bought_back  118@08-07 → 160@09-04 → 141@09-11
+  ADBE   2026-06-16→2026-07-28  realized=    −$629  credit=    $859  rolls=1  bought_back  230@07-17 → 250@08-21
+
+open credit (short calls only): $152,642 across 40 open chains  ·  whole book for reference: pnl.summary.openCredit=$195,069 over 77 open contracts (calls + puts)  ·  assignments in the ledger: 3
+
+rolled chains (deepest first) — eyeball these against IB:
+  PLTR    3 rolls  2026-06-12→2026-08-04  credit=  $2,312 realized= −$1,335 rollNet=    $407 bad=0 [certain] bought_back  140@07-10 → 135@08-07 → 150@10-16 → 175@01-15
+  GDDY    3 rolls  2026-06-18→open  credit=    $957 realized=   −$396 rollNet=   −$446 bad=1 [certain] open  84@07-24 → 105@11-20 → 115@09-04 → 110@10-02
+  USO     2 rolls  2026-06-29→2026-08-19  credit=    $717 realized=   −$745 rollNet=   −$713 bad=1 [certain] bought_back  118@08-07 → 160@09-04 → 141@09-11
+  FCX     2 rolls  2026-06-12→2026-08-05  credit=  $1,135 realized=   −$231 rollNet=    $817 bad=0 [guess] bought_back  75@07-10 → 70@08-07 → 72@08-28
+  ACN     2 rolls  2026-06-22→2026-07-28  credit=  $1,772 realized= −$1,508 rollNet=    $203 bad=0 [certain] bought_back  135@07-31 → 145@09-18 → 200@06-17
+  UPST    2 rolls  2026-06-12→open  credit=    $568 realized=    $222 rollNet=    $128 bad=0 [certain] open  35@07-10 → 50@09-18 → 40@09-25
+  NFLX    1 rolls  2026-06-22→2026-08-25  credit=    $522 realized=     $54 rollNet=     $16 bad=0 [certain] bought_back  80@07-31 → 85@09-18
+  INTC    1 rolls  2026-07-21→2026-08-21  credit=    $521 realized=    $459 rollNet=    $147 bad=0 [certain] bought_back  140@08-28 → 130@09-18
+  QCOM    1 rolls  2026-07-24→2026-08-21  credit=    $508 realized=    $426 rollNet=    $169 bad=0 [certain] bought_back  210@08-28 → 195@09-11
+  HIMS    1 rolls  2026-06-16→2026-08-21  credit=    $372 realized=    $160 rollNet=     $62 bad=0 [certain] expired  40@07-17 → 50@08-21
+  MRNA    1 rolls  2026-07-22→2026-08-19  credit=    $678 realized=−$10,086 rollNet=    $286 bad=0 [certain] bought_back  79@08-28 → 80@09-25
+  TQQQ    1 rolls  2026-06-26→2026-08-18  credit=    $767 realized=    $328 rollNet=     $96 bad=0 [certain] bought_back  86@07-31 → 95@09-18
+
+by rule version in force at the open:
+  v0.1: chains= 164  realized=  −$5,873  win=68.9%  kept=-12.9%  avg rolls=0.20
+
+by terminal state:
+  bought_back  chains=  87  realized= −$19,593  win=47.1%  kept=-67.0%
+  assigned     chains=   2  realized=     $239  win=100.0%  kept=87.6%
+  expired      chains=  75  realized=  $13,481  win=93.3%  kept=84.1%
+
+rolls: 47 across 39 chains · bad rolls (debit / not out-or-up / past the wall): 10

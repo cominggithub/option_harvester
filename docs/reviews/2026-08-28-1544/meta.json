@@ -1,0 +1,64 @@
+{
+  "runId": "2026-08-28-1544",
+  "generatedAt": "2026-08-28T15:44:00+08:00",
+  "head": "3148407",
+  "headSubject": "Re-stamp the recap after the 10:22 extension sync",
+  "rulesVersions": { "shortCall": "1.2", "acquisitionPuts": "1.1" },
+  "previousRunId": null,
+  "correctsRunId": null,
+  "trigger": "operator: portfolio synced (IB extension sync 2026-08-28 10:22), first review under this architecture",
+  "author": "option-adviser",
+  "architecture": "docs/adviser-reviews-architecture.md",
+
+  "inputs": {
+    "ibBalances":      { "asOf": "2026-08-28", "ageH": null, "note": "date-granular snapshot; post 10:22 sync" },
+    "ibBook":          { "asOf": "2026-08-28T10:22+08:00", "ageH": 5.4 },
+    "priceIvIngest":   { "asOf": "2026-08-27T22:14:25Z", "ageH": 17.5 },
+    "marginWhatIfs":   { "coverage": 0.45, "asOf": "2026-08-11", "ageH": 408 },
+    "deltaProvenance": { "measured": 44, "modelled": 0, "lowConfidence": 0, "allCurrent": true, "divergedFromMark": 1 },
+    "ivHistoryDays":   63,
+    "reconcileSc":     { "asOf": "2026-08-28T15:44+08:00", "invariants": "hold" },
+    "pageCaptures":    { "asOf": "2026-08-28T07:45Z", "note": "generated_at on every sources/*.md" }
+  },
+
+  "preconditions": [
+    { "id": "book-fresh",       "pass": true,  "detail": "IB book synced 10:22 today, 5.4h old against BOOK_STALE_HOURS = 24" },
+    { "id": "delta-measured",   "pass": true,  "detail": "44 of 44 legs carry a current IB measurement; 1 diverges from its mark by >0.05 (DELTA_DIVERGE_ABS)" },
+    { "id": "margin-covered",   "pass": false, "detail": "45% of legs priced by IB what-if, newest 2026-08-11 (17 days). Per-leg margin attribution is a FLOOR; the account-level requirement is not affected", "constrains": ["gate.SC-B2", "theme.*.margin"] },
+    { "id": "ingest-fresh",     "pass": true,  "detail": "price/IV ingest 17.5h old — one session, expected between 06:00 runs" },
+    { "id": "open-set-reconciled", "pass": false, "detail": "system-gaps §14 unfixed: reconcile:sc reports 40 open chains / $152,642 open credit that the broker snapshot does not contain. No open-premium figure in this review is taken from it", "constrains": ["record.open.*"] },
+    { "id": "compliance-measurable", "pass": false, "detail": "all 164 closed chains stamped v0.1 (pre-spec). n=0 under v1.1+. Envelope findings are counterfactual only", "constrains": ["record.byVersion.*"] }
+  ],
+
+  "gaps": [
+    "system-gaps §14 — ledger-open set not reconciled against broker; open credit unusable from reconcile:sc",
+    "system-gaps §1 — Δ and IV at fill are Black-Scholes reconstructions, not measured greeks; every entry-keyed cohort inherits this",
+    "system-gaps §2 — exit-keyed cohorts on /short-call/cohorts still carry no selection-effect caveat",
+    "system-gaps §5 — no revision validated on its own trades",
+    "system-gaps §6 — per-leg margin attribution is an estimate at 45% coverage",
+    "system-gaps §8 — no calendar-concentration rule exists to breach",
+    "system-gaps §9 — contracts-per-name is a §3 rule with no gate surfaced",
+    "system-gaps §12 — IV rank computed over 63 days of history",
+    "system-gaps §13 — one regime, overlapping windows, survivorship"
+  ],
+
+  "sources": {
+    "risk.md": "http://127.0.0.1:19210/md/risk.md",
+    "positions.md": "http://127.0.0.1:19210/md/positions.md",
+    "pnl-predict.md": "http://127.0.0.1:19210/md/pnl-predict.md",
+    "short-call.md": "http://127.0.0.1:19210/md/short-call.md",
+    "short-call-cohorts.md": "http://127.0.0.1:19210/md/short-call/cohorts.md",
+    "short-call-losses.md": "http://127.0.0.1:19210/md/short-call/losses.md",
+    "short-call-lifecycle.md": "http://127.0.0.1:19210/md/short-call/lifecycle.md",
+    "short-call-candidates.md": "http://127.0.0.1:19210/md/short-call/candidates.md",
+    "short-call-weekly.md": "http://127.0.0.1:19210/md/short-call/weekly.md",
+    "reconcile-sc.txt": "npm run reconcile:sc",
+    "head.txt": "git log -1"
+  },
+
+  "notes": [
+    "Requested as run 2026-08-28-1025 from a 10:25 capture. Re-captured at 15:44 rather than back-dating; the two readings of /risk are identical on every headline (44 legs, $19,697 credit, $88,235 maintenance, +$10,400 open P/L, +$350 theta, +$716 net Δ$), so nothing moved intraday after the 10:22 sync.",
+    "docs/sessions/latest.md recorded the closed record at 10:00 as 210 legs / −$5,279 and 164 chains / −$5,162. Post-sync it reads 211 legs / −$5,793 and 164 chains / −$5,873. The difference is one newly-captured closing fill, not a restatement: classified data-quality-moved, not book-moved.",
+    "No previous run exists, so no keyed comparison is possible. This run establishes the key space."
+  ]
+}
