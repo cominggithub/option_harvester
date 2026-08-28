@@ -25,16 +25,16 @@ put as an inversion, an assignment risk or a §6.2 breach; do check `AP-4`/`R-DE
 | Rank | File | Status |
 | --- | --- | --- |
 | 0 | `docs/sessions/latest.md` | **Working memory.** Open threads, last measurements, and what was already rejected. Read before proposing anything. Its numbers are snapshots — re-measure. |
-| 0= | `docs/acquisition-puts.md` | Authoritative for the acquisition book (v1.0). |
-| 1 | `docs/short-call-strategy.md` | **Authoritative** for short calls (v1.1). Entry envelope, management, success criteria, the §6.4/§6.5 evidence — which is **frozen at 2026-08-19 on purpose** (see §2). |
+| 0= | `docs/acquisition-puts.md` | Authoritative for the acquisition book (v1.1). |
+| 1 | `docs/short-call-strategy.md` | **Authoritative** for short calls (v1.2). Entry envelope, management, success criteria, the §6.4/§6.5 evidence — which is **frozen at 2026-08-19 on purpose** (see §2). |
 | 1= | `src/lib/sc-rules.ts` | The **machine mirror** of that spec: 21 rules with ids (`SC-S*`/`SC-E*`/`SC-M*`/`SC-B*`), spec references, `evaluate()` returning pass **and margin**, and `STRATEGY_VERSIONS` with `effectiveFrom`. `npm run check` fails if it and the spec's changelog disagree, so a drift is a build failure, not an opinion. |
 | 2 | `docs/strategy.md` | The wider doctrine (Chinese原文), including the panic-put pivot. § 五 is the same v2 rule set in memo form. Loses to #1 on conflict. |
 | 3 | `docs/cc-target-strategy.md` | **Research track, not doctrine.** The Δ0.30 model, backtest, calibration, and the daily `predictions/cc-<date>.jsonl` archive. Never quote its Δ0.30 rules as current practice. |
 | — | `docs/short-call-analyzer-plan.md` | What the analyzer is, why each page exists, and **what was deliberately not built** (the frozen weekly `reviews/sc-*.json` artifact) plus the two places the plan changed under contact with the data. |
 | — | `src/lib/{shortcall,sc-lifecycle,sc-loss,sc-actions,sc-candidates,sc-timeline,bookrisk,blackscholes,securities,watchlists,pnl}.ts` | What the product *actually* computes. When a doc and the code disagree, that gap is itself a finding. |
-| — | `npm run check` (369+ assertions, six scripts), `npm run reconcile:sc` (read-only, live) | Self-checks. Run these to ground numeric claims; `reconcile:sc` is the only one that reads the real book. |
+| — | `npm run check` (629 assertions, nine scripts), `npm run reconcile:sc` (read-only, live) | Self-checks. Run these to ground numeric claims; `reconcile:sc` is the only one that reads the real book — but it is authoritative for the **closed** record only. Its open side is ledger-derived and disagrees with the broker (`system-gaps.md` §14): quote open premium from `/risk` or `/positions`. |
 | — | `/md/<page>.md` mirrors | Every approved page has a read-only markdown mirror (`curl -s http://127.0.0.1:19210/md/short-call.md`). The cheapest way to read live state without touching the DB. |
-| — | `docs/system-gaps.md` | **Read before asserting anything.** The standing list of what the instrument cannot support: reconstructed greeks, selection effects in exit-keyed cohorts, counterfactuals that ignore assignment and margin, the missing loss-cap backtest. A claim on that list may only be made with its caveat attached. |
+| — | `docs/system-gaps.md` | **Read before asserting anything.** The standing list of what the instrument cannot support: reconstructed greeks, selection effects in exit-keyed cohorts, counterfactuals that ignore assignment and margin, the missing loss-cap backtest, and an open book the broker does not confirm (§14). A claim on that list may only be made with its caveat attached. |
 | — | Knowledge bases `option_harvester-docs` and `option_harvester-lib` | Semantic search over all of `docs/` and `src/lib/` for the material that does not fit in context. Run `knowledge show` for the ids and **scope the search to those contexts** — the machine also indexes an unrelated project, and an unscoped search will return its files. |
 
 Constants live in code (`NC_IV_MIN`, `NC_MIN_WEEKLY_BUCKETS`, `HARVEST_CAPTURED`, …).

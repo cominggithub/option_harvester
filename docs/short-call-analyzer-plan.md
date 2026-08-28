@@ -8,7 +8,7 @@ What landed, and where the plan changed under contact with the data:
 * All eight pages live under `/short-call/*`, one shared load (`lib/sc-data.ts`).
 * Engines: `sc-rules.ts` (registry), `sc-lifecycle.ts` (chains), `sc-loss.ts`,
   `sc-actions.ts`, `sc-candidates.ts`, `sc-timeline.ts`. Checks: `npm run check`
-  (369 assertions over six scripts) plus the live reconciliation `npm run reconcile:sc`.
+  (629 assertions over nine scripts) plus the live reconciliation `npm run reconcile:sc`.
 * **Changed from the plan:** the roll-target constructor puts §4.3's *credit-positive*
   requirement ahead of the entry cushion floor. Insisting on 1.5σ made nearly every roll
   impossible — at 40 IV and 40 DTE a 1.5σ strike prices in the tens of dollars, nowhere near

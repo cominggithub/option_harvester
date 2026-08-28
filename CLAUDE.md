@@ -360,7 +360,7 @@ Scripts (`scripts/`):
 - Self-checks: `*-check.ts` (`pnl`, `posanalysis`, `positions`, `trades`, `news`, `roic`,
   `leveraged`, `bookrisk`, `riskbrief`, `shortcall`, `sc-rules`, `sc-lifecycle`, `sc-analyzer`, `greeks`, `riskbrief`, `acqputs`) —
   see test plan. **`npm run check`** runs the short-call suite + the delta-freshness and
-  risk-brief checks (493 assertions over eight scripts) and is the gate for any change under `/short-call`,
+  risk-brief checks (629 assertions over nine scripts) and is the gate for any change under `/short-call`,
   `/risk` or anything that renders a Δ; `npm run check:sc`
   is the analyzer-only subset. **`npm run reconcile:sc`** (`sc-reconcile.ts`) is the one
   that touches the DB — read-only — and fails if leg totals and chain totals disagree.
