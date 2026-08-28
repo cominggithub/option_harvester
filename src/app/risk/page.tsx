@@ -24,6 +24,7 @@ import { DeltaProvenanceNote, DeltaValue, StaleBookBanner } from "@/components/D
 import { getBookFreshness } from "@/lib/positions";
 import { summarizeDeltaProvenance } from "@/lib/greekage";
 import { PageToc, type TocItem } from "@/components/PageToc";
+import { Ticker } from "@/components/Ticker";
 import { getScAnalyzer } from "@/lib/sc-data";
 import { getDashboardData } from "@/lib/securities";
 import { buildLossReport } from "@/lib/sc-loss";
@@ -64,7 +65,7 @@ function H2({ children, note, id }: { children: React.ReactNode; note?: string; 
 }
 
 // A distribution table: one row per slice with a credit-share bar.
-function SliceTable({ slices, label, max }: { slices: Slice[]; label: string; max?: number }) {
+function SliceTable({ slices, label, max, tickers }: { slices: Slice[]; label: string; max?: number; tickers?: boolean }) {
   const rows = max ? slices.slice(0, max) : slices;
   const top = Math.max(...rows.map((s) => s.credit), 1);
   return (
@@ -85,7 +86,7 @@ function SliceTable({ slices, label, max }: { slices: Slice[]; label: string; ma
           {rows.map((s) => (
             <tr key={s.key} className="border-b border-line/50 last:border-0 hover:bg-canvas">
               <td className="py-1.5 pl-3 pr-2">
-                <div className="text-ink">{s.key}</div>
+                <div className="text-ink">{tickers ? <Ticker symbol={s.key} /> : s.key}</div>
                 <div className="mt-0.5 h-1 w-full max-w-[160px] rounded-sm bg-line">
                   <div className="h-1 rounded-sm bg-ink-faint" style={{ width: `${Math.round((s.credit / top) * 100)}%` }} />
                 </div>
@@ -111,9 +112,7 @@ function LegRow({ l, earnings }: { l: BookLeg; earnings?: boolean }) {
   return (
     <tr className="border-b border-line/50 align-top last:border-0 hover:bg-canvas">
       <td className="py-1.5 pl-3 pr-2">
-        <Link href={`/stock/${l.symbol}`} className="font-semibold text-ink hover:underline">
-          {l.symbol}
-        </Link>
+        <Ticker symbol={l.symbol} />
         <div className="text-micro text-ink-muted">{l.theme}</div>
       </td>
       <td className="tnum py-1.5 pr-2 whitespace-nowrap">
@@ -197,12 +196,22 @@ function FlagList({ title, legs, tone, hint }: { title: string; legs: BookLeg[];
       </div>
       <div className="mt-1 text-micro leading-tight text-ink-muted">{hint}</div>
       {legs.length > 0 && (
-        <div className="mt-1.5 text-small leading-snug text-ink">
-          {legs
-            .slice(0, 12)
-            .map((l) => `${l.symbol} ${l.right}${l.strike}`)
-            .join(" · ")}
-          {legs.length > 12 ? ` +${legs.length - 12} more` : ""}
+        <div className="mt-1.5 flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-small leading-snug text-ink">
+          {legs.slice(0, 12).map((l, i) => (
+            <React.Fragment key={`${l.contract}-${l.strike}-${l.expiry}`}>
+              {/* an explicit separator, not just a flex gap: the /md mirror extracts
+                  text, and without it the tickers run together as one word. */}
+              {i > 0 ? <span className="text-ink-muted"> · </span> : null}
+              <span className="whitespace-nowrap">
+                <Ticker symbol={l.symbol} />
+                <span className="tnum ml-1 text-ink-muted">
+                  {l.right}
+                  {l.strike}
+                </span>
+              </span>
+            </React.Fragment>
+          ))}
+          {legs.length > 12 ? <span className="text-ink-muted"> · +{legs.length - 12} more</span> : null}
         </div>
       )}
     </div>
@@ -438,9 +447,7 @@ export default async function RiskPage() {
                     {n.legs.map((l) => (
                       <tr key={`${n.symbol}-${l.expiry}-${l.strike}`} className="border-b border-line/50 hover:bg-canvas">
                         <td className="py-1.5 pl-3 pr-2">
-                          <Link href={`/stock/${n.symbol}`} className="font-semibold text-ink hover:underline">
-                            {n.symbol}
-                          </Link>
+                          <Ticker symbol={n.symbol} />
                         </td>
                         <td className="tnum py-1.5 pr-2 whitespace-nowrap">
                           <span className="text-sky-700">put</span> {l.strike} × {l.qty} · {l.expiry}
@@ -468,7 +475,9 @@ export default async function RiskPage() {
                       </tr>
                     ))}
                     <tr className="border-b border-line bg-canvas/60 text-micro">
-                      <td className="py-1 pl-3 pr-2 font-semibold text-ink">{n.symbol} total</td>
+                      <td className="py-1 pl-3 pr-2 text-ink">
+                        <Ticker symbol={n.symbol} link={false} /> total
+                      </td>
                       <td className="py-1 pr-2 text-ink" colSpan={4}>
                         {n.intent.why}
                       </td>
@@ -605,9 +614,7 @@ export default async function RiskPage() {
               >
                 {p.tier === 1 ? (p.unknownGates.length ? `no gate fails · ${p.unknownGates.length} unknown` : "clears every gate") : "one gate short"}
               </span>
-              <Link href={`/stock/${p.symbol}`} className="text-lede font-semibold text-ink hover:underline">
-                {p.symbol}
-              </Link>
+              <Ticker symbol={p.symbol} size="lede" />
               <span className="text-micro text-ink-muted">{p.theme}</span>
               {p.deflating && (
                 <span className="rounded bg-sky-50 px-1 text-micro font-semibold text-sky-800" title="IV rank ≥ 50 and falling over the last 5 days — short vega works with theta">
@@ -856,7 +863,7 @@ export default async function RiskPage() {
 
       <H2 id="name" note={`top 15 of ${t.symbols} · single-name cap discipline`}>By name</H2>
       <div className="mt-3">
-        <SliceTable slices={r.bySymbol} label="Name" max={15} />
+        <SliceTable slices={r.bySymbol} label="Name" max={15} tickers />
       </div>
 
       {/* ── action board ─────────────────────────────────────────────────── */}
