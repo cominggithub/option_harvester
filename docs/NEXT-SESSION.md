@@ -95,9 +95,10 @@ IB balances 2026-08-27 · price/IV ingest 2026-08-27T22:14Z · margin what-ifs c
 
 - **40 short legs** across 30 names (18 calls / 22 puts), credit **$18,675**, $9,822 to close,
   open P/L **+$8,854** (47% of the credit already earned), theta **+$320/day**.
-- **Liquidity binds, not the market**: maintenance **$85,140 = 64% of NLV** ($133,295) against a
-  60% limit; excess liquidity $32,230 = **24% cushion**; assignment notional $610,550 = 4.6× NLV.
-  Better than 08-23 (78% / 13%) but still over the limit.
+- **Liquidity binds, not the market**: maintenance **$88,235 = 66% of NLV** ($133,925) against a
+  60% limit; excess liquidity $29,265 = **21.9% cushion** (IB balances 2026-08-28, after the
+  10:22 extension sync). Much better than 08-23 (78% / 13%), still over the limit, and it moved
+  the wrong way intraday from 08-27's 64% / 24.2%.
 - **All five §6.2 gates fail** (SC-B1…B5) — the candidates page opens with *Stop opening*.
   Semiconductors is **43% of open credit** against a 25% theme cap (4.1 effective themes vs a
   floor of 6), SOXX alone is 15% against a 5% name cap, top-5 names 57%.
@@ -105,8 +106,12 @@ IB balances 2026-08-27 · price/IV ingest 2026-08-27T22:14Z · margin what-ifs c
   73% not rising, median IV 53%, 12.8 effective names.
 - Harvest ladder: **9 legs ≥70% captured** ($3,526 credit, +$2,634 open), 2 legs to roll out,
   28 to hold.
-- Δ provenance: all 40 legs are priced off their own mark; every IB measurement is older than
-  18h (oldest 29h) and rests on a mark up to 14h from spot — good to one decimal until a sync.
+- Δ provenance: after the 2026-08-28 10:22 sync, **44 legs are measured by IB and every
+  measurement is current** (1 disagrees with the mark by >0.05). Before that sync all 40 were
+  mark-implied off IB measurements 18–29h old — that is the state to expect again after a day
+  without a sync, and it caps a Δ at one decimal.
+- Position margin what-ifs are **17 days old** (Aug 11), so coverage is only 45% of legs and the
+  margin KPI leads with IB's account requirement instead. A Deep sync would fix it.
 
 **Acquisition book**: 8 contracts promising **$93,800** of delivery = **80% of $117,370** settled
 cash and 70% of NLV. GDX 7 contracts / $51,800, effective basis $71.37 (−31.2% vs spot), credit
@@ -133,7 +138,7 @@ taking GDX to 37% of cash and the book to $86,000 (73%). That cash is still not 
   (`cc-2026-08-27.jsonl` was written 08-28 06:14). Untracked by design.
 - Prisma stores timestamps **UTC-naive**: convert with
   `col AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Taipei'`.
-- Extension is **v0.9.5**; bump `manifest.json` on any extension edit.
+- Extension is **v0.9.6** (`extension/manifest.json`); bump it on any extension edit.
 - `ib-agent` is the only sanctioned route to IBKR. Its Gateway is usually down — `ib-agent
   status` first, and **ask before `gateway up`** (2FA tap).
 

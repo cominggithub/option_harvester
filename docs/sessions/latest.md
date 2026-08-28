@@ -43,11 +43,12 @@ Enforced in code: a declared leg can only be told to **take delivery**, **reduce
 by `bookrisk-check` and the `posanalysis` self-check. "Kept 70% of the credit — close" on a GDX
 or SOXX put is a regression, not a suggestion.
 
-## The five facts that shape any current review (`/risk`, 2026-08-28 09:06)
+## The five facts that shape any current review (`/risk`, 2026-08-28 10:23, post-sync)
 
-1. **Liquidity binds, not the market.** Maintenance $85,140 = **64% of NLV** ($133,295) against
-   a 60% limit, excess liquidity $32,230 = **24% cushion** (IB balances 2026-08-27). All five
-   §6.2 gates still fail — the doctrine says *stop opening*. Loosened from 78% / 13% on 08-23.
+1. **Liquidity binds, not the market.** Maintenance $88,235 = **66% of NLV** ($133,925) against
+   a 60% limit, excess liquidity $29,265 = **21.9% cushion** (IB balances 2026-08-28, extension
+   sync 10:22). All five §6.2 gates still fail — the doctrine says *stop opening*. Much looser
+   than 08-23 (78% / 13%), but it tightened again from 08-27 (64% / 24.2%).
 2. **The entry is the leak, not the exit.** 72 of 133 buy-backs were mandated by the state at
    close, −$31,168; the 11 discretionary ones made +$597; 50 harvests at ≥70% made $10,767. All
    72 forced exits were sold inside the 1.5σ floor (avg 0.82σ, |Δ| 0.27, 16-day hold), 27 traded
@@ -64,8 +65,9 @@ or SOXX put is a regression, not a suggestion.
 
 Concentration, for any "what to sell" question: Semiconductors **43%** of open credit (cap 25%,
 4.1 effective themes vs a floor of 6), SOXX 15% single-name (cap 5%), top-5 names 57%.
-Conformance 45% (18/40 legs in |Δ| 0.10–0.20). Every live Δ is mark-implied and rests on a mark
-up to 14h from spot — one decimal only until a sync.
+Conformance 45% (18/40 legs in |Δ| 0.10–0.20). After the 10:22 sync **44 legs carry a current
+IB-measured Δ** (1 disagrees with the mark by >0.05); without a same-day sync they revert to
+mark-implied off 18–29h-old measurements and are good to one decimal only.
 
 ## Next actions
 
