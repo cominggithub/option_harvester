@@ -9,6 +9,23 @@
     monospace;
   --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia,
     "Times New Roman", serif;
+
+  /* Type scale — six steps, integers only.
+     Half-pixel sizes are banned: `body { zoom: 1.125 }` below multiplies every
+     size before rasterisation, so a 0.5px step (10.5 → 11.81px) is invisible as
+     hierarchy while still landing off the device-pixel grid. Integers keep the
+     source legible and every step at least 1px apart after the zoom.
+     11 is the floor — nothing smaller, and nothing grey below 12 (see
+     docs/proposals/risk-page-redesign.md § 3.1).
+     Consumed as Tailwind `text-micro … text-h1` (tailwind.config.ts). */
+  --fs-micro: 11px; /* column headers, chips, rule-id pills, overlines */
+  --fs-small: 12px; /* table cells, evidence bullets, footnotes */
+  --fs-body: 14px; /* all prose: mechanism, action, section intros */
+  --fs-lede: 16px; /* finding titles, the brief's headline sentence */
+  --fs-h2: 19px; /* section headings — must outrank body, which is the D-1 fix */
+  --fs-h1: 28px; /* page title */
+  --fs-kpi: 22px; /* KPI values */
+  --fs-kpi-lg: 26px; /* the six "Book at a glance" tiles — the only true summary numbers */
 }
 
 html {
@@ -41,7 +58,7 @@ body {
 }
 
 .overline {
-  font-size: 0.6875rem;
+  font-size: var(--fs-micro);
   letter-spacing: 0.14em;
   text-transform: uppercase;
 }

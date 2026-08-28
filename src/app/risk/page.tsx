@@ -44,12 +44,12 @@ const pct = (v: number | null, digits = 0) => (v == null ? "—" : `${(v * 100).
 const num = (v: number | null, digits = 2) => (v == null ? "—" : v.toFixed(digits));
 const pnlCls = (v: number | null) => (v == null ? "text-ink-muted" : v >= 0 ? "text-emerald-700" : "text-rose-700");
 
-function Kpi({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: string }) {
+function Kpi({ label, value, sub, tone, big }: { label: string; value: string; sub?: string; tone?: string; big?: boolean }) {
   return (
     <div className="bg-surface px-4 py-3">
-      <div className="overline text-ink-faint">{label}</div>
-      <div className={`tnum mt-0.5 text-[20px] font-semibold ${tone ?? "text-ink"}`}>{value}</div>
-      {sub ? <div className="mt-0.5 text-[10.5px] leading-tight text-ink-faint">{sub}</div> : null}
+      <div className="overline text-ink-muted">{label}</div>
+      <div className={`tnum mt-0.5 ${big ? "text-kpi-lg" : "text-kpi"} font-semibold ${tone ?? "text-ink"}`}>{value}</div>
+      {sub ? <div className="mt-1 text-micro leading-tight text-ink-muted">{sub}</div> : null}
     </div>
   );
 }
@@ -57,8 +57,8 @@ function Kpi({ label, value, sub, tone }: { label: string; value: string; sub?: 
 function H2({ children, note, id }: { children: React.ReactNode; note?: string; id?: string }) {
   return (
     <div id={id} className="mt-8 scroll-mt-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-      <h2 className="text-[13px] font-semibold uppercase tracking-wider text-ink-faint">{children}</h2>
-      {note ? <span className="text-[11px] text-ink-faint">{note}</span> : null}
+      <h2 className="text-h2 font-semibold tracking-tight text-ink">{children}</h2>
+      {note ? <span className="text-micro text-ink-muted">{note}</span> : null}
     </div>
   );
 }
@@ -69,9 +69,9 @@ function SliceTable({ slices, label, max }: { slices: Slice[]; label: string; ma
   const top = Math.max(...rows.map((s) => s.credit), 1);
   return (
     <div className="overflow-x-auto bg-surface">
-      <table className="w-full min-w-[520px] border-collapse text-[12px]">
+      <table className="w-full min-w-[520px] border-collapse text-small">
         <thead>
-          <tr className="border-b border-line text-left text-[10px] uppercase tracking-wider text-ink-faint">
+          <tr className="border-b border-line text-left text-micro uppercase tracking-wider text-ink-muted">
             <th className="py-1.5 pl-3 pr-2 font-medium">{label}</th>
             <th className="py-1.5 pr-2 text-right font-medium">Legs</th>
             <th className="py-1.5 pr-2 text-right font-medium">Credit</th>
@@ -81,7 +81,7 @@ function SliceTable({ slices, label, max }: { slices: Slice[]; label: string; ma
             <th className="py-1.5 pr-3 text-right font-medium">Δ$</th>
           </tr>
         </thead>
-        <tbody className="text-ink-muted">
+        <tbody className="text-ink">
           {rows.map((s) => (
             <tr key={s.key} className="border-b border-line/50 last:border-0 hover:bg-canvas">
               <td className="py-1.5 pl-3 pr-2">
@@ -114,7 +114,7 @@ function LegRow({ l, earnings }: { l: BookLeg; earnings?: boolean }) {
         <Link href={`/stock/${l.symbol}`} className="font-semibold text-ink hover:underline">
           {l.symbol}
         </Link>
-        <div className="text-[10px] text-ink-faint">{l.theme}</div>
+        <div className="text-micro text-ink-muted">{l.theme}</div>
       </td>
       <td className="tnum py-1.5 pr-2 whitespace-nowrap">
         <span className={l.right === "C" ? "text-rose-700" : "text-sky-700"}>{l.right === "C" ? "call" : "put"}</span>{" "}
@@ -124,7 +124,7 @@ function LegRow({ l, earnings }: { l: BookLeg; earnings?: boolean }) {
         <>
           <td className="tnum py-1.5 pr-2 whitespace-nowrap text-right">
             <span className="font-semibold text-amber-800">{l.earningsDate ?? "—"}</span>
-            {l.daysToEarnings != null ? <span className="ml-1 text-[10px] text-ink-faint">in {l.daysToEarnings}d</span> : null}
+            {l.daysToEarnings != null ? <span className="ml-1 text-micro text-ink-muted">in {l.daysToEarnings}d</span> : null}
           </td>
           <td className="tnum py-1.5 pr-2 text-right">
             {l.earningsBufferDays == null ? "—" : `${l.earningsBufferDays}d`}
@@ -141,13 +141,13 @@ function LegRow({ l, earnings }: { l: BookLeg; earnings?: boolean }) {
       <td className="tnum py-1.5 pr-2 text-right">{money(l.credit)}</td>
       <td className={`tnum py-1.5 pr-2 text-right ${pnlCls(l.unrealizedPnl)}`}>{signed(l.unrealizedPnl)}</td>
       <td className="tnum py-1.5 pr-2 text-right">{pct(l.capturedPct)}</td>
-      <td className="py-1.5 pr-3 text-[11px] leading-snug text-ink-muted">
+      <td className="py-1.5 pr-3 text-small leading-snug text-ink">
         {earnings ? (
-          <span className={`mr-1 rounded px-1 text-[10px] font-semibold ${VERDICT_META[l.verdict].cls}`}>{VERDICT_META[l.verdict].label}</span>
+          <span className={`mr-1 rounded px-1 text-micro font-semibold ${VERDICT_META[l.verdict].cls}`}>{VERDICT_META[l.verdict].label}</span>
         ) : null}
         {l.verdictWhy}
-        {!earnings && l.earningsRisk ? <span className="ml-1 rounded bg-amber-50 px-1 text-[10px] font-semibold text-amber-800">earnings {l.earningsDate}</span> : null}
-        {l.right === "C" && l.trend === "up" ? <span className="ml-1 rounded bg-rose-50 px-1 text-[10px] font-semibold text-rose-800">rising</span> : null}
+        {!earnings && l.earningsRisk ? <span className="ml-1 rounded bg-amber-50 px-1 text-micro font-semibold text-amber-800">earnings {l.earningsDate}</span> : null}
+        {l.right === "C" && l.trend === "up" ? <span className="ml-1 rounded bg-rose-50 px-1 text-micro font-semibold text-rose-800">rising</span> : null}
       </td>
     </tr>
   );
@@ -156,9 +156,9 @@ function LegRow({ l, earnings }: { l: BookLeg; earnings?: boolean }) {
 function LegTable({ legs, earnings }: { legs: BookLeg[]; earnings?: boolean }) {
   return (
     <div className="overflow-x-auto bg-surface">
-      <table className={`w-full ${earnings ? "min-w-[1120px]" : "min-w-[980px]"} border-collapse text-[12px]`}>
+      <table className={`w-full ${earnings ? "min-w-[1120px]" : "min-w-[980px]"} border-collapse text-small`}>
         <thead>
-          <tr className="border-b border-line text-left text-[10px] uppercase tracking-wider text-ink-faint">
+          <tr className="border-b border-line text-left text-micro uppercase tracking-wider text-ink-muted">
             <th className="py-1.5 pl-3 pr-2 font-medium">Name</th>
             <th className="py-1.5 pr-2 font-medium">Leg</th>
             {earnings ? (
@@ -178,7 +178,7 @@ function LegTable({ legs, earnings }: { legs: BookLeg[]; earnings?: boolean }) {
             <th className="py-1.5 pr-3 font-medium">Why</th>
           </tr>
         </thead>
-        <tbody className="text-ink-muted">
+        <tbody className="text-ink">
           {legs.map((l) => (
             <LegRow key={`${l.contract}-${l.strike}-${l.expiry}`} l={l} earnings={earnings} />
           ))}
@@ -192,12 +192,12 @@ function FlagList({ title, legs, tone, hint }: { title: string; legs: BookLeg[];
   return (
     <div className="bg-surface px-4 py-3">
       <div className="flex items-baseline justify-between gap-2">
-        <div className="overline text-ink-faint">{title}</div>
-        <div className={`tnum text-[16px] font-semibold ${legs.length ? tone : "text-ink-faint"}`}>{legs.length}</div>
+        <div className="overline text-ink-muted">{title}</div>
+        <div className={`tnum text-lede font-semibold ${legs.length ? tone : "text-ink-muted"}`}>{legs.length}</div>
       </div>
-      <div className="mt-1 text-[10.5px] leading-tight text-ink-faint">{hint}</div>
+      <div className="mt-1 text-micro leading-tight text-ink-muted">{hint}</div>
       {legs.length > 0 && (
-        <div className="mt-1.5 text-[11px] leading-snug text-ink-muted">
+        <div className="mt-1.5 text-small leading-snug text-ink">
           {legs
             .slice(0, 12)
             .map((l) => `${l.symbol} ${l.right}${l.strike}`)
@@ -222,27 +222,27 @@ function FindingCard({ f }: { f: Finding }) {
   return (
     <div className={`border-l-2 ${s.edge} bg-surface px-4 py-3`}>
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${s.chip}`}>{s.label}</span>
+        <span className={`rounded px-1.5 py-0.5 text-micro font-semibold uppercase tracking-wider ${s.chip}`}>{s.label}</span>
         {f.rules.map((r) => (
-          <span key={r} className="rounded bg-canvas px-1 text-[10px] font-semibold text-ink-muted">
+          <span key={r} className="rounded bg-canvas px-1 text-micro font-semibold text-ink-muted">
             {r}
           </span>
         ))}
-        <span className="text-[13.5px] font-semibold leading-snug text-ink">{f.title}</span>
+        <span className="text-lede font-semibold leading-snug text-ink">{f.title}</span>
       </div>
       <ul className="mt-1.5 space-y-0.5">
         {f.evidence.map((e, i) => (
-          <li key={i} className="tnum text-[11.5px] leading-snug text-ink-muted">
+          <li key={i} className="tnum text-small leading-snug text-ink">
             · {e}
           </li>
         ))}
       </ul>
-      <p className="mt-1.5 text-[12.5px] leading-relaxed text-ink-muted">
-        <span className="font-semibold text-ink-faint">Why it hurts. </span>
+      <p className="mt-1.5 text-body leading-relaxed text-ink">
+        <span className="font-semibold text-ink-muted">Why it hurts. </span>
         {f.mechanism}
       </p>
-      <p className="mt-1 text-[12.5px] leading-relaxed text-ink">
-        <span className="font-semibold text-ink-faint">Do. </span>
+      <p className="mt-1 text-body leading-relaxed text-ink">
+        <span className="font-semibold text-ink-muted">Do. </span>
         {f.action}
       </p>
     </div>
@@ -320,8 +320,8 @@ export default async function RiskPage() {
   if (!t.legs) {
     return (
       <main className="min-h-full bg-canvas px-6 py-7 2xl:px-10">
-        <h1 className="wordmark text-[26px] leading-tight text-ink">Book risk</h1>
-        <p className="mt-3 rounded-lg border border-dashed border-line bg-surface px-6 py-8 text-center text-[13px] text-ink-muted">
+        <h1 className="wordmark text-h1 leading-tight text-ink">Book risk</h1>
+        <p className="mt-3 rounded-lg border border-dashed border-line bg-surface px-6 py-8 text-center text-body text-ink">
           No short option legs inside {BOOK_HORIZON_DAYS} days. Run a <Link href="/sync" className="underline">Sync</Link> to
           pull the IB book, then a Deep sync for greeks and margin.
         </p>
@@ -333,13 +333,13 @@ export default async function RiskPage() {
     <main className="min-h-full bg-canvas px-6 py-7 2xl:px-10">
       <div className="flex items-baseline justify-between gap-4">
         <div>
-          <div className="overline text-ink-faint">Short premium book · under {BOOK_HORIZON_DAYS} days</div>
-          <h1 className="wordmark text-[26px] leading-tight text-ink">Book risk</h1>
+          <div className="overline text-ink-muted">Short premium book · under {BOOK_HORIZON_DAYS} days</div>
+          <h1 className="wordmark text-h1 leading-tight text-ink">Book risk</h1>
         </div>
-        <span className="tnum text-[13px] text-ink-muted">{formatTimestamp(new Date(r.asOf))}</span>
+        <span className="tnum text-small text-ink-muted">{formatTimestamp(new Date(r.asOf))}</span>
       </div>
 
-      <p className="mt-2 max-w-4xl text-[13.5px] leading-relaxed text-ink-muted">
+      <p className="mt-2 max-w-4xl text-body leading-relaxed text-ink">
         The doctrine being measured (docs/strategy.md § 五): sell <strong className="text-ink">{TARGET_DTE_MIN}–{TARGET_DTE_MAX} DTE</strong> at{" "}
         <strong className="text-ink">|Δ| ≈ {TARGET_DELTA}</strong> on names that are <strong className="text-ink">not rising</strong> (preferably
         with rich, deflating IV), spread across many uncorrelated names, rolling out for credit while the roll still
@@ -358,15 +358,15 @@ export default async function RiskPage() {
       {/* ── the brief: what the data says, not what it contains ──────────── */}
       <div id="brief" className="scroll-mt-4">
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-          <h2 className="text-[13px] font-semibold uppercase tracking-wider text-ink-faint">The brief</h2>
-          <span className="text-[11px] text-ink-faint">
+          <h2 className="text-h2 font-semibold tracking-tight text-ink">The brief</h2>
+          <span className="text-micro text-ink-muted">
             re-read on every load · {brief.freshness.map((f) => `${f.label} ${f.value}`).join(" · ")} ·{" "}
             <Link href={`/risk?t=${Date.now()}`} className="underline">
               re-analyse now
             </Link>
           </span>
         </div>
-        <p className={`mt-2 border-l-2 ${SEV_STYLE[brief.level === "critical" ? "critical" : brief.level === "high" ? "high" : brief.level === "elevated" ? "medium" : "info"].edge} bg-surface px-4 py-3 text-[14px] leading-relaxed text-ink`}>
+        <p className={`mt-2 border-l-2 ${SEV_STYLE[brief.level === "critical" ? "critical" : brief.level === "high" ? "high" : brief.level === "elevated" ? "medium" : "info"].edge} bg-surface px-4 py-3 text-lede leading-relaxed text-ink`}>
           {brief.headline}
         </p>
         <div className="mt-2 space-y-2">
@@ -374,7 +374,7 @@ export default async function RiskPage() {
             <FindingCard key={f.id} f={f} />
           ))}
           {brief.risks.length === 0 && (
-            <div className="bg-surface px-4 py-3 text-[13px] text-ink-muted">
+            <div className="bg-surface px-4 py-3 text-body text-ink">
               Nothing in the book breaches a limit it sets itself. That is the intended state, not an absence of analysis — the
               sections below are the evidence behind it.
             </div>
@@ -382,10 +382,10 @@ export default async function RiskPage() {
         </div>
         {brief.gaps.length > 0 && (
           <div className="mt-2 bg-surface px-4 py-3">
-            <div className="overline text-ink-faint">What this reading could not see</div>
+            <div className="overline text-ink-muted">What this reading could not see</div>
             <ul className="mt-1 space-y-0.5">
               {brief.gaps.map((g, i) => (
-                <li key={i} className="text-[11.5px] leading-snug text-amber-700">
+                <li key={i} className="text-small leading-snug text-amber-700">
                   · {g}
                 </li>
               ))}
@@ -403,7 +403,7 @@ export default async function RiskPage() {
           >
             Acquisition book
           </H2>
-          <p className="mt-2 max-w-4xl text-[12.5px] leading-relaxed text-ink-muted">
+          <p className="mt-2 max-w-4xl text-body leading-relaxed text-ink">
             Short puts on names you have <strong className="text-ink">declared you want to own</strong>
             (<code>lib/acqputs.ts</code>, rules in <code>docs/acquisition-puts.md</code> — in the repo; the{" "}
             <code>/md/*</code> mirror only serves pages, not docs). Assignment is the goal here, so the delta and cushion rules of
@@ -418,9 +418,9 @@ export default async function RiskPage() {
             <span className="font-semibold">Hold</span> instead.
           </p>
           <div className="mt-3 overflow-x-auto bg-surface">
-            <table className="w-full min-w-[820px] border-collapse text-[12px]">
+            <table className="w-full min-w-[820px] border-collapse text-small">
               <thead>
-                <tr className="border-b border-line text-left text-[10px] uppercase tracking-wider text-ink-faint">
+                <tr className="border-b border-line text-left text-micro uppercase tracking-wider text-ink-muted">
                   <th className="py-1.5 pl-3 pr-2 font-medium">Name</th>
                   <th className="py-1.5 pr-2 font-medium">Leg</th>
                   <th className="py-1.5 pr-2 text-right font-medium">DTE</th>
@@ -432,7 +432,7 @@ export default async function RiskPage() {
                   <th className="py-1.5 pr-3 text-right font-medium">Delivery</th>
                 </tr>
               </thead>
-              <tbody className="text-ink-muted">
+              <tbody className="text-ink">
                 {r.acquisition.names.map((n) => (
                   <React.Fragment key={n.symbol}>
                     {n.legs.map((l) => (
@@ -444,7 +444,7 @@ export default async function RiskPage() {
                         </td>
                         <td className="tnum py-1.5 pr-2 whitespace-nowrap">
                           <span className="text-sky-700">put</span> {l.strike} × {l.qty} · {l.expiry}
-                          {l.itm ? <span className="ml-1 rounded bg-amber-50 px-1 text-[10px] font-semibold text-amber-800">ITM — delivery live</span> : null}
+                          {l.itm ? <span className="ml-1 rounded bg-amber-50 px-1 text-micro font-semibold text-amber-800">ITM — delivery live</span> : null}
                         </td>
                         <td className="tnum py-1.5 pr-2 text-right">{l.dte ?? "—"}d</td>
                         <td className="tnum py-1.5 pr-2 text-right">{l.spot == null ? "—" : `$${l.spot.toFixed(0)}`}</td>
@@ -467,9 +467,9 @@ export default async function RiskPage() {
                         <td className="tnum py-1.5 pr-3 text-right">{money(l.delivery)}</td>
                       </tr>
                     ))}
-                    <tr className="border-b border-line bg-canvas/60 text-[11px]">
+                    <tr className="border-b border-line bg-canvas/60 text-micro">
                       <td className="py-1 pl-3 pr-2 font-semibold text-ink">{n.symbol} total</td>
-                      <td className="py-1 pr-2 text-ink-muted" colSpan={4}>
+                      <td className="py-1 pr-2 text-ink" colSpan={4}>
                         {n.intent.why}
                       </td>
                       <td className="tnum py-1 pr-2 text-right">{pct(n.avgBasisVsSpot, 1)}</td>
@@ -484,7 +484,7 @@ export default async function RiskPage() {
               </tbody>
             </table>
           </div>
-          <p className="mt-1.5 text-[11px] leading-snug text-ink-faint">
+          <p className="mt-1.5 text-small leading-snug text-ink-muted">
             Promised delivery {money(r.acquisition.delivery)} against {money(r.acquisition.cash)} of settled cash (
             {pct(r.acquisition.deliveryVsCash)}) and {pct(r.acquisition.deliveryVsNlv)} of NLV. That cash is also what backs the
             premium book&rsquo;s margin — nothing in the system ring-fences it, which is open question §7.3 of the spec.{" "}
@@ -499,9 +499,9 @@ export default async function RiskPage() {
             )}
           </p>
           {r.acquisition.reduction && (
-            <div className="mt-2 border-l-2 border-amber-400 bg-amber-50/60 px-3 py-2 text-[12px] leading-relaxed text-ink">
+            <div className="mt-2 border-l-2 border-amber-400 bg-amber-50/60 px-3 py-2 text-body leading-relaxed text-ink">
               <div className="font-semibold">AP-4 binds — §4.5 says reduce contracts before opening anything anywhere else</div>
-              <ul className="mt-1 space-y-0.5 text-ink-muted">
+              <ul className="mt-1 space-y-0.5 text-ink">
                 {r.acquisition.reduction.cuts.map((c) => (
                   <li key={`${c.symbol}-${c.strike}-${c.expiry}`}>
                     · Give up <span className="tnum font-semibold text-ink">{c.contracts}×</span> {c.symbol} {c.strike}P{" "}
@@ -510,7 +510,7 @@ export default async function RiskPage() {
                   </li>
                 ))}
               </ul>
-              <div className="mt-1 text-ink-muted">
+              <div className="mt-1 text-ink">
                 Leaves <span className="tnum font-semibold text-ink">{money(r.acquisition.reduction.deliveryAfter)}</span> of
                 delivery ({pct(r.acquisition.reduction.shareAfter)} of cash)
                 {r.acquisition.reduction.clears.length > 0 && <> — {r.acquisition.reduction.clears.join("; ")}</>}
@@ -530,7 +530,7 @@ export default async function RiskPage() {
       <H2 id="why" note={`${a.totals.chains} closed chains · ${money(a.totals.realized)} realized`}>
         Why the strategy fails
       </H2>
-      <p className="mt-2 max-w-4xl text-[12.5px] leading-relaxed text-ink-muted">
+      <p className="mt-2 max-w-4xl text-body leading-relaxed text-ink">
         Diagnosis from the closed record — chains, not legs, so a position rolled four times is one bet and not three
         management losses. Read this as why the program is where it is; the per-trade detail lives on{" "}
         <Link href="/short-call/losses" className="underline">
@@ -547,7 +547,7 @@ export default async function RiskPage() {
           <FindingCard key={f.id} f={f} />
         ))}
         {brief.failures.length === 0 && (
-          <div className="bg-surface px-4 py-3 text-[13px] text-ink-muted">
+          <div className="bg-surface px-4 py-3 text-body text-ink">
             No closed chain yet carries a diagnosis — either the record is too short or it has not lost money in a way that
             breaks a rule.
           </div>
@@ -558,7 +558,7 @@ export default async function RiskPage() {
       <H2 id="targets" note={`Δ≈${TARGET_DELTA} · ${PROFILE.dteMin}–${PROFILE.dteMax} DTE · IV > ${PROFILE.ivMin}% · $${PROFILE.priceMin}–${PROFILE.priceMax} · ≥${(PROFILE.minVolume / 1e6).toFixed(0)}M shares`}>
         What to sell next
       </H2>
-      <p className="mt-2 max-w-4xl text-[12.5px] leading-relaxed text-ink-muted">
+      <p className="mt-2 max-w-4xl text-body leading-relaxed text-ink">
         Ranked by <strong className="text-ink">preference fit</strong>, whose components are on every row: how hard the name is{" "}
         <strong className="text-ink">grinding down</strong> (average regression slope over 1M/3M/6M, so a persistent slide
         outranks flat), whether its IV is rich against its own history <em>and already deflating</em> (rank ≥ 50 with a fall over
@@ -572,8 +572,8 @@ export default async function RiskPage() {
         </Link>
         .
       </p>
-      <p className="mt-2 max-w-4xl text-[12px] leading-relaxed text-ink-muted">
-        <span className="font-semibold text-ink-faint">Vol regime. </span>
+      <p className="mt-2 max-w-4xl text-body leading-relaxed text-ink">
+        <span className="font-semibold text-ink-muted">Vol regime. </span>
         Across the {brief.volRegime.n} sellable names with an IV history, {brief.volRegime.falling} have IV{" "}
         <strong className="text-ink">falling</strong> over the last five observations and {brief.volRegime.rising} have it{" "}
         <strong className="text-ink">rising</strong>; {brief.volRegime.deflating} are rich <em>and</em> deflating — the §2
@@ -584,7 +584,7 @@ export default async function RiskPage() {
       </p>
 
       {brief.openingBlockedBy.length > 0 && (
-        <div className="mt-2 border-l-2 border-rose-600 bg-surface px-4 py-3 text-[13px] leading-relaxed text-ink">
+        <div className="mt-2 border-l-2 border-rose-600 bg-surface px-4 py-3 text-body leading-relaxed text-ink">
           <span className="font-semibold text-rose-700">These are for after you have made room.</span> The book breaches{" "}
           {brief.openingBlockedBy.join(", ")}, and §6.2 says fix that before adding risk. Selling any of the below today makes
           the finding above worse, whatever the premium looks like.
@@ -595,7 +595,7 @@ export default async function RiskPage() {
           <div key={p.symbol} className="bg-surface px-4 py-3">
             <div className="flex flex-wrap items-baseline gap-x-2">
               <span
-                className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                className={`rounded px-1.5 py-0.5 text-micro font-semibold uppercase tracking-wider ${
                   p.tier === 1 && p.unknownGates.length === 0
                     ? "bg-emerald-100 text-emerald-900"
                     : p.tier === 1
@@ -605,32 +605,32 @@ export default async function RiskPage() {
               >
                 {p.tier === 1 ? (p.unknownGates.length ? `no gate fails · ${p.unknownGates.length} unknown` : "clears every gate") : "one gate short"}
               </span>
-              <Link href={`/stock/${p.symbol}`} className="text-[13.5px] font-semibold text-ink hover:underline">
+              <Link href={`/stock/${p.symbol}`} className="text-lede font-semibold text-ink hover:underline">
                 {p.symbol}
               </Link>
-              <span className="text-[10.5px] text-ink-faint">{p.theme}</span>
+              <span className="text-micro text-ink-muted">{p.theme}</span>
               {p.deflating && (
-                <span className="rounded bg-sky-50 px-1 text-[10px] font-semibold text-sky-800" title="IV rank ≥ 50 and falling over the last 5 days — short vega works with theta">
+                <span className="rounded bg-sky-50 px-1 text-micro font-semibold text-sky-800" title="IV rank ≥ 50 and falling over the last 5 days — short vega works with theta">
                   IV deflating
                 </span>
               )}
-              <span className="text-[13px] text-ink">{p.headline}</span>
-              <span className="tnum ml-auto text-[11px] text-ink-faint" title={p.parts.map((x) => `${x.label} ${x.value}`).join(" · ")}>
+              <span className="text-body text-ink">{p.headline}</span>
+              <span className="tnum ml-auto text-micro text-ink-muted" title={p.parts.map((x) => `${x.label} ${x.value}`).join(" · ")}>
                 fit {p.fit} ({p.parts.map((x) => `${x.label} ${x.value}`).join(" · ")})
               </span>
             </div>
             <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5">
               {p.reasons.map((why, i) => (
-                <li key={i} className="text-[11.5px] leading-snug text-ink-muted">
+                <li key={i} className="text-small leading-snug text-ink">
                   · {why}
                 </li>
               ))}
             </ul>
-            {p.caution && <p className="mt-1 text-[11.5px] leading-snug text-amber-700">Caution: {p.caution}</p>}
+            {p.caution && <p className="mt-1 text-small leading-snug text-amber-700">Caution: {p.caution}</p>}
           </div>
         ))}
         {brief.targets.length === 0 && (
-          <div className="bg-surface px-4 py-3 text-[13px] text-ink-muted">
+          <div className="bg-surface px-4 py-3 text-body text-ink">
             Nothing clears both the doctrine gates and your profile today. A day with no trade is a legitimate output; forcing
             one is how the worst cohorts in the record were written. The full stack, including near misses, is on{" "}
             <Link href="/short-call/candidates" className="underline">
@@ -640,7 +640,7 @@ export default async function RiskPage() {
           </div>
         )}
       </div>
-      <p className="mt-1.5 text-[11px] leading-snug text-ink-faint">
+      <p className="mt-1.5 text-small leading-snug text-ink-muted">
         Strikes, deltas and credits are Black-Scholes constructions from each underlying&rsquo;s ATM IV at the last ingest — check
         the chain before selling. Ranking is by gates cleared then credit, and is not advice.
       </p>
@@ -648,10 +648,10 @@ export default async function RiskPage() {
       {/* ── the book at a glance ─────────────────────────────────────────── */}
       <H2 id="glance" note={`${t.legs} short legs · ${t.symbols} names · ${t.callLegs} calls / ${t.putLegs} puts`}>Book at a glance</H2>
       <div className="mt-3 grid grid-cols-2 gap-px bg-line md:grid-cols-3 xl:grid-cols-6">
-        <Kpi label="Credit taken in" value={money(t.credit)} sub={`${money(t.costToClose)} to buy it all back today`} />
-        <Kpi label="Open P/L" value={signed(t.unrealized)} tone={pnlCls(t.unrealized)} sub={`${pct(t.capturedPct)} of the credit already earned`} />
-        <Kpi label="Theta / day" value={signed(t.netTheta)} tone="text-emerald-700" sub="what the book earns per calendar day if nothing moves" />
-        <Kpi
+        <Kpi big label="Credit taken in" value={money(t.credit)} sub={`${money(t.costToClose)} to buy it all back today`} />
+        <Kpi big label="Open P/L" value={signed(t.unrealized)} tone={pnlCls(t.unrealized)} sub={`${pct(t.capturedPct)} of the credit already earned`} />
+        <Kpi big label="Theta / day" value={signed(t.netTheta)} tone="text-emerald-700" sub="what the book earns per calendar day if nothing moves" />
+        <Kpi big
           label="Maint. margin"
           value={money(t.accountMaintMargin ?? t.maintMarginExtrapolated ?? t.maintMargin)}
           tone={(t.accountMarginPctOfNlv ?? t.marginPctOfNlvExtrapolated ?? 0) > MAX_MARGIN_PCT_NLV ? "text-rose-700" : "text-ink"}
@@ -663,8 +663,8 @@ export default async function RiskPage() {
                 }`
           }
         />
-        <Kpi label="Net Δ$" value={signed(t.netDeltaDollar)} tone={pnlCls(t.netDeltaDollar)} sub="share-equivalent exposure (short = negative)" />
-        <Kpi
+        <Kpi big label="Net Δ$" value={signed(t.netDeltaDollar)} tone={pnlCls(t.netDeltaDollar)} sub="share-equivalent exposure (short = negative)" />
+        <Kpi big
           label="Assignment notional"
           value={money(t.callNotional + t.putNotional)}
           sub={`calls ${money(t.callNotional)} · puts ${money(t.putNotional)}`}
@@ -724,7 +724,7 @@ export default async function RiskPage() {
       <H2 id="earnings" note={`${EARNINGS_IMMINENT_DAYS}d / ${EARNINGS_NEAR_DAYS}d buckets · soonest print first`}>
         Earnings before expiry
       </H2>
-      <p className="mt-2 max-w-4xl text-[12.5px] leading-relaxed text-ink-muted">
+      <p className="mt-2 max-w-4xl text-body leading-relaxed text-ink">
         The one risk the σ column cannot see: a gap is not drawn from the distribution IV describes, so a leg that is
         2σ away tonight can be through the strike tomorrow morning. § 2.6 of the short-call spec says don&rsquo;t sell over
         a print on a single stock unless the position is deliberately sized down — these are the ones already on the
@@ -733,7 +733,7 @@ export default async function RiskPage() {
         left after the gap: a print days before expiry means the gap decides the trade.
       </p>
       {e.legs === 0 ? (
-        <div className="mt-3 bg-surface px-4 py-3 text-[12px] leading-relaxed text-ink-muted">
+        <div className="mt-3 bg-surface px-4 py-3 text-body leading-relaxed text-ink">
           No leg in the book is held over an earnings print. {e.etfLegs > 0 ? <>{e.etfLegs} ETF leg(s) have none by construction. </> : null}
           {e.unknownLegs > 0 ? (
             <span className="text-amber-700">
@@ -764,23 +764,23 @@ export default async function RiskPage() {
             <div key={g.key} className="mt-4">
               <div className="mb-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-1">
                 <span
-                  className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${
+                  className={`rounded px-1.5 py-0.5 text-micro font-semibold ${
                     g.key === "This week" ? "bg-rose-50 text-rose-800" : g.key === "1–3 weeks" ? "bg-amber-50 text-amber-800" : "bg-line text-ink-muted"
                   }`}
                 >
                   {g.key}
                 </span>
-                <span className="tnum text-[11px] text-ink-faint">
+                <span className="tnum text-micro text-ink-muted">
                   {g.legs.length} leg{g.legs.length === 1 ? "" : "s"} · {g.symbols} name{g.symbols === 1 ? "" : "s"} · credit {money(g.credit)} · at risk{" "}
                   {money(g.atRisk)} · open P/L {signed(g.unrealized)}
                 </span>
-                <span className="text-[11px] text-ink-faint">— {g.hint}</span>
+                <span className="text-micro text-ink-muted">— {g.hint}</span>
               </div>
               <LegTable legs={g.legs} earnings />
             </div>
           ))}
           {e.unknownLegs > 0 && (
-            <p className="mt-1.5 text-[11px] leading-snug text-amber-700">
+            <p className="mt-1.5 text-small leading-snug text-amber-700">
               {e.unknownLegs} single-stock leg(s) carry no earnings date on file, so they are absent from these groups —
               missing data, not safety. Backfill with <code>scripts/backfill-earnings.ts</code>.
             </p>
@@ -791,16 +791,16 @@ export default async function RiskPage() {
       {/* ── shock ────────────────────────────────────────────────────────── */}
       <H2 id="shock" note="at-expiry intrinsic, every underlying moved by the same %, no IV/time effects">Parallel shock</H2>
       <div className="mt-3 overflow-x-auto bg-surface">
-        <table className="w-full min-w-[520px] border-collapse text-[12px]">
+        <table className="w-full min-w-[520px] border-collapse text-small">
           <thead>
-            <tr className="border-b border-line text-left text-[10px] uppercase tracking-wider text-ink-faint">
+            <tr className="border-b border-line text-left text-micro uppercase tracking-wider text-ink-muted">
               <th className="py-1.5 pl-3 pr-2 font-medium">Move</th>
               <th className="py-1.5 pr-2 text-right font-medium">Short calls</th>
               <th className="py-1.5 pr-2 text-right font-medium">Short puts</th>
               <th className="py-1.5 pr-3 text-right font-medium">Book P/L at expiry</th>
             </tr>
           </thead>
-          <tbody className="text-ink-muted">
+          <tbody className="text-ink">
             {r.shocks.map((s) => (
               <tr key={s.movePct} className="border-b border-line/50 last:border-0 hover:bg-canvas">
                 <td className="tnum py-1.5 pl-3 pr-2 text-ink">{`${s.movePct > 0 ? "+" : ""}${Math.round(s.movePct * 100)}%`}</td>
@@ -812,7 +812,7 @@ export default async function RiskPage() {
           </tbody>
         </table>
       </div>
-      <p className="mt-1.5 text-[11px] leading-snug text-ink-faint">
+      <p className="mt-1.5 text-small leading-snug text-ink-muted">
         Worst case in this grid: {`${worstShock.movePct > 0 ? "+" : ""}${Math.round(worstShock.movePct * 100)}%`} →{" "}
         <span className={pnlCls(worstShock.net)}>{signed(worstShock.net)}</span>. Both wings hold credit, so a shock that
         is bad for one side is cushioned by the other — the asymmetry between the two columns is the book&rsquo;s real
@@ -824,7 +824,7 @@ export default async function RiskPage() {
       <div className="mt-3">
         <SliceTable slices={r.byTheme} label="Theme" />
       </div>
-      <p className="mt-1.5 text-[11px] leading-snug text-ink-faint">
+      <p className="mt-1.5 text-small leading-snug text-ink-muted">
         Themes, not sectors, are the diversification that counts: SOXX (Info Tech), SOXL (Leveraged) and TSM (Off-Index)
         are three sector labels and one semiconductor bet. Sector HHI {num(c.hhiSector, 3)} vs theme HHI {num(c.hhiTheme, 3)}.
       </p>
@@ -866,10 +866,10 @@ export default async function RiskPage() {
       {r.verdicts.map((v) => (
         <div key={v.verdict} className="mt-3">
           <div className="mb-1.5 flex items-baseline gap-2">
-            <span className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${VERDICT_META[v.verdict].cls}`}>
+            <span className={`rounded px-1.5 py-0.5 text-micro font-semibold ${VERDICT_META[v.verdict].cls}`}>
               {VERDICT_META[v.verdict].label}
             </span>
-            <span className="tnum text-[11px] text-ink-faint">
+            <span className="tnum text-micro text-ink-muted">
               {v.legs.length} leg{v.legs.length === 1 ? "" : "s"} · credit {money(v.legs.reduce((a, l) => a + (l.credit ?? 0), 0))} · open P/L{" "}
               {signed(v.legs.reduce((a, l) => a + (l.unrealizedPnl ?? 0), 0))}
             </span>
@@ -880,7 +880,7 @@ export default async function RiskPage() {
 
       {/* ── what was excluded ────────────────────────────────────────────── */}
       <H2 id="excluded">Outside this analysis</H2>
-      <div className="mt-3 bg-surface px-4 py-3 text-[12px] leading-relaxed text-ink-muted">
+      <div className="mt-3 bg-surface px-4 py-3 text-body leading-relaxed text-ink">
         <div>
           <strong className="text-ink">{r.excluded.beyondHorizon}</strong> option leg(s) expire beyond {BOOK_HORIZON_DAYS} days,{" "}
           <strong className="text-ink">{r.excluded.longLegs}</strong> long leg(s) and{" "}
@@ -888,12 +888,12 @@ export default async function RiskPage() {
           short book inside the horizon.
         </div>
         {r.excluded.beyondHorizonDetail.length > 0 && (
-          <div className="mt-1 text-[11px] text-ink-faint">
+          <div className="mt-1 text-small text-ink-muted">
             Beyond horizon: {r.excluded.beyondHorizonDetail.map((e) => `${e.symbol} ${e.expiry} (${e.dte}d, ${e.qty})`).join(" · ")}
           </div>
         )}
         {t.marginCoverage < 1 && (
-          <div className="mt-1 text-[11px] text-amber-700">
+          <div className="mt-1 text-small text-amber-700">
             Margin is a floor: only {pct(t.marginCoverage)} of legs have a synced IB what-if. Run a{" "}
             <strong>Deep sync</strong> (extension) to price the rest.
           </div>
