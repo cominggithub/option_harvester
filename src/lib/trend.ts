@@ -120,3 +120,101 @@ export function computeTrend(
     windows,
   };
 }
+
+/**
+ * The 1–3 month read, as one verdict instead of six windows the reader has to combine.
+ *
+ * Two different measurements are deliberately kept side by side, because they disagree and
+ * the disagreement is the information. `ret` is the plain endpoint-to-endpoint move — what
+ * the eye sees on the chart. `label`/`r2` come from the OLS fit — whether the move was a
+ * *trend* or a round trip. A name that ends 1% lower after +15%/−16% has ret ≈ 0 and no
+ * trend, and for a short call those are not the same thing as a quiet 1% drift: the first
+ * one already proved it can travel.
+ *
+ * For this strategy the 1M/3M pair is the operative window: §2 sells 30–45 days, so 1M is
+ * roughly the life of the trade and 3M the regime it sits in.
+ */
+export type RecentTrend = {
+  m1: WindowTrend;
+  m3: WindowTrend;
+  ret1m: number | null; // net %, from the raw close series
+  ret3m: number | null;
+  /** "down" only when neither window is rising and at least one is a clean downtrend. */
+  verdict: "down" | "weak" | "flat" | "mixed" | "up" | null;
+  /** Whether the move is a clean trend (high R²) or a chop that merely ended lower. */
+  clean: boolean;
+  /** Travelled range over 3M, %: how far it has shown it can move regardless of direction. */
+  swing3m: number | null;
+  belowSma50: boolean | null;
+  belowSma200: boolean | null;
+  why: string;
+};
+
+const WEAK_SLOPE_PCT = -1; // sideways but drifting down by more than this = "weak" (陰跌)
+
+export function recentTrendRead(args: {
+  windows: TrendWindows | null;
+  ret1m: number | null;
+  ret3m: number | null;
+  sma50: number | null;
+  sma200: number | null;
+  price: number | null;
+  /** Raw closes for the swing measure (high−low over the window ÷ low). */
+  closes3m?: number[] | null;
+}): RecentTrend {
+  const { windows, ret1m, ret3m, sma50, sma200, price } = args;
+  const m1 = windows?.m1 ?? EMPTY;
+  const m3 = windows?.m3 ?? EMPTY;
+  const belowSma50 = price != null && sma50 != null ? price < sma50 : null;
+  const belowSma200 = price != null && sma200 != null ? price < sma200 : null;
+
+  const c = (args.closes3m ?? []).filter((x) => Number.isFinite(x) && x > 0);
+  const swing3m = c.length > 1 ? round((Math.max(...c) / Math.min(...c) - 1) * 100, 1) : null;
+
+  const labels = [m1.label, m3.label];
+  const anyUp = labels.includes("up");
+  const anyDown = labels.includes("down");
+  const clean = Math.max(m1.r2 ?? 0, m3.r2 ?? 0) >= R2_MIN;
+  const drifting = (m1.slopePct ?? 0) < WEAK_SLOPE_PCT || (m3.slopePct ?? 0) < WEAK_SLOPE_PCT;
+
+  const verdict: RecentTrend["verdict"] =
+    m1.label == null && m3.label == null
+      ? null
+      : anyUp && anyDown
+        ? "mixed"
+        : anyUp
+          ? "up"
+          : anyDown
+            ? "down"
+            : drifting
+              ? "weak"
+              : "flat";
+
+  const pieces: string[] = [];
+  if (ret1m != null) pieces.push(`1M ${ret1m >= 0 ? "+" : ""}${ret1m.toFixed(1)}%`);
+  if (ret3m != null) pieces.push(`3M ${ret3m >= 0 ? "+" : ""}${ret3m.toFixed(1)}%`);
+  const moves = pieces.join(", ");
+  const fit =
+    m3.r2 != null
+      ? m3.r2 >= 0.6
+        ? `a clean 3M trend (R² ${m3.r2.toFixed(2)})`
+        : m3.r2 >= R2_MIN
+          ? `a loose 3M trend (R² ${m3.r2.toFixed(2)})`
+          : `no real 3M trend (R² ${m3.r2.toFixed(2)} — it chopped)`
+      : "no 3M fit";
+
+  const why =
+    verdict == null
+      ? "Not enough daily history for a 1M/3M read."
+      : verdict === "up"
+        ? `Rising: ${moves} on ${fit}. Selling calls into this is what the trend gate refuses.`
+        : verdict === "mixed"
+          ? `Mixed: ${moves} — one window up and the other down on ${fit}. A turn either way is live.`
+          : verdict === "down"
+            ? `Falling: ${moves} on ${fit}.${swing3m != null ? ` It travelled ${swing3m.toFixed(0)}% top-to-bottom over 3M, so the drop is not proof of calm.` : ""}`
+            : verdict === "weak"
+              ? `Grinding down: ${moves}, no clean trend but the fit slopes down (1M ${m1.slopePct ?? "?"}%, 3M ${m3.slopePct ?? "?"}%) — the 陰跌 the doctrine prefers.`
+              : `Flat: ${moves} on ${fit}.${swing3m != null ? ` Range ${swing3m.toFixed(0)}% over 3M.` : ""}`;
+
+  return { m1, m3, ret1m, ret3m, verdict, clean, swing3m, belowSma50, belowSma200, why };
+}

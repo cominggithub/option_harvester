@@ -64,6 +64,11 @@ export type SecurityRow = {
   labels: string[]; // user-assigned tags (nc/np/value invest/…)
   autoLabels: string[]; // data-derived tags (low vol / bad option date / no option / price band)
   trend: TrendWindows | null;
+  // Moving averages from the same nightly trend pass. Already stored per ticker; surfaced
+  // because "below its own 50/200-day average" is the plainest statement of trend there is,
+  // and the detail page's 1–3 month read is weaker without it.
+  sma50: number | null;
+  sma200: number | null;
   spark: number[] | null; // downsampled ~1Y daily closes for the inline sparkline
   sparkRecent: number[] | null; // last ~10 raw daily closes (2wk) for the 1W/2W charts
   // Net (endpoint-to-endpoint) % move per window, from the raw close series — drives
@@ -368,6 +373,8 @@ export async function getDashboardData(): Promise<DashboardData> {
       labels: r.mark?.labels ?? [],
       autoLabels: [], // set below
       trend: (r.trend?.windows as TrendWindows | null) ?? null,
+      sma50: numOrNull(r.trend?.sma50),
+      sma200: numOrNull(r.trend?.sma200),
       spark: sparkMap.get(r.ticker)?.spark ?? null,
       sparkRecent: sparkMap.get(r.ticker)?.recent ?? null,
       trendRet: sparkMap.get(r.ticker)?.ret ?? null,
