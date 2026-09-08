@@ -68,13 +68,79 @@ async function fetchAllInPage() {
   };
 }
 
+// A failed read from IB and a failed POST to OUR OWN backend are opposite diagnoses,
+// but both used to surface as the same opaque `TypeError: Failed to fetch`. On
+// 2026-09-07 the backend host was powered off for 94 minutes; eight consecutive login
+// syncs died on the first POST, and the only clue in the log was that string — with no
+// URL, and nothing to distinguish "our server is down" from "IB refused us". Worse,
+// each one was counted as a failed IB login attempt (see checkIbLogin), so a local
+// outage burned the whole login-retry budget. This error type is how the two are told
+// apart: `backendDown` means the extension never got to talk to option_harvester, so
+// nothing about the IB session has been proven and nothing should be given up on.
+class BackendDown extends Error {
+  constructor(url, cause) {
+    super(`backend unreachable: ${cause} — ${url}`);
+    this.name = "BackendDown";
+    this.backendDown = true;
+    this.url = url;
+    this.cause_ = String(cause);
+  }
+}
+
 async function post(url, payload) {
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  return r.json();
+  let r;
+  try {
+    r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    throw new BackendDown(url, e); // host down / connection refused / DNS — not IB
+  }
+  try {
+    return await r.json();
+  } catch (e) {
+    // A restarting Next server answers 502/504 with HTML, which is the same condition
+    // as "down" from the caller's point of view. An OK response with unparseable body
+    // is a genuine backend bug, so it stays a normal error.
+    if (!r.ok) throw new BackendDown(url, `HTTP ${r.status}`);
+    return { error: `bad JSON from ${url}: ${e}` };
+  }
+}
+
+// GET counterpart. The op helpers used `fetch(...).catch(() => null)`, which turned a
+// dead backend into a plausible-looking domain answer ("no OH lists from backend",
+// "no held option positions") — a wrong diagnosis pinned on the data instead of the
+// network. Transport failures now propagate as BackendDown.
+async function getJson(url) {
+  let r;
+  try {
+    r = await fetch(url, { cache: "no-store" });
+  } catch (e) {
+    throw new BackendDown(url, e);
+  }
+  try {
+    return await r.json();
+  } catch (e) {
+    if (!r.ok) throw new BackendDown(url, `HTTP ${r.status}`);
+    return null;
+  }
+}
+
+// Swallow a step's failure into a result object WITHOUT losing the backend-down
+// distinction — runSync's per-step `.catch`es used `String(e)`, which flattened it away.
+const soft = (e) => (e?.backendDown ? { error: e.message, backendDown: true, failedUrl: e.url } : { error: String(e) });
+
+// Is option_harvester actually there? Deliberately cheap (one indexed row) and used to
+// avoid spending the once-per-login sync edge on a server that cannot receive it.
+async function backendUp(backend) {
+  try {
+    const r = await fetch(`${backend}/api/ext-log?limit=1`, { cache: "no-store" });
+    return r.ok;
+  } catch {
+    return false;
+  }
 }
 
 // ── Self-reporting → POST /api/ext-log ───────────────────────────────────────
@@ -85,12 +151,22 @@ async function post(url, payload) {
 // login-watcher decision is now reported with the extension's identity (runtime id +
 // manifest version), its chrome.storage state and its armed alarms, so the whole
 // picture is queryable with GET /api/ext-log.
+//
+// Also reported, so the service worker has no private failures left: uncaught errors,
+// unhandled rejections, and everything passed to console.error/warn (the SW console
+// dies with the worker and nobody has its devtools open). Each report carries
+// `clientAt` — its own clock — because reports are QUEUED while the backend is down and
+// the server's receipt time collapses an entire outage into one instant.
 const EXT_LOG_QUEUE = "extLogQueue";
-const EXT_LOG_QUEUE_MAX = 100; // bounded: diagnostics must never grow without limit
+// Bounded: diagnostics must never grow without limit. Sized for a real outage — the
+// 2026-09-07 backend downtime queued 86 reports before the server returned, so 100 was
+// one bad hour away from silently dropping the evidence of its own cause.
+const EXT_LOG_QUEUE_MAX = 400;
 // A login-watch tick fires every minute. Reporting each one verbatim would be ~1400
 // rows/day of "nothing changed", so identical outcomes are collapsed unless this long
 // has passed (keeps a heartbeat, drops the noise).
 const EXT_LOG_DEDUPE_MS = 15 * 60 * 1000;
+const EXT_LOG_DEDUPE_KEYS = 60; // bound the dedupe map itself
 
 const STATE_KEYS = [
   "backend",
@@ -130,6 +206,28 @@ async function extState() {
   return { ...s, alarms: await alarmSnapshot(), queued: (q[EXT_LOG_QUEUE] || []).length };
 }
 
+// When NO tab matched IB_URLS, the question is always the same: was the portal on a
+// domain this extension doesn't know about? IB has a dozen regional hosts and the
+// onUpdated trigger accepts any `interactivebrokers.<tld>`, while the tab query only
+// accepts six patterns — so a mismatch is possible and would look exactly like "no IB
+// tab". Report only the hostnames that look broker-ish: enough to spot a missing
+// pattern, without shipping the user's entire tab list to the server.
+async function ibLikeHosts() {
+  try {
+    const all = await chrome.tabs.query({});
+    const hosts = new Set();
+    for (const t of all) {
+      try {
+        const h = new URL(t.url || "").hostname;
+        if (/(^|\.)(ib|ibkr|interactivebrokers)|broker/i.test(h)) hosts.add(h);
+      } catch {}
+    }
+    return [...hosts];
+  } catch {
+    return null;
+  }
+}
+
 async function postOk(url, payload) {
   try {
     const r = await fetch(url, {
@@ -165,16 +263,44 @@ async function flushExtLog(backend, payload) {
 }
 
 // Best-effort: telemetry must never break a sync, so everything here is swallowed.
-async function report(event, { status, level, raw, dedupeKey } = {}) {
+//
+// Reports are SERIALIZED. Every one does a read-modify-write of the chrome.storage
+// queue, so two overlapping calls (an alarm tick and a mirrored console.error, say)
+// would each write back a queue missing the other's entry — losing exactly the reports
+// that arrive in a burst, which is when things are going wrong. A promise chain also
+// means nothing is dropped, unlike a re-entry flag.
+let reportChain = Promise.resolve();
+function report(event, opts) {
+  reportChain = reportChain.then(() => reportOnce(event, opts)).catch(() => {});
+  return reportChain;
+}
+
+async function reportOnce(event, { status, level, raw, dedupeKey } = {}) {
   try {
     const state = await extState();
     if (dedupeKey) {
+      // A MAP, not a single last-key: `status` and `login-watch` reports alternate every
+      // minute, so a one-slot memory was defeated by the alternation and neither was
+      // ever actually deduped (52 identical "no IB tab" rows/hour in the 09-07 log).
       const k = "extLogDedupe";
-      const prev = (await chrome.storage.local.get(k))[k] || {};
-      if (prev.key === dedupeKey && prev.at && Date.now() - Date.parse(prev.at) < EXT_LOG_DEDUPE_MS) return;
-      await chrome.storage.local.set({ [k]: { key: dedupeKey, at: new Date().toISOString() } });
+      const seen = (await chrome.storage.local.get(k))[k] || {};
+      const prev = seen[dedupeKey];
+      if (prev && Date.now() - Date.parse(prev) < EXT_LOG_DEDUPE_MS) return;
+      seen[dedupeKey] = new Date().toISOString();
+      const keys = Object.keys(seen);
+      if (keys.length > EXT_LOG_DEDUPE_KEYS) {
+        keys
+          .sort((a, b) => Date.parse(seen[a]) - Date.parse(seen[b]))
+          .slice(0, keys.length - EXT_LOG_DEDUPE_KEYS)
+          .forEach((x) => delete seen[x]);
+      }
+      await chrome.storage.local.set({ [k]: seen });
     }
     await flushExtLog(state.backend || DEFAULT_BACKEND, {
+      // The extension's own clock. `at` on the server is RECEIPT time, and a queued
+      // report can be delivered an hour late — without this, an outage's whole timeline
+      // collapses into the single instant the backend came back.
+      clientAt: new Date().toISOString(),
       extId: chrome.runtime?.id ?? null,
       version: chrome.runtime.getManifest?.()?.version ?? null,
       event,
@@ -184,6 +310,54 @@ async function report(event, { status, level, raw, dedupeKey } = {}) {
       raw: raw ?? null,
     });
   } catch {}
+}
+
+// Mirroring console.error through `report` could re-enter if anything in the reporting
+// path itself logged; this guard makes that impossible without silencing real reports.
+let mirroring = false;
+
+// ── Everything the worker says reaches the backend ───────────────────────────
+// An MV3 service worker's console lives in a devtools window nobody has open and dies
+// with the worker, so an uncaught throw inside an alarm handler left no trace anywhere —
+// not in the popup, not on the server. Mirror uncaught errors, unhandled rejections and
+// console.error/warn into the same queued channel as everything else.
+self.addEventListener("error", (e) => {
+  report("exception", {
+    level: "error",
+    status: `uncaught: ${e?.message || e?.error?.message || "error"}`,
+    raw: { message: String(e?.message ?? ""), file: e?.filename ?? null, line: e?.lineno ?? null, stack: e?.error?.stack ?? null },
+  });
+});
+self.addEventListener("unhandledrejection", (e) => {
+  const r = e?.reason;
+  report("exception", {
+    level: "error",
+    status: `unhandled rejection: ${r?.message ?? r}`,
+    raw: { message: String(r?.message ?? r), stack: r?.stack ?? null, backendDown: !!r?.backendDown, url: r?.url ?? null },
+  });
+});
+for (const lvl of ["error", "warn"]) {
+  const orig = console[lvl].bind(console);
+  console[lvl] = (...args) => {
+    orig(...args);
+    if (mirroring) return;
+    mirroring = true;
+    const line = args
+      .map((a) => {
+        if (a instanceof Error) return `${a.message}\n${a.stack || ""}`;
+        if (typeof a === "string") return a;
+        try {
+          return JSON.stringify(a);
+        } catch {
+          return String(a);
+        }
+      })
+      .join(" ");
+    // Deduped on a prefix: a repeating console error would otherwise be its own flood.
+    report("console", { level: lvl, status: line.slice(0, 2000), dedupeKey: `console:${line.slice(0, 120)}` }).finally(() => {
+      mirroring = false;
+    });
+  };
 }
 
 // Find an IB tab to run the fetch in (prefer the active one).
@@ -234,6 +408,17 @@ async function tabInForeground(tab) {
 // `withGreeks`: true = always, false = never, "foreground" = only while the IB tab is
 // the one on screen (auto + login use this — see tabInForeground).
 async function runSync(backend, { preferActive, source, withGreeks, tabId } = {}, onProgress) {
+  try {
+    return await runSyncInner(backend, { preferActive, source, withGreeks, tabId }, onProgress);
+  } catch (e) {
+    // Our backend never answered. Say so explicitly and flag it, so the login watcher
+    // does not mistake a local outage for a gated IB session (see checkIbLogin).
+    if (e?.backendDown) return { error: e.message, backendDown: true, failedUrl: e.url };
+    throw e;
+  }
+}
+
+async function runSyncInner(backend, { preferActive, source, withGreeks, tabId } = {}, onProgress) {
   const p = (m) => onProgress?.(m);
   p("reading IB");
   const tab = (await useTab(tabId)) || (await findIbTab(preferActive));
@@ -247,7 +432,7 @@ async function runSync(backend, { preferActive, source, withGreeks, tabId } = {}
   if (d.ibPositions?.length) out.positions = await post(`${backend}/api/positions`, { ibPositions: d.ibPositions, source: "ib-extension" });
   // Daily account-balance snapshot (cash / NLV / margin). Posted after positions so
   // the stock-vs-option value split reflects the fresh book. Light (one summary).
-  if (d.ibSummary) out.balances = await post(`${backend}/api/balances`, { summary: d.ibSummary, acct: d.acct }).catch((e) => ({ error: String(e) }));
+  if (d.ibSummary) out.balances = await post(`${backend}/api/balances`, { summary: d.ibSummary, acct: d.acct }).catch(soft);
   if (d.ibOrders != null) out.orders = await post(`${backend}/api/orders`, { ibOrders: d.ibOrders });
   if (d.ibTrades?.length) out.trades = await post(`${backend}/api/trades`, { ibTrades: d.ibTrades });
   if (d.ibWatchlists?.length) out.watchlists = await post(`${backend}/api/watchlist`, { ibWatchlists: d.ibWatchlists });
@@ -265,7 +450,7 @@ async function runSync(backend, { preferActive, source, withGreeks, tabId } = {}
     const allowed = withGreeks === true || (await tabInForeground(tab));
     if (allowed) {
       p("greeks");
-      out.greeks = await getGreeks(backend, p, tab.id).catch((e) => ({ error: String(e) }));
+      out.greeks = await getGreeks(backend, p, tab.id).catch(soft);
     } else {
       out.greeksSkipped = "IB tab not in front — greeks not re-measured";
     }
@@ -274,13 +459,19 @@ async function runSync(backend, { preferActive, source, withGreeks, tabId } = {}
   // lists (Cpos/Ppos/NCcan) reflect the fresh snapshot. Failure here doesn't fail
   // the pull.
   p("OH push");
-  out.ohPush = await pushOhWatchlists(backend).catch((e) => ({ error: String(e) }));
+  out.ohPush = await pushOhWatchlists(backend).catch(soft);
   // Read-back verification: re-fetch the OH:* lists from IB and diff their conids
   // against the intended payload (surfaced on /sync). Only meaningful if the push
   // ran; light (a few GETs). Non-fatal.
   if (out.ohPush && !out.ohPush.error) {
     p("OH verify");
-    out.ohVerify = await verifyOhWatchlists(backend).catch((e) => ({ error: String(e) }));
+    out.ohVerify = await verifyOhWatchlists(backend).catch(soft);
+  }
+  // A step swallowed by `soft` above may have been a backend outage rather than a real
+  // per-step failure; surface that at the top level so the caller sees it.
+  if (Object.values(out).some((v) => v && typeof v === "object" && v.backendDown)) {
+    out.backendDown = true;
+    out.failedUrl = Object.values(out).find((v) => v && typeof v === "object" && v.failedUrl)?.failedUrl ?? null;
   }
   // Record this run in the sync-log history (non-fatal).
   await post(`${backend}/api/sync-log`, { summary: out, source: source || "auto" }).catch(() => {});
@@ -301,27 +492,30 @@ async function runDeep(backend, { source } = {}, onProgress) {
   const out = {};
   // Per-position greeks (Δ/Θ/Γ) for held options.
   p("greeks");
-  out.greeks = await getGreeks(backend, p, tab.id).catch((e) => ({ error: String(e) }));
+  out.greeks = await getGreeks(backend, p, tab.id).catch(soft);
   // Exact per-position maintenance margin via what-if.
   p("margin");
-  out.margins = await getMargins(backend, p).catch((e) => ({ error: String(e) }));
+  out.margins = await getMargins(backend, p).catch(soft);
   // Resolve & VALIDATE underlying conids for held option-only names first. A validated
   // underlying is pinned (source ib-option); a mis-resolved one (symbol ≠ ticker) is
   // rejected and its stale pin dropped — so the /trsrv re-resolve below can correct it
   // by name in the SAME run.
   p("underlyings");
-  out.underlyings = await resolveUnderlyings(backend).catch((e) => ({ error: String(e) }));
+  out.underlyings = await resolveUnderlyings(backend).catch(soft);
   // Re-resolve conids from IB (name-matched), so corporate actions (spinoffs/renames)
   // and any pin dropped just above self-correct. Skips pinned tickers. Heavy (~600).
   p("conids (re-resolve, ~30s)");
-  out.conids = await resolveConids(backend, { all: true }).catch((e) => ({ error: String(e) }));
+  out.conids = await resolveConids(backend, { all: true }).catch(soft);
   // Conids/underlyings may have changed the OH lists — re-push and verify.
   p("OH push");
-  out.ohPush = await pushOhWatchlists(backend).catch((e) => ({ error: String(e) }));
+  out.ohPush = await pushOhWatchlists(backend).catch(soft);
   if (out.ohPush && !out.ohPush.error) {
     p("OH verify");
-    out.ohVerify = await verifyOhWatchlists(backend).catch((e) => ({ error: String(e) }));
+    out.ohVerify = await verifyOhWatchlists(backend).catch(soft);
   }
+  // Same as runSync: a step swallowed above may have been our backend going away, not a
+  // per-step failure. Surface it rather than letting it read as six unrelated errors.
+  if (Object.values(out).some((v) => v && typeof v === "object" && v.backendDown)) out.backendDown = true;
   await post(`${backend}/api/sync-log`, { summary: out, source: source || "deep" }).catch(() => {});
   return out;
 }
@@ -331,12 +525,20 @@ async function setStatus(text) {
   // Mirror it to the backend. Written to storage first, so the reported `state`
   // carries this line rather than the previous one.
   const t = String(text || "");
-  const level = /✕|error|failed|gave up|no IB tab|not logged in/i.test(t)
-    ? "error"
-    : /⚠|waiting|rejected|mismatch/i.test(t)
-      ? "warn"
+  // Order matters: "login sync waiting: no IB tab" used to be classified `error` because
+  // /no IB tab/ matched first, which made a benign idle state (no portal tab open, so
+  // nothing to do) the loudest thing in the log — 52 error rows an hour. A line that says
+  // it is *waiting* is a warning at most, whatever it is waiting for.
+  const waiting = /^(login sync waiting|waiting for)\b/i.test(t);
+  const level = waiting || /⚠|rejected|mismatch/i.test(t)
+    ? "warn"
+    : /✕|error|failed|gave up|no IB tab|not logged in/i.test(t)
+      ? "error"
       : "info";
-  await report("status", { status: t, level });
+  // Waiting lines are re-emitted by the 1-minute watcher for as long as the condition
+  // lasts, so they are deduped down to a 15-minute heartbeat. Real outcomes are never
+  // deduped — two identical sync results are two facts.
+  await report("status", { status: t, level, dedupeKey: waiting ? `status:${t}` : undefined });
 }
 
 // A background op is running. Persisted so the popup — which is torn down whenever
@@ -426,7 +628,7 @@ async function handle(label, fn, formatter, reply) {
 // still lack a conid, resolves them in the logged-in IB page via /trsrv/stocks
 // (batched + throttled), and posts the raw response back for server-side parsing.
 async function resolveConids(backend, { all } = {}) {
-  const info = await (await fetch(`${backend}/api/securities/conids${all ? "?all=1" : ""}`)).json().catch(() => null);
+  const info = await getJson(`${backend}/api/securities/conids${all ? "?all=1" : ""}`);
   const missing = info?.tickers ?? [];
   if (!missing.length) return { updated: 0, have: info?.have, remaining: 0 };
 
@@ -534,7 +736,7 @@ async function fetchOptionInPage(conid, ticker) {
 // one at a time in the logged-in IB page, then post to /api/options.
 async function getOptions(backend, tickers, onProgress) {
   const qs = tickers && tickers.length ? `?tickers=${encodeURIComponent(tickers.join(","))}` : "";
-  const targets = await (await fetch(`${backend}/api/options${qs}`)).json().catch(() => null);
+  const targets = await getJson(`${backend}/api/options${qs}`);
   if (!Array.isArray(targets) || !targets.length) return { error: "no tickers with a conid (resolve conids first?)" };
 
   const tab = await findIbTab(false);
@@ -595,7 +797,7 @@ async function fetchGreeksBatchInPage(conids) {
 // chunk — far faster than one contract at a time), then post to /api/greeks.
 // `tabId` pins it to the tab the caller already validated (see runSync).
 async function getGreeks(backend, onProgress, tabId) {
-  const targets = await (await fetch(`${backend}/api/greeks`)).json().catch(() => null);
+  const targets = await getJson(`${backend}/api/greeks`);
   if (!Array.isArray(targets) || !targets.length) return { error: "no held option positions (sync positions first?)" };
 
   const tab = (await useTab(tabId)) || (await findIbTab(false));
@@ -651,7 +853,7 @@ async function fetchMarginInPage(acct, conid, side, quantity) {
 // (with the closing side/qty), what-if each in the logged-in IB page, then post to
 // /api/margin.
 async function getMargins(backend, onProgress) {
-  const targets = await (await fetch(`${backend}/api/margin`)).json().catch(() => null);
+  const targets = await getJson(`${backend}/api/margin`);
   if (!Array.isArray(targets) || !targets.length) return { error: "no held option positions (sync positions first?)" };
 
   const tab = await findIbTab(false);
@@ -693,7 +895,7 @@ async function getMargins(backend, onProgress) {
 // the logged-in IB account. IB has no in-place edit, so each list is delete +
 // recreate. Only touches "OH:"-prefixed lists — never the user's own lists.
 async function pushOhWatchlists(backend) {
-  const data = await (await fetch(`${backend}/api/oh-watchlists`)).json().catch(() => null);
+  const data = await getJson(`${backend}/api/oh-watchlists`);
   const lists = data?.lists;
   if (!Array.isArray(lists) || !lists.length) return { error: "no OH lists from backend" };
 
@@ -988,7 +1190,7 @@ async function fetchUnderlyingsInPage(items) {
 // "ib-option"): ask the backend which held-option tickers to resolve, fetch each
 // underlying in the IB page, then POST them back. Non-fatal.
 async function resolveUnderlyings(backend) {
-  const items = await (await fetch(`${backend}/api/underlying-conids`)).json().catch(() => null);
+  const items = await getJson(`${backend}/api/underlying-conids`);
   if (!Array.isArray(items) || !items.length) return { pinned: 0, tried: 0 };
 
   const tab = await findIbTab(false);
@@ -1059,6 +1261,11 @@ async function loginSync(tabId) {
   if (st.lastLoginSyncAt && Date.now() - Date.parse(st.lastLoginSyncAt) < LOGIN_SYNC_COOLDOWN_MS) return { skipped: "cooldown" };
 
   const backend = st.backend || DEFAULT_BACKEND;
+  // Preflight. The login edge is spendable once per login, so it must not be spent on a
+  // server that cannot receive the data: on 2026-09-07 the backend host was powered off
+  // and eight attempts read the whole book from IB only to die on the first POST. Checked
+  // BEFORE `lastLoginSyncAt` is stamped, so the 10-minute cooldown isn't burned either.
+  if (!(await backendUp(backend))) return { backendDown: true, backend };
   await chrome.storage.local.set({ lastLoginSyncAt: new Date().toISOString() });
   await setBusy("Syncing (IB login)");
   const hb = startHeartbeat();
@@ -1074,7 +1281,10 @@ async function loginSync(tabId) {
   // runSync only logs runs that got as far as posting data, so a login attempt that
   // died early (no usable tab, IB fetch refused) left NO trace in /sync history — the
   // popup's transient status line was the only evidence. Record it.
-  if (r.error) await post(`${backend}/api/sync-log`, { summary: r, source: "login" }).catch(() => {});
+  if (r.error && !r.backendDown) await post(`${backend}/api/sync-log`, { summary: r, source: "login" }).catch(() => {});
+  // The backend went away mid-run (it was up at preflight). Same verdict as the
+  // preflight: this proves nothing about IB, so the login edge stays unspent.
+  if (r.backendDown) return { backendDown: true, backend, result: r };
   // Productive = IB answered with an account AND the OH push got every list in. A
   // read-only / half-open session typically reads fine but fails the watchlist POSTs.
   const pushOk = !r.ohPush?.error && (r.ohPush?.total == null || r.ohPush.pushed === r.ohPush.total);
@@ -1093,6 +1303,11 @@ async function loginSync(tabId) {
 // in both cases `ibAuthed` stays false and the cooldown is cleared, so the 1-minute
 // watcher tries again, up to LOGIN_SYNC_MAX_TRIES times per login. Without that, one
 // premature attempt would mark the login "handled" and nothing would sync at all.
+//
+// The budget covers IB-SIDE gating only. Anything that stops us reaching our own
+// backend (host down, restart, laptop off the network) is charged to nothing — see the
+// `backendDown` branch in checkIbLogin — because it says nothing about the IB session
+// and would otherwise exhaust all 8 tries during a routine server restart.
 const LOGIN_SYNC_MAX_TRIES = 8; // ≈8 minutes of retries at the 1-min watcher cadence
 // Giving up used to be permanent for the session (`ibAuthed` was pinned true), so the
 // only way back was a manual Sync now or a real logout — the "gave up after 8 tries"
@@ -1137,10 +1352,11 @@ async function checkIbLogin() {
       // A ready → not-ready flip is a logout: give the next login a fresh budget.
       await chrome.storage.local.set({ ibAuthed: false, ...(ibAuthed === true ? { loginTries: 0 } : {}) });
       if ((loginTries ?? 0) > 0 && (loginTries ?? 0) < LOGIN_SYNC_MAX_TRIES) await setStatus(`login sync waiting: ${reason}`);
+      const hosts = tabs.length ? null : await ibLikeHosts();
       await report("login-watch", {
         level: "info",
         status: `not ready: ${reason}`,
-        raw: { ready: false, reason, ibTabs: tabs.length, wasAuthed: ibAuthed === true },
+        raw: { ready: false, reason, ibTabs: tabs.length, wasAuthed: ibAuthed === true, ibLikeHosts: hosts },
         dedupeKey: `notready:${reason}:${tabs.length}`,
       });
       return;
@@ -1182,6 +1398,31 @@ async function checkIbLogin() {
         status: `login sync skipped: ${out.skipped}`,
         raw: { skipped: out.skipped },
         dedupeKey: `skip:${out.skipped}`,
+      });
+      return;
+    }
+    // OUR backend is unreachable. This is the failure that broke sync-on-login on
+    // 2026-09-07: the host was powered off for 94 minutes, so all 8 attempts died on
+    // the first POST, each counted as a failed IB login attempt, the budget ran out,
+    // `loginGaveUpAt` was set — and by the time the server came back the IB tab was
+    // closed, so the edge was gone. It is not an IB failure and proves nothing about the
+    // session: leave the edge unspent, clear the cooldown, and let the 1-minute watcher
+    // keep trying for as long as the user stays logged in.
+    if (out?.backendDown) {
+      await chrome.storage.local.set({ ibAuthed: false });
+      await chrome.storage.local.remove(["lastLoginSyncAt"]);
+      await setStatus(`waiting for option_harvester backend (${out.backend || "backend"}) — will sync when it answers`);
+      await report("backend-unreachable", {
+        level: "error",
+        status: `login sync blocked: backend unreachable at ${out.backend || "?"}`,
+        raw: {
+          backend: out.backend ?? null,
+          failedUrl: out.result?.failedUrl ?? null,
+          error: out.result?.error ?? "preflight failed",
+          stage: out.result ? "mid-run" : "preflight",
+          triesUnspent: loginTries ?? 0,
+        },
+        dedupeKey: `backend-down:${out.backend || "?"}`,
       });
       return;
     }
@@ -1233,7 +1474,7 @@ chrome.alarms.onAlarm.addListener(async (a) => {
   await report("alarm", { status: "auto-sync alarm fired" });
   await setBusy("Auto-syncing");
   const hb = startHeartbeat();
-  const r = await runSync(backend || DEFAULT_BACKEND, { preferActive: false, source: "auto", withGreeks: "foreground" }).catch((e) => ({ error: String(e) }));
+  const r = await runSync(backend || DEFAULT_BACKEND, { preferActive: false, source: "auto", withGreeks: "foreground" }).catch(soft);
   clearInterval(hb);
   try {
     await setStatus(r.error ? `auto: ${r.error}` : `auto ✓ ${summary(r)}`);

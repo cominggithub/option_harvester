@@ -290,7 +290,12 @@ function ExtConditionPanel({ ext, f }: { ext: ExtCondition | null; f: BookFreshn
         <strong className="text-[12.5px] font-semibold">
           The IB book is {f.positionsAgeH != null ? `${Math.round(f.positionsAgeH / 24)}d old` : "not synced"} — nothing has pulled it in
         </strong>
-        {ext && <span className="tnum text-[11px]">extension {ext.version ?? "?"} · last reported {ago(ext.at)}</span>}
+        {ext && (
+          <span className="tnum text-[11px]">
+            extension {ext.version ?? "?"} · last reported {ago(ext.at)}
+            {ext.deliveredAt ? ` (queued, delivered ${ago(ext.deliveredAt)})` : ""}
+          </span>
+        )}
       </div>
       {ext ? (
         <>
@@ -305,6 +310,15 @@ function ExtConditionPanel({ ext, f }: { ext: ExtCondition | null; f: BookFreshn
               <span className="rounded bg-white/60 px-1.5 py-0.5 text-[10px]">armed: {ext.alarms.join(", ")}</span>
             )}
           </div>
+          {/* The extension reached IB but not us — the sync never had a chance to run,
+              and no amount of clicking Sync now in the popup will help until the server
+              is up. Said first, because it invalidates every other reading below. */}
+          {ext.backendDown && (
+            <p className="mt-1.5 rounded bg-rose-100 px-2 py-1 text-rose-900">
+              <strong>The extension could not reach this server.</strong> {ext.backendDown} — the sync was blocked
+              before it started, not refused by IB. It retries every minute on its own once the server answers.
+            </p>
+          )}
           <p className="mt-1.5">
             Its last word: <span className="font-medium">{ext.reason ?? ext.status ?? "—"}</span>
             {ext.autoOn === false ? " Auto-sync is off, so nothing will run on a timer." : ""}

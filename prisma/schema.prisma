@@ -497,17 +497,25 @@ model AccountBalance {
 /// read it out. Complements SyncRun: that logs sync *runs*, this logs the
 /// extension's own lifecycle, including runs that die before they post anything.
 model ExtLog {
-  id      Int      @id @default(autoincrement())
-  at      DateTime @default(now())
-  extId   String?  @map("ext_id") // chrome.runtime.id — which install is talking
-  version String? // manifest version, so stale installs are obvious
-  event   String   @default("status") // "status" | "login-watch" | "alarm" | "rearm" | …
-  level   String   @default("info") // "info" | "warn" | "error"
-  status  String? // human-readable line, mirrors the popup's log
-  state   Json? // chrome.storage snapshot (flags, counters, timestamps)
-  raw     Json? // event-specific payload (probe reasons, per-tab results, …)
+  id Int @id @default(autoincrement())
+  at DateTime @default(now()) // when the BACKEND received it
+  // When the extension GENERATED it. These diverge: undelivered reports are queued in
+  // chrome.storage and flushed when the backend returns, so `at` collapses a whole
+  // outage into one instant. On 2026-09-07 twenty-six reports spanning 09:03–10:17 CST
+  // all landed at 10:20:02 — the timeline of the failure was only recoverable by
+  // reading timestamps back out of the `state` blob. This column is that timeline.
+  // Client-supplied, so sanity-bounded on write and never trusted for ordering alone.
+  clientAt DateTime? @map("client_at")
+  extId    String?   @map("ext_id") // chrome.runtime.id — which install is talking
+  version  String? // manifest version, so stale installs are obvious
+  event    String    @default("status") // "status" | "login-watch" | "backend-unreachable" | "exception" | …
+  level    String    @default("info") // "info" | "warn" | "error"
+  status   String? // human-readable line, mirrors the popup's log
+  state    Json? // chrome.storage snapshot (flags, counters, timestamps)
+  raw      Json? // event-specific payload (probe reasons, failing URL, stacks, …)
 
   @@index([at])
   @@index([event])
+  @@index([clientAt])
   @@map("option_harvest_ext_logs")
 }

@@ -9,8 +9,13 @@ import { prisma } from "@/lib/db";
 // diagnostics. `runSync` also returns before its /api/sync-log POST on early errors,
 // so those attempts left no trace at all; this route is where they land.
 //
-// POST { extId, version, event, level, status, state, raw }  → { ok, id }
-// GET  ?limit=50&event=login-watch&sinceMin=120               → { count, rows }
+// POST { clientAt, extId, version, event, level, status, state, raw }  → { ok, id }
+// GET  ?limit=50&event=login-watch&level=error&contains=fetch&sinceMin=120&order=client
+//                                                             → { count, rows }
+//
+// `clientAt` matters: reports are queued client-side while the backend is unreachable,
+// so receipt order (`at`) can bunch an entire outage into one second. Ask for
+// `order=client` when reconstructing what happened and when.
 //
 // NOTE: like the project's other write routes (/api/positions, /api/sync-log, …)
 // this endpoint is UNAUTHENTICATED and prod listens outside the NAT, so anything
@@ -38,6 +43,22 @@ function obj(v: unknown): object | undefined {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as object) : undefined;
 }
 
+// The extension's own clock, bounded. Reports are QUEUED while the backend is
+// unreachable and flushed on the next success, so `at` (receipt) can be an hour or
+// more after the event — `clientAt` is what makes the failure timeline readable. It
+// comes from an untrusted client clock, so anything implausible (far future, ancient)
+// is dropped rather than stored as fact.
+const CLIENT_AT_SKEW_MS = 5 * 60_000;
+const CLIENT_AT_MAX_AGE_MS = 30 * 86400_000;
+function when(v: unknown): Date | undefined {
+  if (typeof v !== "string") return undefined;
+  const t = Date.parse(v);
+  if (!Number.isFinite(t)) return undefined;
+  const now = Date.now();
+  if (t > now + CLIENT_AT_SKEW_MS || t < now - CLIENT_AT_MAX_AGE_MS) return undefined;
+  return new Date(t);
+}
+
 export async function POST(req: Request) {
   let body: Record<string, unknown>;
   try {
@@ -52,6 +73,7 @@ export async function POST(req: Request) {
   try {
     const row = await prisma.extLog.create({
       data: {
+        clientAt: when(body.clientAt),
         extId: str(body.extId, 128),
         version: str(body.version, 32),
         event: str(body.event, 64) ?? "status",
@@ -76,18 +98,24 @@ export async function GET(req: Request) {
   const limit = Math.min(Math.max(Number(q.get("limit")) || 50, 1), 500);
   const event = q.get("event");
   const level = q.get("level");
+  const contains = q.get("contains");
   const sinceMin = Number(q.get("sinceMin"));
+  // Default order is receipt time (what actually arrived, and always populated).
+  // `?order=client` re-orders by the extension's own clock, which is the one that
+  // reconstructs a failure that was queued through a backend outage.
+  const byClient = q.get("order") === "client";
 
   try {
     const rows = await prisma.extLog.findMany({
       where: {
         ...(event ? { event } : {}),
         ...(level ? { level } : {}),
+        ...(contains ? { status: { contains, mode: "insensitive" as const } } : {}),
         ...(Number.isFinite(sinceMin) && sinceMin > 0
           ? { at: { gte: new Date(Date.now() - sinceMin * 60_000) } }
           : {}),
       },
-      orderBy: { at: "desc" },
+      orderBy: byClient ? [{ clientAt: { sort: "desc", nulls: "last" } }, { at: "desc" }] : { at: "desc" },
       take: limit,
     });
     return Response.json({ count: rows.length, rows });

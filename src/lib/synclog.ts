@@ -63,7 +63,8 @@ const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
  * Diagnostics only, and NOT trusted: `state` is whatever the extension sent.
  */
 export type ExtCondition = {
-  at: string; // ISO of the extension's last report
+  at: string; // ISO of the extension's last report — its own clock where it sent one
+  deliveredAt: string | null; // when the backend received it, if it differs (queued)
   version: string | null;
   event: string | null;
   level: string | null;
@@ -76,23 +77,44 @@ export type ExtCondition = {
   reason: string | null; // why the last login-watch probe said "not ready"
   alarms: string[]; // alarm names actually armed
   lastSyncAt: string | null; // its own record of the last login sync
+  backendDown: string | null; // it could not reach US — the sync never got to happen
 };
 
 export async function getExtCondition(): Promise<ExtCondition | null> {
   const rows = await prisma.extLog
-    .findMany({ orderBy: { at: "desc" }, take: 40 })
-    .catch(() => [] as { at: Date; version: string | null; event: string | null; level: string | null; status: string | null; state: unknown; raw: unknown }[]);
+    .findMany({ orderBy: { at: "desc" }, take: 60 })
+    .catch(
+      () =>
+        [] as {
+          at: Date;
+          clientAt: Date | null;
+          version: string | null;
+          event: string | null;
+          level: string | null;
+          status: string | null;
+          state: unknown;
+          raw: unknown;
+        }[],
+    );
   if (!rows.length) return null;
   const latest = rows[0];
   // The newest row carries the state; the newest login-watch row carries the reason.
   const watch = rows.find((r) => r.event === "login-watch");
+  // "It couldn't reach us" is a different diagnosis from every other reason and must not
+  // be hidden behind a stale login-watch line: the whole 2026-09-07 failure was the
+  // extension working perfectly against a backend that was switched off.
+  const down = rows.find((r) => r.event === "backend-unreachable");
   const st = (latest.state ?? {}) as Record<string, unknown>;
   const raw = (watch?.raw ?? {}) as Record<string, unknown>;
   const bool = (v: unknown): boolean | null => (typeof v === "boolean" ? v : null);
   const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
   const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
+  // Prefer the extension's own clock: a report queued through an outage is received long
+  // after the event, so `at` alone would claim it "just reported".
+  const eventAt = latest.clientAt ?? latest.at;
   return {
-    at: latest.at.toISOString(),
+    at: eventAt.toISOString(),
+    deliveredAt: latest.clientAt && latest.at.getTime() - latest.clientAt.getTime() > 60_000 ? latest.at.toISOString() : null,
     version: latest.version ?? null,
     event: latest.event ?? null,
     level: latest.level ?? null,
@@ -107,6 +129,7 @@ export async function getExtCondition(): Promise<ExtCondition | null> {
       ? (st.alarms as { name?: unknown }[]).map((a) => String(a?.name ?? "")).filter(Boolean)
       : [],
     lastSyncAt: str(st.lastLoginSyncAt),
+    backendDown: down ? (str(down.status) ?? "the extension could not reach this server") : null,
   };
 }
 
