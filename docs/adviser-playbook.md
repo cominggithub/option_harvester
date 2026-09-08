@@ -159,7 +159,10 @@ Method — build the matrix, don't assume it:
    (`src/app/*/page.tsx`, `src/components/*.tsx`). Read the code; do not infer from docs.
    The current surfaces are `/risk` and the eight `/short-call/*` pages (Scorecard,
    Lifecycle, Loss lab, Open book, What to sell, Timeline, Cohorts, Strategy), plus `/`,
-   `/watchlists`, `/pnl-predict`, `/positions`.
+   `/watchlists`, `/pnl-predict`, `/positions`. On `/risk`, **Liquidity cushion** (the
+   `CUSHION_THIN` / `CUSHION_CRITICAL` ladder, `lib/cushion.ts`) and **Concentration** (the
+   theme/sector pies) landed 2026-09-07 from `docs/proposals/`; both are rendered
+   unconditionally, which is the point — see § 5's rule about numbers that vanish when healthy.
 3. Classify: **computed + shown** / **computed but not shown** / **not computed** /
    **shown but stale or unprovenanced**.
 4. Only then propose changes, cheapest-first.
@@ -178,6 +181,15 @@ What good presentation looks like here:
 * **Stored vs derived is a deliberate choice.** `cc_scores` is stored so the displayed
   number equals the frozen prediction used for validation; Harvester is derived at read
   time. Keep proposals consistent with that split and say which side a new number is on.
+* **Rendered unconditionally, or it is not a surface.** A number that only appears inside a
+  finding disappears exactly when the book is healthy — i.e. when it governs how much new risk
+  may be opened. The cushion was visible only inside `R-MARGIN`/`R-CUSHION` until 2026-09-07.
+* **State the denominator, and check the identity.** `excess liquidity ÷ NLV` has a cash-based
+  numerator and an NLV denominator; the two move independently, and IB's own field does the same
+  thing. Print both bases rather than picking one.
+* **Say which weighting, because it changes the ranking.** Credit share and assignment notional
+  rank the book differently — short calls are 19.9% of credit and 53.2% of notional (2026-09-07)
+  — so any chart defaults to the basis its own gate uses, and names the other one on the face.
 * **Never add a number without stating what decision changes because of it.**
 
 ## 6. Output contract
@@ -212,6 +224,101 @@ memory — protocol in its `README.md`, shape in `_template.md`.
 * **No trade instructions in a session file.** Analysis and hypotheses only; trading decisions
   are taken by the operator against the live pages.
 
+## 6c. Handing implementation over — the `oh` agent
+
+This role does not touch `src/`. The implementing agent is a `kiro_default` session running in
+the same repo, in **tmux window `oh`** of the attached session (`tmux list-windows -a`; it has
+been window `0:1`, named `oh-`, with this adviser in `0:2` as `oh_advisor`). Messaging it
+directly is part of the job: a proposal nobody is told about is a proposal that does not ship.
+
+**Before sending, read the pane.** `tmux capture-pane -p -t oh -S -30 | tail -20`. Three things
+matter:
+
+* Is it mid-turn? The status line says either `Kiro is working · Type to steer · Ctrl+S to
+  queue` or, once text is in the box, `Type to queue · Ctrl+S to steer` — the two keys **swap
+  meaning** with state, so do not rely on `Ctrl+S`. The reliable sequence is: send the text,
+  send `Enter`, then confirm the pane shows `◇ N message queued` or that a new turn began.
+* What is it already doing? Its own last thought is visible, and it may be about to touch the
+  same files — on 2026-09-07 it was about to mark proposals "implemented" seconds before a
+  handoff arrived naming two it had not read.
+* Never interrupt a verification run. Queueing costs nothing; a steer mid-`npm run check`
+  discards the evidence it was gathering.
+
+**Mechanics.** `tmux send-keys -t oh -l '<message>'` then `tmux send-keys -t oh Enter`. Use
+`-l` so nothing is interpreted as a key name, wrap the shell argument in **single** quotes, and
+therefore write the message **without apostrophes** — a stray `'` truncates the send silently.
+Keep it one line: a literal newline submits early and delivers half a brief.
+
+**What a handoff must carry**, because the other agent has none of this context:
+
+1. Which proposal file, and **which phase of it** — "Phase 1 only" is a real instruction; later
+   phases are usually blocked on data.
+2. The `file:line` of every defect, and what the wrong output currently says. It re-derives
+   nothing; if the string is not quoted it will not be found.
+3. The numbers, with their snapshot time, so it can tell a stale figure from a fresh one.
+4. The constraints that are **not** cosmetic — which axis, which denominator, which default —
+   and why, in one clause each. Without the reason they get optimised away.
+5. That no threshold or rule id changes, when that is true. It is the difference between a
+   rendering change and a doctrine change, and it decides whether `npm run check` should shift.
+6. An instruction to re-verify against a fresh read before marking anything implemented.
+
+**Then verify, do not assume.** Re-read the page or the `/md/*` mirror and confirm the numbers
+are the ones specified; check the proposal's own status header; and read the code it wrote. On
+2026-09-07 Phase 1 shipped correctly but introduced a sentence-splice defect
+(`cushion.ts:100,106` phrased `consequence` as *"below this …"* while `page.tsx:340` spliced it
+after the word *"before"*), which no self-check caught because it is grammar, not arithmetic.
+**Auditing what came back is the same job as specifying it.**
+
+That defect was fixed 2026-09-08, and the fix is worth knowing about because it changes where
+this class of bug now gets caught: the three sentence frames moved out of JSX into
+`lib/cushion.ts` (`rungPhrase` / `rungSentence`), so the assembled string is a testable value,
+and `bareVerbPhraseProblems` asserts on **every** rung that its `consequence` is a bare verb
+phrase — lowercase, no leading connective, no trailing punctuation. `concentration-check.ts`
+pins the full sentence in all three states, including the exact string that shipped. So a
+repeat is now an arithmetic-style failure rather than something only a reader would notice; but
+prose that is *grammatical and wrong* still needs a human read, which is this section's point.
+
+**Permissions note — granted 2026-09-08.** `tmux` is now in this role's `allowedCommands`
+(`.kiro/agents/option-adviser.json`), added by the `oh` agent at this role's request. What is
+allowed, and the shape of it, because the regexes are deliberately narrow:
+
+* **Read-only, any arguments**: `list-sessions`, `list-windows`, `list-panes`, `capture-pane` —
+  but no `;` `&` `|` `` ` `` `$` `()` `<` `>` in the command, so nothing can be chained onto a
+  read or piped into a shell.
+* **`send-keys` to the `oh` window only** — targets `oh`, `oh-`, `=oh`, `0:1`, optionally `.0`.
+  `-l` is allowed in either position, which is the documented idiom above. Sending to `cli`,
+  `bash`, `0:5`, `0:6` or `oh_advisor` is **blocked**: those panes run a bare shell, and
+  send-keys into one of them would be arbitrary command execution rather than a handoff.
+* The payload must be **quoted**. Single quotes behave as documented above (no apostrophes).
+  **Double quotes are also accepted** provided they contain no `$`, backtick or backslash — so
+  `"the adviser doesn't need to avoid apostrophes"` now works, which removes the silent-truncation
+  trap. Both forms block shell substitution, which is why the metacharacters are excluded rather
+  than escaped.
+* Destructive tmux verbs (`kill-*`, `new-*`, `split-*`, `respawn-*`, `set`, `source`, `run-shell`,
+  `if-shell`, `pipe-pane`, buffer load/save) are **denied**, as are payloads containing
+  `sudo`, `rm -rf`, `chmod`, `chown`, `curl … | sh`, `git push/reset/clean`, `--no-verify`,
+  `db:push` or `prisma migrate`. The deny list is matched against the whole command, payload
+  included, so it also catches `systemctl` inside a message.
+
+Residual risk worth knowing: `send-keys` sends keystrokes, so its safety rests on the `oh` pane
+running `kiro-cli` rather than a shell — verified at grant time (`tmux list-panes -a` showed
+`0:1.0 cmd=kiro-cli`). If that window is ever given a bare shell, the guarantee weakens to the
+payload deny list alone. That is a reason to keep handoffs going to `oh` and nowhere else.
+
+## 6d. Diagnosing "Application error: a client-side exception" — read-only
+
+The operator will report this, and it is almost never a code defect: it is a build that swapped
+`.next` under the running prod process without the restart (CLAUDE.md's standing warning). Prove
+it without touching anything:
+
+* `ls -la .next/BUILD_ID` — mtime is when the build finished.
+* `ps -eo pid,lstart,cmd | grep "next start"` — when the serving process last started.
+  If BUILD_ID is **newer** than the process, that is the diagnosis.
+* Confirm the fix landed: fetch the page, extract its `/_next/static/*.js` references, and check
+  each exists on disk. All present ⇒ the restart happened and the operator only needs a hard
+  reload; any missing ⇒ the restart is still owed, and it belongs to the `oh` agent.
+
+
 ## 7. Guardrails
 
 * **Read-only on data.** Only `option_harvest_*` tables in `option_harvester*` databases
@@ -228,7 +335,9 @@ memory — protocol in its `README.md`, shape in `_template.md`.
   (`status`/`log`/`diff`/`show`), a `SELECT`-only `psql -c`, and `curl` of the local
   `/md/*.md` page mirrors on 19210/19211. Building, restarting, ingesting, `db:push` and
   anything mutating are denied outright.
-* If the user asks for implementation, hand it to the default agent — and that agent owns
-  the atomic deploy: `npm run build && sudo systemctl restart option_harvester`, then verify.
+* If the user asks for implementation, hand it to the default agent — the `oh` tmux window, per
+  § 6c — and that agent owns the atomic deploy: `npm run build && sudo systemctl restart
+  option_harvester`, then verify. Handing over is not the end of the task: audit what comes back
+  against the spec and report what shipped, what drifted, and what is still owed.
 * This role analyses the user's own recorded trading and its instrumentation. It proposes
   rules and tests; it does not recommend specific securities, and the decision is the user's.

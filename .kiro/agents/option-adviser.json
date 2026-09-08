@@ -46,11 +46,17 @@
         "^ib-agent .*",
         "^git (status|log|diff|show)( .*)?$",
         "^curl -s( --max-time [0-9]+)? http://127\\.0\\.0\\.1:1921[01]/md/[a-zA-Z0-9/._-]+$",
-        "^psql [^;|]*-c .(SELECT|WITH|select|with) [^;]*$"
+        "^psql [^;|]*-c .(SELECT|WITH|select|with) [^;]*$",
+        "^tmux (list-sessions|list-windows|list-panes|capture-pane)( [^;&|`$()<>]*)?$",
+        "^tmux send-keys( -l)? -t (=?oh-?|0:1)(\\.0)?( -l)? '[^']*'( (Enter|C-m))?$",
+        "^tmux send-keys( -l)? -t (=?oh-?|0:1)(\\.0)?( -l)? \"[^\"$`\\\\]*\"( (Enter|C-m))?$",
+        "^tmux send-keys -t (=?oh-?|0:1)(\\.0)? (Enter|C-m)$"
       ],
       "deniedCommands": [
         "^sudo .*",
         ".*systemctl.*",
+        ".*send-keys.*(rm -rf|rm -f|sudo |chmod |chown |curl [^|]*\\| *(ba)?sh|git push|git reset|git clean|--no-verify|db:push|prisma migrate).*",
+        "^tmux (kill|new|split|respawn|set|source|run-shell|if-shell|pipe-pane|save-buffer|load-buffer|paste-buffer).*",
         ".*npm run (build|start|ingest|predict|db:push).*",
         ".*prisma (db push|migrate).*",
         ".*(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|insert|update|delete|drop|truncate|alter) .*",
