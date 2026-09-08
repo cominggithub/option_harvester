@@ -15,9 +15,9 @@ user's Interactive Brokers lists, *synced* in by the extension.
 Derived live at read time from the dashboard data (`getDashboardData`) — they
 always reflect the latest ingest + synced positions. Defined in
 **`src/lib/watchlists.ts`** (`computeOhWatchlists`), shared by the page and the
-OH→IB push so membership has one source of truth. There are **11 OH lists** in a
-fixed order (NC, NCcan, Cpos, Ppos, RED, HIV, HIVS, HIVSC, OTC, ROIC, LEV) — that order sets
-the OH→IB suggested ids **990001–990011** (`OH_ID_BASE` in `ohpush.ts`), so **only
+OH→IB push so membership has one source of truth. There are **13 OH lists** in a
+fixed order (NC, NCcan, Cpos, Ppos, RED, HIV, HIVS, HIVSC, OTC, ROIC, LEV, LEVHIV, LEVMIX) — that order sets
+the OH→IB suggested ids **990001–990013** (`OH_ID_BASE` in `ohpush.ts`), so **only
 append new lists at the end** to keep existing ids stable.
 
 **Shared thresholds** — one source of truth, all exported constants; never inline a
@@ -33,6 +33,9 @@ magic number:
 | `HIVS_PRICE_MIN` / `HIVS_PRICE_MAX` | $20 / $200 | `watchlists.ts` | HIVS, HIVSC |
 | `HIGH_ROIC_MIN` | 15 % | `roic.ts` | ROIC |
 | `LEV_MIN_FACTOR` | 2 (2x and up) | `leveraged.ts` | LEV |
+| `LEV_IV_MIN` | 50 % (= `HIV_IV_MIN`) | `watchlists.ts` | LEVHIV, LEVMIX |
+| `LEV_MIN_DOLLAR_VOL` | $10,000,000 traded/day | `watchlists.ts` | LEVHIV, LEVMIX |
+| `LEV_MIN_LADDER` | 2 expiries inside 42 d | `watchlists.ts` | LEVHIV, LEVMIX |
 | assignment-risk delta | \|Δ\| > 0.30 (inline) | `watchlists.ts` | RED |
 
 **The lists**, grouped by family. "Requires" is the data a list needs to be
@@ -51,6 +54,8 @@ correct — a list silently under-populates if its inputs are stale/unsynced.
 | `otc`  | OTC    | target   | `(s.target \|\| s.position.call !== 0 \|\| s.position.put !== 0) && s.position.call === 0` — "Option Targets, no Call": names in the Analyzer's Option Targets (flagged bullseye **or** any held option leg) that you don't yet hold a **call** on. Your call-writing candidates; excludes anything already in Cpos. | marks (target) + position sync |
 | `roic` | ROIC   | value    | `s.highRoic` — value-quality names with Return on Invested Capital ≥ `HIGH_ROIC_MIN` (15 %). Same membership as the `/roic` screen; stocks only (ETFs have no ROIC). The cash-backed put-write quality universe. | ingest (fundamentals → ROIC) |
 | `lev`  | LEV    | leverage | `isLongLeveragedEtf(s)` — **leveraged long ETFs**: `type === "etf"` and a name-derived leverage factor ≥ `LEV_MIN_FACTOR` (2x/3x — "Ultra" = 2x, "UltraPro" = 3x, "Bull 2X/3X", "(2x)", "2x Long"). **Inverse/short funds are excluded** ("Bear", "Short", "UltraShort", "Inverse", any `-2x`/`-3x`). | ingest (name + type) |
+| `levhiv`| LEVHIV | leverage | `isLevWritable(s)` — the **writable** end of the geared shelf: LEV **and** IV ≥ `LEV_IV_MIN` **and** price × volume ≥ `LEV_MIN_DOLLAR_VOL` **and** weeklyBuckets ≥ `LEV_MIN_LADDER`, minus any fund carrying a `hazard` on the shelf (today: UVXY). Liquidity is measured in **dollars**, not shares — RETL turns over more shares than DPST and a fifth of the money. A geared fund that is *not* on the curated shelf still qualifies on its name, so a newly launched 3x fund needs no code change. | ingest (IV + price + volume + ladder) |
+| `levmix`| LEVMIX | leverage | `pickLevMix(levhiv)` — LEVHIV thinned to **one name per exposure family**, richest IV first, skipping any family adjacent to one already taken in the overlap graph (`leveraged.ts`). Set-valued: whether a fund is in depends on which others outrank it that day. This is the list you can write straight down without doubling a 3x bet under a second ticker. | same as LEVHIV |
 
 Family notes / invariants:
 - **screen** — the doctrine's naked-call funnel. `NCcan = NC − held`; see docs/spec.md §3 and docs/strategy.md.
@@ -59,13 +64,23 @@ Family notes / invariants:
 - **target** — OTC is the flag/hold-driven call-writing queue; a name leaves OTC the moment a call is written on it (it becomes Cpos).
 - **value** — ROIC is the standalone value-quality universe (the `/roic` screen), independent of positions/IV; it's the pool you'd sell cash-backed puts into on a panic. ETFs are excluded (no ROIC).
 - **leverage** — LEV is the 2x/3x **long** ETF shelf (`lib/leveraged.ts`, self-check `scripts/leveraged-check.ts`): the structurally richest call premium in the universe, where daily-rebalancing decay works *for* the writer. Inverse funds are deliberately absent — writing a call on a `-3x` fund is a *bullish* index bet, the opposite of the NC book. Membership is a static property of the instrument's name, so `/wl-log` only shows a LEV change when the universe itself gains/drops a fund. Classification is name-based (Yahoo exposes no leverage field); the sponsors' naming is rigidly conventional, and the check pins every fund currently tracked.
+  - **`LEV_ETFS` — the curated shelf** (`lib/leveraged.ts`) is what the ingest universe, these three lists and the risk engine's theme map all read. Each of the 47 funds carries a **factor** (confirmed against its own name), an exposure **family**, its **driver** in plain terms, a correlated **theme**, and optionally a **hazard**. Two things the classifier cannot know live here: *what moves it* ("Homebuilders & Supplies Bull 3X" is a mortgage-rate bet, and the name never says so) and *what it duplicates*.
+  - **Families and the overlap graph** — a family is the finest cut that is genuinely one bet (Gold, Gold miners and Silver are three families, one theme); the graph names families that move together without being identical, declared one-directionally and applied symmetrically. It is the executable form of the operator's own "與哪些容易重複" column, and it is the only thing LEVMIX selects against. Adjacency is deliberately asymmetric in meaning: housing/REITs/the long bond collapse to one bet, while Utilities stays separate — adjacent to the long bond and to REITs, but AI power demand is not housing.
+  - **`hazard` = watched, never written.** UVXY is on the shelf (the operator asked to watch it) and barred from LEVHIV/LEVMIX no matter how rich its IV: a naked call on a VIX-futures fund is the one position here whose loss the strategy cannot size, and it spikes precisely when every other name on the shelf is falling. Note the accident that its name (`… Short-Term Futures …`) also trips the inverse guard, so it never enters LEV either — the check pins both facts separately, because relying on the accident would be relying on a regex.
+  - **Themes, not the sector bucket.** Every geared fund's `theme` is merged into `lib/bookrisk`'s theme map. Without it these funds fall back to their sector, and their sector is the single bucket "Leveraged / Inverse" — the SC-B1 credit cap would then read a utilities 3x and a defense 3x as one bet, and a gold 2x and a China 3x as the same one. The shelf brought its unleveraged siblings with it (DPST clusters with XLF/KRE/KBE, NAIL with ITB/XHB, and so on), so a geared fund and its cash sibling can never look like two themes.
 
 **Adding a new OH list** (requirement checklist): add it to `computeOhWatchlists`
 (`watchlists.ts`) **and** to `LIST_META` + a `reasonFor` case in
 `ohhistory.ts` (so `/wl-log` tracks its day-over-day add/remove with a reason),
 append it **last** (id stability), then update this table, docs/spec.md, and
 CLAUDE.md. The `/watchlists` page and the OH→IB push pick it up automatically
-(both iterate `computeOhWatchlists`), so no extension change is needed.
+(both iterate `computeOhWatchlists`), so no extension change is needed. If membership
+depends on the whole day's set rather than one row (LEVMIX), give the `LIST_META` entry a
+`select(rows)` as well — `inList` alone cannot express "one name per family".
+
+**A new list's members need conids** before the OH→IB push can carry them: a ticker with
+no resolved conid is reported under `missing` and skipped (§3). After the universe gains
+tickers, run the popup's **Resolve conids (backfill)** once.
 
 ### IB — synced, stored
 The user's IB lists, pulled in by the extension and stored in
@@ -84,8 +99,8 @@ Columns: `watchlist_id`, `watchlist_name`, `position` (order in list), `conid`,
 
 `src/app/watchlists/page.tsx` → `WatchlistBrowser` (client). Mirrors the Analyzer:
 
-- **Left-nav tabs** in two groups — **Option Harvester** (all 11 computed lists:
-  NC, NCcan, Cpos, Ppos, RED, HIV, HIVS, HIVSC, OTC, ROIC, LEV — built dynamically from
+- **Left-nav tabs** in two groups — **Option Harvester** (all 13 computed lists:
+  NC, NCcan, Cpos, Ppos, RED, HIV, HIVS, HIVSC, OTC, ROIC, LEV, LEVHIV, LEVMIX — built dynamically from
   `computeOhWatchlists`, so a new OH list appears here automatically) and
   **Interactive Brokers** (the synced lists) — each with a member count.
 - **Table view** = the Analyzer's wide table (`WideStockList`): a three-line left

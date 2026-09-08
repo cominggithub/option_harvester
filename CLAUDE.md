@@ -145,7 +145,7 @@ Pages (all `force-dynamic`):
   with Return on Invested Capital ≥ `HIGH_ROIC_MIN` (15%), sorted by ROIC. ROIC computed
   at ingest (`lib/roic.ts`); see docs/spec.md.
 - `src/app/wl-log/page.tsx` — **WL Log**: OH-watchlist change log. Diffs the daily
-  `option_harvest_oh_screen_snapshots` per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC/LEV) and
+  `option_harvest_oh_screen_snapshots` per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC/LEV/LEVHIV/LEVMIX) and
   explains each add/remove by the predicate input that flipped (IV crossing a
   threshold, a trend window, a ladder gap, a position open/close, |Δ| past 0.30, a
   target flag toggled). Built by `getOhChangeLog` (`lib/ohhistory.ts`).
@@ -332,7 +332,12 @@ the option book by expiry with cumulative P/L/credit + net greeks for P&L Predic
 `labels.ts` (derived stock-label catalog),
 `watchlists.ts` (OH watchlist definitions + IB reader — see docs/watchlists.md),
 `leveraged.ts` (`isLongLeveragedEtf`/`leverageFactor`/`LEV_MIN_FACTOR` — name-based
-2x/3x **long** ETF classifier behind the LEV watchlist; inverse/short funds excluded),
+2x/3x **long** ETF classifier behind the LEV watchlist; inverse/short funds excluded —
+plus `LEV_ETFS`, the **curated geared shelf**: 47 funds with factor / exposure family /
+driver / correlated theme / `hazard`, the family **overlap graph** behind LEVMIX, and
+`levThemeMap()`, which `bookrisk.ts` merges so a geared fund never falls back to the
+single "Leveraged / Inverse" sector bucket. One source of truth with the ingest
+universe: `scripts/ingest-sp500.ts` splices `LEV_ETFS` into `LARGE_ETFS`),
 `ohpush.ts` (`buildOhPushLists` — intended OH→IB push payload: conid priority
 `SecurityConid` pin → held-stock position → `/trsrv`; shared by the `oh-watchlists`
 push route + the `oh-verify` read-back diff),

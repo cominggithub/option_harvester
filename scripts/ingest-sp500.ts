@@ -19,6 +19,7 @@ import {
   ivDateFor,
   toYahooSymbol,
 } from "../src/lib/enrich";
+import { LEV_ETFS } from "../src/lib/leveraged";
 
 const WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies";
 const USER_AGENT = "Mozilla/5.0 (option_harvester ingest; contact peter_lin@edge-core.com)";
@@ -27,11 +28,13 @@ const CONCURRENCY = 6;
 // Liquid, optionable ETFs — the hunting ground for the covered-call strategy
 // (see docs/strategy.md): broad-market (CSP pivot targets) + sector/thematic
 // funds (the weak-sector CC candidates). Screened in-app for bearish ones.
+const LEV_SECTOR = "Leveraged / Inverse";
+
 // Curated set of liquid, optionable ETFs — the hunting ground for the strategy.
 // Each carries a sector so the analyzer groups it: sector/industry funds merge
 // into their GICS sector tab (alongside the stocks), broad/foreign/bond/commodity
 // funds get their own buckets (see SECTOR_ORDER in src/lib/sectors.ts).
-const LARGE_ETFS: { ticker: string; name: string; sector: string }[] = [
+const CASH_ETFS: { ticker: string; name: string; sector: string }[] = [
   // Broad market (naked-put / panic pivot targets)
   { ticker: "SPY", name: "SPDR S&P 500 ETF Trust", sector: "Broad Market" },
   { ticker: "VOO", name: "Vanguard S&P 500 ETF", sector: "Broad Market" },
@@ -120,40 +123,39 @@ const LARGE_ETFS: { ticker: string; name: string; sector: string }[] = [
   { ticker: "EMB", name: "iShares J.P. Morgan USD Emerging Markets Bond ETF", sector: "Fixed Income" },
   // Leveraged / Inverse — geared 2x/3x long + inverse funds. Not buy-and-hold
   // (daily-reset decay), but deep option markets + very high IV = prime premium
-  // targets for the naked-selling strategy. Curated for liquidity + optionability.
+  // targets for the naked-selling strategy. The LONG shelf lives in
+  // src/lib/leveraged.ts (LEV_ETFS) and is spliced in below; only the INVERSE
+  // funds are listed here, because nothing else in the app needs them.
+];
+
+// Inverse / short funds. Present so the analyzer can price the mirror of a trade
+// (and so the classifier is exercised against real names), never sold into: a call
+// written on a -3x fund is a bullish bet on the index it shorts.
+const INVERSE_ETFS: { ticker: string; name: string; sector: string }[] = [
   //   Broad index (S&P 500 / Nasdaq-100 / Russell 2000)
-  { ticker: "TQQQ", name: "ProShares UltraPro QQQ (3x Nasdaq-100)", sector: "Leveraged / Inverse" },
-  { ticker: "SQQQ", name: "ProShares UltraPro Short QQQ (-3x Nasdaq-100)", sector: "Leveraged / Inverse" },
-  { ticker: "QLD", name: "ProShares Ultra QQQ (2x Nasdaq-100)", sector: "Leveraged / Inverse" },
-  { ticker: "UPRO", name: "ProShares UltraPro S&P 500 (3x)", sector: "Leveraged / Inverse" },
-  { ticker: "SPXU", name: "ProShares UltraPro Short S&P 500 (-3x)", sector: "Leveraged / Inverse" },
-  { ticker: "SPXL", name: "Direxion Daily S&P 500 Bull 3X", sector: "Leveraged / Inverse" },
-  { ticker: "SPXS", name: "Direxion Daily S&P 500 Bear 3X", sector: "Leveraged / Inverse" },
-  { ticker: "SSO", name: "ProShares Ultra S&P 500 (2x)", sector: "Leveraged / Inverse" },
-  { ticker: "SDS", name: "ProShares UltraShort S&P 500 (-2x)", sector: "Leveraged / Inverse" },
-  { ticker: "TNA", name: "Direxion Daily Small Cap Bull 3X", sector: "Leveraged / Inverse" },
-  { ticker: "TZA", name: "Direxion Daily Small Cap Bear 3X", sector: "Leveraged / Inverse" },
-  //   Sector / thematic 3x
-  { ticker: "SOXL", name: "Direxion Daily Semiconductor Bull 3X", sector: "Leveraged / Inverse" },
-  { ticker: "SOXS", name: "Direxion Daily Semiconductor Bear 3X", sector: "Leveraged / Inverse" },
-  { ticker: "TECL", name: "Direxion Daily Technology Bull 3X", sector: "Leveraged / Inverse" },
-  { ticker: "FAS", name: "Direxion Daily Financial Bull 3X", sector: "Leveraged / Inverse" },
-  { ticker: "FAZ", name: "Direxion Daily Financial Bear 3X", sector: "Leveraged / Inverse" },
-  { ticker: "LABU", name: "Direxion Daily S&P Biotech Bull 3X", sector: "Leveraged / Inverse" },
-  { ticker: "LABD", name: "Direxion Daily S&P Biotech Bear 3X", sector: "Leveraged / Inverse" },
-  { ticker: "YINN", name: "Direxion Daily FTSE China Bull 3X", sector: "Leveraged / Inverse" },
-  //   Commodity / miners / rates leveraged
-  { ticker: "NUGT", name: "Direxion Daily Gold Miners Bull 2X", sector: "Leveraged / Inverse" },
-  { ticker: "DUST", name: "Direxion Daily Gold Miners Bear 2X", sector: "Leveraged / Inverse" },
-  { ticker: "JNUG", name: "Direxion Daily Junior Gold Miners Bull 2X", sector: "Leveraged / Inverse" },
-  { ticker: "GUSH", name: "Direxion Daily S&P Oil & Gas E&P Bull 2X", sector: "Leveraged / Inverse" },
-  { ticker: "BOIL", name: "ProShares Ultra Bloomberg Natural Gas (2x)", sector: "Leveraged / Inverse" },
-  { ticker: "KOLD", name: "ProShares UltraShort Bloomberg Natural Gas (-2x)", sector: "Leveraged / Inverse" },
-  { ticker: "TMF", name: "Direxion Daily 20+ Year Treasury Bull 3X", sector: "Leveraged / Inverse" },
-  { ticker: "TMV", name: "Direxion Daily 20+ Year Treasury Bear 3X", sector: "Leveraged / Inverse" },
-  //   Single-stock leveraged (very liquid, extreme IV)
-  { ticker: "TSLL", name: "Direxion Daily TSLA Bull 2X", sector: "Leveraged / Inverse" },
-  { ticker: "NVDL", name: "GraniteShares 2x Long NVDA Daily ETF", sector: "Leveraged / Inverse" },
+  { ticker: "SQQQ", name: "ProShares UltraPro Short QQQ (-3x Nasdaq-100)", sector: LEV_SECTOR },
+  { ticker: "SPXU", name: "ProShares UltraPro Short S&P 500 (-3x)", sector: LEV_SECTOR },
+  { ticker: "SPXS", name: "Direxion Daily S&P 500 Bear 3X", sector: LEV_SECTOR },
+  { ticker: "SDS", name: "ProShares UltraShort S&P 500 (-2x)", sector: LEV_SECTOR },
+  { ticker: "TZA", name: "Direxion Daily Small Cap Bear 3X", sector: LEV_SECTOR },
+  //   Sector / thematic
+  { ticker: "SOXS", name: "Direxion Daily Semiconductor Bear 3X", sector: LEV_SECTOR },
+  { ticker: "FAZ", name: "Direxion Daily Financial Bear 3X", sector: LEV_SECTOR },
+  { ticker: "LABD", name: "Direxion Daily S&P Biotech Bear 3X", sector: LEV_SECTOR },
+  //   Commodity / miners / rates
+  { ticker: "DUST", name: "Direxion Daily Gold Miners Bear 2X", sector: LEV_SECTOR },
+  { ticker: "KOLD", name: "ProShares UltraShort Bloomberg Natural Gas (-2x)", sector: LEV_SECTOR },
+  { ticker: "TMV", name: "Direxion Daily 20+ Year Treasury Bear 3X", sector: LEV_SECTOR },
+];
+
+// The full ETF universe: the curated cash funds above, the geared LONG shelf
+// (src/lib/leveraged.ts — one source of truth with the LEV/LEVHIV/LEVMIX watchlists and
+// the risk engine's theme map), and the inverse funds, which exist only as the mirror
+// side of the same trade and are never sold into.
+const LARGE_ETFS: { ticker: string; name: string; sector: string }[] = [
+  ...CASH_ETFS,
+  ...LEV_ETFS.map((e) => ({ ticker: e.ticker, name: e.name, sector: LEV_SECTOR })),
+  ...INVERSE_ETFS,
 ];
 
 async function scrapeConstituents(): Promise<Constituent[]> {

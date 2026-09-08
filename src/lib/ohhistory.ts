@@ -7,7 +7,17 @@ import {
   NC_IV_MIN,
   NC_MIN_WEEKLY_BUCKETS,
 } from "@/lib/securities";
-import { HIV_IV_MIN, HIVS_PRICE_MIN, HIVS_PRICE_MAX } from "@/lib/watchlists";
+import {
+  HIV_IV_MIN,
+  HIVS_PRICE_MIN,
+  HIVS_PRICE_MAX,
+  isLevWritable,
+  levFamilyOf,
+  pickLevMix,
+  LEV_IV_MIN,
+  LEV_MIN_DOLLAR_VOL,
+  LEV_MIN_LADDER,
+} from "@/lib/watchlists";
 import { isLongLeveragedEtf } from "@/lib/leveraged";
 import { HIGH_ROIC_MIN, isHighRoic } from "@/lib/roic";
 
@@ -88,7 +98,10 @@ export type OhChangeLog = {
   renews: OhRenew[];
 };
 
-const LIST_META: { key: string; name: string; inList: (r: Snap) => boolean }[] = [
+// One entry per OH list, in the same order as computeOhWatchlists. `inList` is the
+// per-row membership predicate; `select`, when present, replaces it for lists whose
+// membership is a property of the whole day's set rather than of one row.
+const LIST_META: { key: string; name: string; inList: (r: Snap) => boolean; select?: (rows: Snap[]) => Set<string> }[] = [
   { key: "nc", name: "NC", inList: (r) => r.nc },
   { key: "nccan", name: "NCcan", inList: (r) => r.nc && !r.held },
   { key: "cpos", name: "Cpos", inList: (r) => (r.posCall ?? 0) !== 0 },
@@ -107,6 +120,25 @@ const LIST_META: { key: string; name: string; inList: (r: Snap) => boolean }[] =
   // from the CURRENT securities table rather than the snapshot row: the only way a
   // name enters/leaves this list is the universe itself gaining/dropping it.
   { key: "lev", name: "LEV", inList: (r) => r.lev },
+  // LEVHIV — the writable end of the geared shelf. Unlike LEV this one moves daily: it
+  // gates on IV, dollar volume and the expiry ladder, so /wl-log has real work to do.
+  { key: "levhiv", name: "LEVHIV", inList: (r) => isLevWritable(r) },
+  // LEVMIX — set-valued, not row-valued: whether a fund is in depends on which OTHER
+  // funds outrank it that day (one name per exposure family). Hence `select`, which sees
+  // the whole day at once; every other list is a per-row predicate.
+  {
+    key: "levmix",
+    name: "LEVMIX",
+    inList: (r) => isLevWritable(r),
+    select: (rows) =>
+      new Set(
+        pickLevMix(
+          rows
+            .filter((r) => isLevWritable(r))
+            .map((r) => ({ ticker: r.ticker, ivPct: r.ivPct, dollarVol: r.price != null && r.volume != null ? r.price * r.volume : null })),
+        ).map((r) => r.ticker),
+      ),
+  },
 ];
 
 const fmtM = (v: number | null) => (v == null ? "?" : `${(v / 1_000_000).toFixed(1)}M`);
@@ -266,6 +298,31 @@ function reasonFor(key: string, prev: Snap | undefined, cur: Snap, dir: "added" 
       // Static membership (the fund's name), so the only cause is universe churn.
       return dir === "added" ? "leveraged long ETF entered the universe" : "left the universe";
     }
+    case "levhiv": {
+      // Three gates, so name the one that moved rather than restating the rule.
+      const dv = (r: Snap | undefined) => (r?.price != null && r?.volume != null ? r.price * r.volume : null);
+      const fmtDv = (v: number | null) => (v == null ? "?" : `$${(v / 1e6).toFixed(0)}M`);
+      const iv = (r: Snap | undefined) => (r?.ivPct != null ? `${r.ivPct.toFixed(0)}%` : "?");
+      if (dir === "added") {
+        if (prev && (prev.ivPct ?? 0) < LEV_IV_MIN && (cur.ivPct ?? 0) >= LEV_IV_MIN) return `IV ${iv(prev)}→${iv(cur)} (≥${LEV_IV_MIN}%)`;
+        if (prev && (dv(prev) ?? 0) < LEV_MIN_DOLLAR_VOL) return `dollar volume ${fmtDv(dv(prev))}→${fmtDv(dv(cur))} (≥$${(LEV_MIN_DOLLAR_VOL / 1e6).toFixed(0)}M)`;
+        if (prev && (prev.weeklyBuckets ?? 0) < LEV_MIN_LADDER) return `expiry ladder ${prev.weeklyBuckets ?? 0}→${cur.weeklyBuckets ?? 0} (≥${LEV_MIN_LADDER})`;
+        return `writable geared fund — IV ${iv(cur)}, ${fmtDv(dv(cur))}/day`;
+      }
+      if ((cur.ivPct ?? 0) < LEV_IV_MIN) return `IV ${iv(prev)}→${iv(cur)} (<${LEV_IV_MIN}%)`;
+      if ((dv(cur) ?? 0) < LEV_MIN_DOLLAR_VOL) return `dollar volume ${fmtDv(dv(prev))}→${fmtDv(dv(cur))} (<$${(LEV_MIN_DOLLAR_VOL / 1e6).toFixed(0)}M)`;
+      if ((cur.weeklyBuckets ?? 0) < LEV_MIN_LADDER) return `expiry ladder ${prev?.weeklyBuckets ?? "?"}→${cur.weeklyBuckets ?? 0} (<${LEV_MIN_LADDER})`;
+      return "no longer a writable geared fund";
+    }
+    case "levmix": {
+      // Membership is relative: a name can leave untouched because a rival in its own
+      // family (or an overlapping one) out-earned it that day.
+      const fam = levFamilyOf(cur.ticker);
+      const iv = cur.ivPct != null ? `${cur.ivPct.toFixed(0)}%` : "?";
+      return dir === "added"
+        ? `richest writable name in ${fam} (IV ${iv})`
+        : `outranked in ${fam} or an overlapping family (IV ${iv}), or it left LEVHIV`;
+    }
     default:
       return dir;
   }
@@ -315,14 +372,16 @@ export async function getOhChangeLog(limitDates = 30): Promise<OhChangeLog> {
   const isoDates = dates.map((d) => d.toISOString().slice(0, 10)); // newest first
   const latestDate = isoDates[0];
 
-  const members = (dateIso: string, inList: (r: Snap) => boolean) => {
+  const members = (dateIso: string, l: (typeof LIST_META)[number]) => {
     const m = byDate.get(dateIso);
+    if (!m) return new Set<string>();
+    if (l.select) return l.select([...m.values()]);
     const set = new Set<string>();
-    if (m) for (const [t, r] of m) if (inList(r)) set.add(t);
+    for (const [t, r] of m) if (l.inList(r)) set.add(t);
     return set;
   };
 
-  const currentCounts = LIST_META.map((l) => ({ key: l.key, name: l.name, count: members(latestDate, l.inList).size }));
+  const currentCounts = LIST_META.map((l) => ({ key: l.key, name: l.name, count: members(latestDate, l).size }));
 
   const renews: OhRenew[] = [];
   for (let i = 0; i < isoDates.length - 1; i++) {
@@ -333,8 +392,8 @@ export async function getOhChangeLog(limitDates = 30): Promise<OhChangeLog> {
     const lists: OhListDiff[] = [];
     let changeCount = 0;
     for (const l of LIST_META) {
-      const curSet = members(cur, l.inList);
-      const prevSet = members(prev, l.inList);
+      const curSet = members(cur, l);
+      const prevSet = members(prev, l);
       const added: OhChange[] = [];
       const removed: OhChange[] = [];
       for (const t of curSet)

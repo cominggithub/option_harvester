@@ -212,7 +212,7 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   — the extension's per-run history (`option_harvest_sync_runs`).
 - **WL Log** (`/wl-log`, `getOhChangeLog`) — OH-watchlist change log. Snapshots each
   day's screen (`option_harvest_oh_screen_snapshots`, written at the end of the daily
-  refresh) and shows, per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC/LEV), what was **added** /
+  refresh) and shows, per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC/LEV/LEVHIV/LEVMIX), what was **added** /
   **removed** between renews and **why** — the predicate input that flipped (IV crossing
   40/50%, a trend window turning, a weekly-ladder gap, a position open/close, |Δ| past
   0.30). Current membership counts at top; diffs are day-over-day.
@@ -302,7 +302,7 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   off-index ticker into the universe immediately (`addNewHoldings`, via `enrich.ts`).
 - **Wiki** (`/wiki`) — static field-manual page (strategy, screens, formulas).
 - **Watchlists** (`/watchlists`, `WatchlistBrowser.tsx`) — left-nav tabs over two
-  groups: **OH** (computed NC / NCcan / Cpos / Ppos / RED / HIV / HIVS / HIVSC / OTC / ROIC / LEV) and
+  groups: **OH** (computed NC / NCcan / Cpos / Ppos / RED / HIV / HIVS / HIVSC / OTC / ROIC / LEV / LEVHIV / LEVMIX) and
   **IB** (the user's Interactive Brokers lists, synced by the extension). Each tab
   renders the Analyzer's wide table view (`WideStockList`) for its members. Full spec: **docs/watchlists.md**.
 - **High ROIC** (`/roic`, `RoicScreen.tsx`) — value-investment quality screen. Lists
@@ -532,7 +532,7 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   nc, target, held, posCall, posPut, max_opt_abs_delta + the NC criteria (volume, price,
   weekly_buckets, iv_pct, trend_m1/m3/m6). Written by `scripts/snapshot-oh.ts` at the end
   of the daily refresh; the **WL Log** (`/wl-log`) diffs consecutive days per OH list
-  (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC/LEV) and explains each add/remove (`lib/ohhistory.ts`).
+  (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC/LEV/LEVHIV/LEVMIX) and explains each add/remove (`lib/ohhistory.ts`).
 
 ### IB parsers
 - **ibparse.ts** (positions): IB Activity Statements are multi-section CSVs;
@@ -731,9 +731,12 @@ Rough but free; a "look here" prompt, not a verdict.
    `quoteSummary(assetProfile+calendarEvents+summaryDetail+defaultKeyStatistics+
    financialData)` (description/earnings/fundamentals), and `getAtmIv()` (IV +
    weekly_buckets + ATM strike/mid/spread + ladder). ~4 Yahoo calls/ticker.
-3. Add ~100 curated liquid ETFs (sector-tagged; broad/foreign/commodity/bond and
+3. Add ~120 curated liquid ETFs (sector-tagged; broad/foreign/commodity/bond and
    **leveraged/inverse 2x-3x** funds get their own buckets — `SECTOR_ORDER` in
-   `sectors.ts`). Edit `LARGE_ETFS` to change them.
+   `sectors.ts`). `LARGE_ETFS` = the cash funds + the geared **long** shelf spliced in
+   from `LEV_ETFS` (`lib/leveraged.ts`, one source of truth with the LEV/LEVHIV/LEVMIX
+   watchlists and the risk engine's theme map) + the inverse funds. Add a cash or inverse
+   fund in the script; add a geared long fund to `LEV_ETFS`.
    3b. Add the user's **held instruments** not already in the universe
    (`getPositionConstituents()`) under sector **"Off-Index"**; non-US via `YF_ALIAS`
    (e.g. `UBSG → UBSG.SW`).

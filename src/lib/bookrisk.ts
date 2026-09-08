@@ -19,6 +19,7 @@ import { getPositionGroups } from "@/lib/positions";
 import { getDashboardData, type SecurityRow } from "@/lib/securities";
 import { getLatestBalance, type Balance } from "@/lib/balances";
 import { buildAcquisitionBook, isAcquisitionPut, LIKELY_FILL_DELTA, THIN_FILL_DELTA, type AcquisitionBook } from "@/lib/acqputs";
+import { levThemeMap } from "@/lib/leveraged";
 
 // ── doctrine constants (one source of truth; never inline these numbers) ──────
 export const BOOK_HORIZON_DAYS = 365; // "< 1y": the book this page analyses
@@ -51,18 +52,39 @@ export const EARNINGS_NEAR_DAYS = 21; // inside three weeks
 // bet on semiconductors, and GDX/AG/SLV are one bet on metals. Diversification only
 // counts across themes, so the concentration section tallies these too. Curated on
 // purpose — a name absent here falls back to its sector.
+//
+// Every geared fund's theme comes from the curated shelf in lib/leveraged.ts rather than
+// being repeated here (merged below), because their sector is the single bucket
+// "Leveraged / Inverse": without that map, a utilities 3x and a defense 3x would report
+// as one theme, and a gold 2x and a China 3x as the same bet. The unleveraged siblings
+// belong in the same cluster, so the geared shelf brought its own themes with it
+// (Banks & credit, Healthcare, Homebuilders, …) and those are filled in here.
 const THEMES: Record<string, string[]> = {
   Semiconductors: ["SOXX", "SOXL", "SOXS", "SMH", "TSM", "NVDA", "NVDL", "AMD", "INTC", "MU", "MRVL", "KLAC", "LRCX", "AMAT", "TXN", "ON", "ASML", "ARM", "QCOM", "AVGO", "SMCI"],
+  "US technology": ["XLK", "VGT", "IGV", "TECL"],
   "Precious metals": ["GDX", "GDXJ", "NUGT", "DUST", "JNUG", "GLD", "IAU", "SLV", "AG", "AGQ", "UGL", "NEM", "GOLD", "PAAS", "WPM", "FNV"],
   "Crypto-linked": ["IBIT", "MSTR", "MSTU", "MSTX", "COIN", "MARA", "RIOT", "CLSK", "HOOD", "BITO", "ETHE", "GBTC"],
   China: ["YINN", "FXI", "KWEB", "MCHI", "BABA", "JD", "PDD", "NIO", "EWY"],
+  "Emerging markets": ["EEM", "EMB"],
   "Energy & oil": ["USO", "UCO", "XLE", "XOP", "GUSH", "OIH", "BOIL", "KOLD", "UNG", "NRG", "FSLR", "ENPH"],
   Biotech: ["LABU", "LABD", "XBI", "IBB", "MRNA", "BNTX", "CRSP", "NVAX"],
+  Healthcare: ["XLV"],
+  "Banks & credit": ["XLF", "KRE", "KBE", "FAS", "FAZ"],
   "Broad index": ["SPY", "QQQ", "IWM", "DIA", "TQQQ", "SQQQ", "UPRO", "SPXU", "SSO", "SDS", "TNA", "TZA", "VOO", "VTI"],
-  "Copper & materials": ["COPX", "FCX", "SCCO", "TECK", "XME"],
+  "Copper & materials": ["COPX", "FCX", "SCCO", "TECK", "XME", "XLB"],
+  Industrials: ["XLI"],
+  "Aerospace & defense": ["ITA"],
+  "Retail & consumer": ["XLY", "XRT"],
+  Homebuilders: ["ITB", "XHB"],
+  "Real estate": ["XLRE", "VNQ", "IYR"],
+  Utilities: ["XLU"],
+  "Long treasury": ["TLT", "TMV"],
 };
 const THEME_OF = new Map<string, string>();
 for (const [theme, tickers] of Object.entries(THEMES)) for (const t of tickers) THEME_OF.set(t, theme);
+// The geared shelf's own mapping (lib/leveraged.ts). Merged last, and asserted in
+// scripts/leveraged-check.ts to agree wherever a fund is named in both places.
+for (const [ticker, theme] of levThemeMap()) THEME_OF.set(ticker, theme);
 
 // The correlated theme a name belongs to, or its sector when it isn't in a cluster.
 export function themeOf(symbol: string, sector: string): string {
