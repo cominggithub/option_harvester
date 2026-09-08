@@ -345,3 +345,153 @@ export function BalanceLines({
     </svg>
   );
 }
+
+// ── Concentration donut ──────────────────────────────────────────────────────
+/**
+ * A donut for the `/risk` concentration section. Server-rendered SVG, no client JS.
+ *
+ * Two things make it more than a pie:
+ *
+ * 1. **The acquisition sub-arc.** A declared acquisition put has assignment as its goal, so its
+ *    portion of a slice is drawn hatched rather than solid. Colouring it like a premium put
+ *    would tell the operator to reduce a position they opened deliberately.
+ * 2. **Breach is a stroke, never a fill.** A slice that breaks a rule gets a dark outline and a
+ *    marker; the MARGIN is carried in the legend text beside it, because a colour cannot say
+ *    "19.3 points over a 25% cap". Slices on cuts where no rule applies get no outline at all —
+ *    absence of an outline means "no rule for this cut", not "safe".
+ *
+ * `slices` must already be sorted and head-trimmed; `tail` is drawn last in grey.
+ */
+export type DonutSlice = {
+  key: string;
+  value: number;
+  acquisition?: number;
+  color: string;
+  breached?: boolean;
+};
+
+const TAU = Math.PI * 2;
+
+function ringPath(cx: number, cy: number, rOuter: number, rInner: number, from: number, to: number): string {
+  // Start at 12 o'clock and run clockwise, which is how a share is read.
+  const a0 = from * TAU - Math.PI / 2;
+  const a1 = to * TAU - Math.PI / 2;
+  const large = to - from > 0.5 ? 1 : 0;
+  const x0 = cx + rOuter * Math.cos(a0);
+  const y0 = cy + rOuter * Math.sin(a0);
+  const x1 = cx + rOuter * Math.cos(a1);
+  const y1 = cy + rOuter * Math.sin(a1);
+  const x2 = cx + rInner * Math.cos(a1);
+  const y2 = cy + rInner * Math.sin(a1);
+  const x3 = cx + rInner * Math.cos(a0);
+  const y3 = cy + rInner * Math.sin(a0);
+  return `M ${x0} ${y0} A ${rOuter} ${rOuter} 0 ${large} 1 ${x1} ${y1} L ${x2} ${y2} A ${rInner} ${rInner} 0 ${large} 0 ${x3} ${y3} Z`;
+}
+
+export function Donut({
+  slices,
+  tail,
+  size = 168,
+  thickness = 34,
+  centreTop,
+  centreSub,
+  idPrefix = "d",
+}: {
+  slices: DonutSlice[];
+  tail?: { value: number } | null;
+  size?: number;
+  thickness?: number;
+  /** Big number in the hole — the one figure the chart exists to state. */
+  centreTop?: string;
+  centreSub?: string;
+  /** Unique per chart on the page: SVG pattern ids are document-global. */
+  idPrefix?: string;
+}) {
+  const total = slices.reduce((a, s) => a + s.value, 0) + (tail?.value ?? 0);
+  const cx = size / 2;
+  const cy = size / 2;
+  const rOuter = size / 2 - 2;
+  const rInner = rOuter - thickness;
+  const hatchId = `${idPrefix}-hatch`;
+
+  if (total <= 0) {
+    return (
+      <svg width={size} height={size} role="img" aria-label="no data">
+        <circle cx={cx} cy={cy} r={(rOuter + rInner) / 2} fill="none" stroke="#e7e9ec" strokeWidth={thickness} />
+        <text x={cx} y={cy + 4} textAnchor="middle" className="fill-ink-muted tnum" fontSize={11}>
+          no data
+        </text>
+      </svg>
+    );
+  }
+
+  let cursor = 0;
+  const drawn: React.ReactNode[] = [];
+  for (const s of slices) {
+    const frac = s.value / total;
+    if (frac <= 0) continue;
+    const from = cursor;
+    const to = cursor + frac;
+    drawn.push(
+      <path
+        key={`${s.key}-solid`}
+        d={ringPath(cx, cy, rOuter, rInner, from, to)}
+        fill={s.color}
+        stroke={s.breached ? "#881337" : "#ffffff"}
+        strokeWidth={s.breached ? 2 : 1}
+      />,
+    );
+    // The acquisition portion, hatched over the same fill so the slice total still reads.
+    const acqFrac = Math.min((s.acquisition ?? 0) / total, frac);
+    if (acqFrac > 0) {
+      drawn.push(
+        <path key={`${s.key}-acq`} d={ringPath(cx, cy, rOuter, rInner, from, from + acqFrac)} fill={`url(#${hatchId})`} stroke="none" />,
+      );
+    }
+    cursor = to;
+  }
+  if (tail && tail.value > 0) {
+    drawn.push(
+      <path key="__tail__" d={ringPath(cx, cy, rOuter, rInner, cursor, cursor + tail.value / total)} fill="#c9ced6" stroke="#ffffff" strokeWidth={1} />,
+    );
+  }
+
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={centreTop ? `${centreTop} ${centreSub ?? ""}` : "concentration"}>
+      <defs>
+        <pattern id={hatchId} patternUnits="userSpaceOnUse" width={5} height={5} patternTransform="rotate(45)">
+          <line x1={0} y1={0} x2={0} y2={5} stroke="#ffffff" strokeWidth={2} opacity={0.85} />
+        </pattern>
+      </defs>
+      {drawn}
+      {centreTop && (
+        <text x={cx} y={cy - 1} textAnchor="middle" className="fill-ink tnum" fontSize={17} fontWeight={600}>
+          {centreTop}
+        </text>
+      )}
+      {centreSub && (
+        <text x={cx} y={cy + 13} textAnchor="middle" className="fill-ink-muted" fontSize={10}>
+          {centreSub}
+        </text>
+      )}
+    </svg>
+  );
+}
+
+/** Muted categorical ramp for themes — low-saturation on purpose, never a rainbow. */
+export const THEME_COLORS = [
+  "#2f6f9f",
+  "#3f8f7a",
+  "#b5713a",
+  "#7a5ca6",
+  "#9a8a3f",
+  "#5c6470",
+  "#a8552f",
+  "#4a7c9e",
+  "#8a6d52",
+  "#9a5f7a",
+  "#46505c",
+  "#6a7b8c",
+  "#8a4a4a",
+];
+export const themeColor = (i: number) => THEME_COLORS[i % THEME_COLORS.length];

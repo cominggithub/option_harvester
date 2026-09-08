@@ -110,6 +110,8 @@ export type RiskBrief = {
 
 const usd = (n: number | null | undefined) => (n == null ? "—" : `${n < 0 ? "−" : ""}$${Math.abs(Math.round(n)).toLocaleString("en-US")}`);
 const pc = (n: number | null | undefined, d = 0) => (n == null ? "—" : `${(n * 100).toFixed(d)}%`);
+/** Percentage POINTS — the unit of a margin against a percentage limit, never "%". */
+const pp = (n: number | null | undefined, d = 1) => (n == null ? "—" : `${(n * 100).toFixed(d)}pp`);
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 /** Verb agreement for a counted subject — "1 leg is" / "10 legs are". */
 const be = (n: number) => (n === 1 ? "is" : "are");
@@ -144,7 +146,9 @@ export function buildRisks(book: BookRisk, asOf: Date): Finding[] {
       title: `Buying power, not the market, is the binding constraint: ${pc(marginPct)} of net liquidation is committed to maintenance margin.`,
       evidence: [
         `maintenance ${usd(t.accountMaintMargin ?? t.maintMarginExtrapolated)} against NLV ${usd(book.balance?.netLiquidation ?? null)} — limit ${pc(MAX_MARGIN_PCT_NLV)}`,
-        cushion != null ? `excess liquidity ${usd(t.excessLiquidity)} = ${pc(cushion)} cushion` : "excess liquidity not synced",
+        cushion != null
+          ? `excess liquidity ${usd(t.excessLiquidity)} = ${pc(cushion, 1)} cushion — denominator is NLV ${usd(book.balance?.netLiquidation ?? null)}, numerator is cash − maintenance`
+          : "excess liquidity not synced",
         `assignment notional ${usd(t.callNotional + t.putNotional)} = ${((t.callNotional + t.putNotional) / (book.balance?.netLiquidation || 1)).toFixed(1)}× NLV`,
       ],
       mechanism:
@@ -254,7 +258,7 @@ export function buildRisks(book: BookRisk, asOf: Date): Finding[] {
       severity: cannot ? "critical" : overCash ? "high" : overName.length ? "medium" : "info",
       title: cannot
         ? `The acquisition book has promised ${usd(acq.delivery)} of stock against ${usd(acq.cash)} of cash — it cannot take delivery on all of it.`
-        : `Taking delivery on every declared acquisition put costs ${usd(acq.delivery)}, ${pc(acq.deliveryVsCash)} of settled cash.`,
+        : `Taking delivery on every declared acquisition put costs ${usd(acq.delivery)}, ${pc(acq.deliveryVsCash)} of cash.`,
       evidence: [
         ...acq.names.map(
           (n) =>
@@ -292,7 +296,7 @@ export function buildRisks(book: BookRisk, asOf: Date): Finding[] {
             plan.stillOver.length ? `, but ${plan.stillOver.join("; ")}` : ""
           }. Then keep the remaining ${usd(plan.deliveryAfter)} unencumbered. Do not close these as harvests — §4.4 forbids acting on the mark here, and the cheapness of the buy-back is not the reason, the cap is.`
         : cannot
-          ? "Reduce the promised delivery or ring-fence cash for it: the current total exceeds settled cash, so a broad drawdown assigns more than the account can pay for."
+          ? "Reduce the promised delivery or ring-fence cash for it: the current total exceeds total cash, so a broad drawdown assigns more than the account can pay for."
           : `Keep ${usd(acq.delivery)} of cash unencumbered while these are open, and treat that cash as spent for margin purposes.`,
       rules: plan ? ["AP-1", "AP-4", "AP-7"] : ["AP-1", "AP-4"],
     });
@@ -656,7 +660,15 @@ export function buildTargets(candidates: Candidate[], book: BookRisk, limit = 20
     reasons.push(`${p.sigmas.toFixed(1)}σ of cushion at Δ${Math.abs(p.delta ?? 0).toFixed(2)} — the record's profitable side of both axes`);
     if (!heldCallNames.has(c.symbol)) reasons.push("no call already open on this name");
     if (share === 0) reasons.push(`${c.theme} is unrepresented in the book — this adds diversification instead of concentration`);
-    else reasons.push(`${c.theme} is ${pc(share)} of open credit, inside the ${pc(MAX_THEME_CREDIT_SHARE)} cap`);
+    // The `else` used to assert "inside the cap" WITHOUT comparing share to it, so a theme at
+    // 44.3% printed "inside the 25% cap" on the same row whose SC-B1 gate correctly failed.
+    // Two contradictory statements about one number, one of them false. Compare, and carry the
+    // margin either way — a share without its distance to the limit is not evidence.
+    else if (share > MAX_THEME_CREDIT_SHARE)
+      reasons.push(
+        `${c.theme} is already ${pc(share)} of open credit, ${pp(share - MAX_THEME_CREDIT_SHARE)} OVER the ${pc(MAX_THEME_CREDIT_SHARE)} cap — SC-B1 fails, so this adds to the book's worst concentration`,
+      );
+    else reasons.push(`${c.theme} is ${pc(share)} of open credit, ${pp(MAX_THEME_CREDIT_SHARE - share)} inside the ${pc(MAX_THEME_CREDIT_SHARE)} cap`);
     if (c.ownRecord && c.ownRecord.trades >= 3) reasons.push(`own record ${c.ownRecord.trades} trades, ${usd(c.ownRecord.realized)}`);
     reasons.push(c.klass === "single stock" ? `next earnings ${c.nextEarnings ?? "unknown"} — outside this expiry` : "ETF, so no earnings gap");
 

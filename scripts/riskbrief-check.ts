@@ -216,6 +216,29 @@ function cleanBook(bal: unknown = balance({})): BookRisk {
   const thin = buildTargets([cand({ ownRecord: { trades: 1, realized: -1_171, keptPct: -2 } })], b);
   ok(thin[0].caution != null && thin[0].caution.includes("too few"), "a single losing trade is surfaced as a caution, not used as a veto");
   ok(buildTargets([cand({})], b, 0).length === 0, "the limit is respected");
+
+  // ── the theme-share claim must COMPARE, not assert ────────────────────────
+  // Regression for the defect the pie proposal was commissioned alongside: the `else` branch
+  // printed "<theme> is N% of open credit, inside the 25% cap" for ANY non-zero share, so a
+  // theme measured at 44.3% claimed to be inside a 25% cap on the same row whose SC-B1 gate
+  // correctly failed. Two contradictory statements about one number, one of them false.
+  const themeOf = (share: number) => {
+    // A book whose top theme carries `share` of credit, built by giving one name that much.
+    const bk = cleanBook();
+    bk.byTheme = [{ key: "Semiconductors", creditShare: share } as never];
+    return buildTargets([cand({ theme: "Semiconductors" })], bk)[0].reasons.find((x) => x.includes("of open credit"))!;
+  };
+  const over = themeOf(0.443);
+  ok(over != null, "the theme-share reason is still emitted");
+  ok(/OVER the 25% cap/.test(over), `a 44.3% theme is reported as OVER the cap (got "${over}")`);
+  ok(!/inside/.test(over), "…and never as inside it");
+  ok(/19\.3pp/.test(over), `…with its margin in percentage points (got "${over}")`);
+  ok(/SC-B1/.test(over), "…and cites the rule it breaks, so the row agrees with its own gate");
+  const under = themeOf(0.10);
+  ok(/inside the 25% cap/.test(under), `a 10% theme is reported as inside (got "${under}")`);
+  ok(/15\.0pp/.test(under), "…and carries the distance to the cap either way, not only when breached");
+  const atCap = themeOf(0.25);
+  ok(/inside/.test(atCap), "exactly at the cap is not over it — the rule is `>`, matching sc-rules");
 }
 
 // ── the exit audit: defence vs choice, judged at the close ───────────────────

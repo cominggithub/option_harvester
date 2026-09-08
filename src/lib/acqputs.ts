@@ -158,7 +158,14 @@ export type AcquisitionBook = {
   /** Σ delivery × |Δ| across the book — how much of the promise is a live accumulation. */
   weightedDelivery: number;
   cash: number | null;
-  /** delivery ÷ settled cash — over 1 means the account cannot take delivery. */
+  /**
+   * delivery ÷ TOTAL cash — over 1 means the account cannot take delivery. Named "cash", not
+   * "settled cash": the value is `balance.totalCash`, and `settled_cash` is NULL in all 26
+   * snapshots (verified 2026-09-07). The two diverge exactly when unsettled trades are
+   * outstanding — which is precisely when "can I fund this delivery" has a different answer —
+   * so calling it settled would be a claim the data cannot support. Populating `settled_cash`
+   * is an extension/ingest change, not a rename.
+   */
   deliveryVsCash: number | null;
   deliveryVsNlv: number | null;
   /** Legs already in the money, i.e. delivery is live rather than hypothetical. */

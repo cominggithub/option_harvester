@@ -10,7 +10,7 @@ import { buildChains } from "../src/lib/sc-lifecycle";
 import { ACCEPTABLE_LOSS_MULTIPLE, buildLossReport } from "../src/lib/sc-loss";
 import { buildTimeline, weekEnd, weekStart } from "../src/lib/sc-timeline";
 import { rollTarget } from "../src/lib/sc-actions";
-import { pickExpiry, profileGates, PROFILE } from "../src/lib/sc-candidates";
+import { buildCandidates, pickExpiry, profileGates, PROFILE } from "../src/lib/sc-candidates";
 import { buildScRecord, type BarIndex } from "../src/lib/shortcall";
 import type { BookLeg } from "../src/lib/bookrisk";
 import type { SecurityRow } from "../src/lib/securities";
@@ -185,6 +185,20 @@ ok((rollTarget(leg({ strike: 130 })).strike ?? 0) >= 130, "a roll never goes dow
     idOf(profileGates(sec({ price: 190 }), "single stock", prop), "P-PRICE").pass === true,
     "the profile band reaches $200 — the §2.4 conflict at 180–200 is left for the doctrine gate to report",
   );
+
+  // ── SC-S6 on a fund: an ETF has no report date, so the DOCTRINE gate must read clear
+  // too, not "cannot confirm". It used to be fed a bare null and reported "earnings date
+  // unknown" on every fund — a fact about our data masquerading as a fact about the
+  // instrument, and one that contradicted P-EARN two columns to its right.
+  const s6 = (o: Partial<SecurityRow>) => {
+    const c = buildCandidates([sec(o) as SecurityRow], [], null, new Date("2026-09-07T00:00:00Z"))[0];
+    return c.gates.find((g) => g.id === "SC-S6")!;
+  };
+  ok(s6({ type: "etf", earningsInDays: null }).pass === true, "SC-S6 is CLEAR on an ETF with no date — a fund has no earnings");
+  ok(s6({ type: "etf", name: "Direxion Daily TSLA Bull 2X", earningsInDays: null }).pass === true, "…and on a leveraged ETF");
+  ok(s6({ type: "common", earningsInDays: null }).pass === null, "SC-S6 stays 'cannot confirm' on a STOCK with no date");
+  ok(s6({ type: "common", earningsInDays: 10 }).pass === false, "…fails when the print lands inside the option's life");
+  ok(s6({ type: "common", earningsInDays: 90 }).pass === true, "…and passes when the print is after expiry");
 }
 
 console.log(`sc-analyzer-check: ${pass} assertions passed.`);

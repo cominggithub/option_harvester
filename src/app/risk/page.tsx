@@ -31,7 +31,11 @@ import { buildLossReport } from "@/lib/sc-loss";
 import { buildCandidates, PROFILE } from "@/lib/sc-candidates";
 import { buildGates, openingBlocked } from "@/lib/sc-actions";
 import { buildRiskBrief, type Finding, type Severity } from "@/lib/riskbrief";
-import { MAX_MARGIN_PCT_NLV, MAX_THEME_CREDIT_SHARE } from "@/lib/sc-rules";
+import { MAX_MARGIN_PCT_NLV, MAX_NAME_CREDIT_SHARE, MAX_THEME_CREDIT_SHARE, MIN_EFFECTIVE_THEMES } from "@/lib/sc-rules";
+import { buildCushionLadder, cushionBarFrac, CUSHION_SCALE_MAX, rungPhrase, type CushionLadder } from "@/lib/cushion";
+import { buildPie, nameBreaches, PIE_VIEWS, PIE_WEIGHTS, type PieAxis, type PieData, type PieView, type PieWeight } from "@/lib/concentration";
+import { Donut, themeColor } from "@/components/charts";
+import { sectorColor } from "@/lib/sectors";
 import { formatTimestamp } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -258,7 +262,226 @@ function FindingCard({ f }: { f: Finding }) {
   );
 }
 
-export default async function RiskPage() {
+/**
+ * The liquidity cushion against its own two thresholds, ALWAYS rendered.
+ *
+ * Before this, excess liquidity existed on the page as a bare number in a tile sub-clause plus
+ * one conditional evidence bullet — and the conditions meant it vanished when the book was
+ * healthy, i.e. exactly when it governs how much new risk may be opened. `CUSHION_CRITICAL`
+ * (10%), the line at which the broker itself acts, never appeared anywhere at all.
+ *
+ * Both distances are given in percentage points AND in dollars, because "0.7pp" is abstract
+ * while "$946 of maintenance margin" is the same fact in the unit a new contract consumes. The
+ * maintenance framing is withheld on snapshots where `excessLiquidity ≠ cash − maintenance`
+ * (10 of 26 real snapshots), since there the conversion has no basis.
+ *
+ * No `SC-B*` id: the rungs are labelled by their constant names. Giving the cushion a rule id
+ * is a deliberate act, not a rendering change.
+ */
+function CushionLadderBlock({ l }: { l: CushionLadder | null }) {
+  if (!l) {
+    return (
+      <p className="mt-3 max-w-[80ch] text-small text-ink-muted">
+        No cushion ladder: the latest balance snapshot is missing net liquidation or excess liquidity, so the distance to
+        the 20% and 10% lines cannot be computed. Sync balances from the extension.
+      </p>
+    );
+  }
+  const frac = cushionBarFrac(l.cushion);
+  const thin = l.rungs.find((x) => x.constant === "CUSHION_THIN")!;
+  const crit = l.rungs.find((x) => x.constant === "CUSHION_CRITICAL")!;
+  const tone = crit.breached ? "text-rose-700" : thin.breached ? "text-amber-700" : "text-emerald-700";
+  const ticks = [0, 0.1, 0.2, 0.3, 0.4];
+  return (
+    <div className="mt-3 bg-surface px-4 py-3">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className={`tnum text-kpi font-semibold ${tone}`}>{pct(l.cushion, 1)}</span>
+        <span className="text-body text-ink">
+          cushion — excess liquidity {money(l.excessLiquidity)} ÷ NLV {money(l.nlv)}
+        </span>
+        {l.cushionOfCash != null && (
+          <span className="text-small text-ink-muted">
+            (the same dollars are {pct(l.cushionOfCash, 1)} of the {money(l.cash)} cash they are measured from)
+          </span>
+        )}
+      </div>
+
+      {/* The track: 0 → 40%, with both lines marked and the reading placed on it. */}
+      <div className="mt-2.5 max-w-[560px]">
+        <div className="relative h-4 w-full bg-emerald-50">
+          <div className="absolute inset-y-0 left-0 bg-rose-100" style={{ width: `${(CUSHION_CRITICAL_K / CUSHION_SCALE_MAX) * 100}%` }} />
+          <div
+            className="absolute inset-y-0 bg-amber-100"
+            style={{ left: `${(CUSHION_CRITICAL_K / CUSHION_SCALE_MAX) * 100}%`, width: `${((CUSHION_THIN_K - CUSHION_CRITICAL_K) / CUSHION_SCALE_MAX) * 100}%` }}
+          />
+          <div className="absolute inset-y-0 w-0.5 bg-ink" style={{ left: `${frac * 100}%` }} aria-hidden />
+        </div>
+        <div className="relative mt-0.5 h-3">
+          {ticks.map((k) => (
+            <span key={k} className="absolute tnum text-micro text-ink-muted" style={{ left: `${(k / CUSHION_SCALE_MAX) * 100}%`, transform: "translateX(-50%)" }}>
+              {Math.round(k * 100)}%
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-3 space-y-1">
+        {l.rungs.map((x) => (
+          <p key={x.constant} className="max-w-[88ch] text-small text-ink">
+            <span className={`tnum font-semibold ${x.breached ? "text-rose-700" : "text-ink"}`}>
+              {x.breached ? "THROUGH" : `${x.marginPp >= 0 ? "+" : ""}${x.marginPp.toFixed(1)}pp`}
+            </span>{" "}
+            <span className="text-ink-muted">{x.constant}</span> {Math.round(x.k * 100)}% — {x.label}.{" "}
+            {/* The three sentence frames live in lib/cushion.ts, not here: when the JSX owned
+                them, each spliced `consequence` after a connective the clause already contained
+                and rendered "may rise $946 before below this the doctrine stops…". */}
+            {(() => {
+              const ph = rungPhrase(x, money);
+              return (
+                <>
+                  {ph.lead}
+                  {ph.amount && <span className="tnum font-semibold">{ph.amount}</span>}
+                  {ph.tail}
+                </>
+              );
+            })()}
+          </p>
+        ))}
+      </div>
+
+      <p className="mt-2 max-w-[88ch] text-small text-ink-muted">
+        {l.unusedNlvPct != null && (
+          <>
+            SC-B5 reports <span className="tnum">{pct(l.unusedNlvPct, 1)}</span> unused NLV, which is a different
+            quantity: unused NLV is <span className="tnum">1 − maintenance ÷ NLV</span>, the cushion is{" "}
+            <span className="tnum">(cash − maintenance) ÷ NLV</span>. They differ by{" "}
+            <span className="tnum">{((l.unusedNlvPct - l.cushion) * 100).toFixed(1)}pp</span> because the first ignores
+            that only cash can absorb a margin call.{" "}
+          </>
+        )}
+        {l.identityHolds
+          ? "Excess liquidity equals cash − maintenance on this snapshot, so the dollar distances above are stated as maintenance capacity."
+          : `On this snapshot IB's excess liquidity differs from cash − maintenance by ${money(Math.abs(l.identityDiff ?? 0))}, so the distances are stated as excess liquidity only — converting them to maintenance capacity would assume an identity this snapshot does not satisfy.`}{" "}
+        Neither line has a rule id; they are the `CUSHION_THIN` / `CUSHION_CRITICAL` constants.
+      </p>
+    </div>
+  );
+}
+
+const CUSHION_THIN_K = 0.2;
+const CUSHION_CRITICAL_K = 0.1;
+
+/**
+ * One concentration donut plus its legend.
+ *
+ * Danger is drawn ONLY where a rule exists: `pie.ruleApplies` is true just for the merged,
+ * credit-weighted theme cut, which is the quantity `SC-B1` is written against. On every other
+ * cut the legend carries no verdict — and the caption says why, because an unhighlighted slice
+ * must not be read as an approved one. The declared-acquisition portion of each slice is
+ * hatched, since assignment is that position's goal rather than its failure.
+ */
+function ConcentrationPie({
+  pie,
+  title,
+  note,
+  colorOf,
+  idPrefix,
+}: {
+  pie: PieData;
+  title: string;
+  note: string;
+  colorOf: (key: string, i: number) => string;
+  idPrefix: string;
+}) {
+  const unit = pie.weight === "credit" ? "credit" : "notional";
+  return (
+    <div className="bg-surface px-4 py-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <h3 className="text-lede font-semibold text-ink">{title}</h3>
+        <span className="text-small text-ink-muted">{note}</span>
+      </div>
+      <div className="mt-2 flex flex-wrap items-start gap-5">
+        <Donut
+          idPrefix={idPrefix}
+          slices={pie.head.map((sl, i) => ({
+            key: sl.key,
+            value: sl.value,
+            acquisition: sl.acquisition,
+            color: colorOf(sl.key, i),
+            breached: sl.breach != null,
+          }))}
+          tail={pie.tail}
+          centreTop={money(pie.total)}
+          centreSub={`${pie.legs} legs · ${unit}`}
+        />
+        <div className="min-w-[300px] flex-1">
+          <table className="w-full text-small">
+            <thead className="text-left text-micro uppercase tracking-wider text-ink-muted">
+              <tr className="border-b border-line">
+                <th className="py-1 font-medium">{pie.axis === "theme" ? "Theme" : "Sector"}</th>
+                <th className="py-1 text-right font-medium">Share</th>
+                <th className="py-1 text-right font-medium">{unit === "credit" ? "Credit" : "Notional"}</th>
+                <th className="py-1 text-right font-medium">Legs</th>
+                <th className="py-1 font-medium">Against its rule</th>
+              </tr>
+            </thead>
+            <tbody className="text-ink">
+              {pie.head.map((sl, i) => (
+                <tr key={sl.key} className="border-b border-line last:border-0">
+                  <td className="py-1.5">
+                    <span className="dot mr-1.5 inline-block align-middle" style={{ background: colorOf(sl.key, i) }} aria-hidden />
+                    {sl.key}
+                  </td>
+                  <td className={`tnum py-1.5 text-right ${sl.breach ? "font-semibold text-rose-700" : ""}`}>{pct(sl.share, 1)}</td>
+                  <td className="tnum py-1.5 text-right">{money(sl.value)}</td>
+                  <td className="tnum py-1.5 text-right text-ink-muted">{sl.legs}</td>
+                  <td className="py-1.5 text-micro">
+                    {sl.breach ? (
+                      <span className="font-semibold text-rose-700">
+                        {sl.breach.rule} {Math.abs(sl.breach.marginPp).toFixed(1)}pp over the {pct(sl.breach.limit, 0)} cap
+                      </span>
+                    ) : pie.ruleApplies ? (
+                      <span className="text-ink-muted">{(MAX_THEME_CREDIT_SHARE - sl.share > 0 ? "+" : "") + ((MAX_THEME_CREDIT_SHARE - sl.share) * 100).toFixed(1)}pp inside SC-B1</span>
+                    ) : (
+                      <span className="text-ink-muted">no rule on this cut</span>
+                    )}
+                    {sl.acquisition > 0 && (
+                      <span className="text-ink">
+                        {" · incl. "}
+                        {money(sl.acquisition)} declared acquisition ({pct(sl.acquisitionShareOfSlice, 0)} of the slice)
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {pie.tail && (
+                <tr className="border-t border-line">
+                  <td className="py-1.5 text-ink-muted">
+                    <span className="dot mr-1.5 inline-block align-middle" style={{ background: "#c9ced6" }} aria-hidden />
+                    {pie.tail.count} smaller {pie.axis === "theme" ? "themes" : "sectors"}
+                  </td>
+                  <td className="tnum py-1.5 text-right text-ink-muted">{pct(pie.tail.share, 1)}</td>
+                  <td className="tnum py-1.5 text-right text-ink-muted">{money(pie.tail.value)}</td>
+                  <td className="tnum py-1.5 text-right text-ink-muted">{pie.tail.legs}</td>
+                  <td className="py-1.5 text-micro text-ink-muted">{pie.tail.keys.join(", ")}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default async function RiskPage({ searchParams }: { searchParams?: Promise<Record<string, string | string[] | undefined>> }) {
+  // The view/weighting toggle is URL state, so the page stays a server component with no client
+  // JS: each control is a plain anchor. Defaults are merged + credit, which is the cut SC-B1 is
+  // actually written against — and the cut the Markdown mirror therefore renders.
+  const sp = (await searchParams) ?? {};
+  const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
+  const pieView: PieView = (PIE_VIEWS as string[]).includes(one(sp.pie) ?? "") ? (one(sp.pie) as PieView) : "merged";
+  const pieWeight: PieWeight = (PIE_WEIGHTS as string[]).includes(one(sp.w) ?? "") ? (one(sp.w) as PieWeight) : "credit";
   const [r, a, dash, freshness] = await Promise.all([
     getBookRisk(),
     getScAnalyzer(),
@@ -295,6 +518,17 @@ export default async function RiskPage() {
     asOf: asOfNow,
   });
 
+  const cushion = buildCushionLadder({
+    netLiquidation: r.balance?.netLiquidation ?? null,
+    totalCash: r.balance?.totalCash ?? null,
+    maintMargin: r.balance?.maintMargin ?? null,
+    excessLiquidity: r.balance?.excessLiquidity ?? null,
+    at: r.balance?.at ?? null,
+  });
+  const themePie = buildPie(r.legs, "theme", pieView, pieWeight);
+  const sectorPie = buildPie(r.legs, "sector", pieView, pieWeight);
+  const overCapNames = nameBreaches(r.legs, MAX_NAME_CREDIT_SHARE);
+
   const toc: TocItem[] = [
     { id: "brief", label: "The brief", count: brief.level, tone: brief.level === "critical" ? "bad" : brief.level === "normal" ? "ok" : "warn" },
     ...(r.acquisition.contracts > 0
@@ -313,7 +547,19 @@ export default async function RiskPage() {
     { id: "flags", label: "Risk flags", count: flagged, tone: flagged ? "bad" : "ok" },
     { id: "earnings", label: "Earnings before expiry", count: e.legs, tone: e.legs ? "warn" : "ok" },
     { id: "shock", label: "Parallel shock", count: signed(worstShock?.net ?? null), tone: (worstShock?.net ?? 0) < 0 ? "bad" : "ok" },
+    {
+      id: "cushion",
+      label: "Liquidity cushion",
+      count: cushion ? pct(cushion.cushion, 1) : "—",
+      tone: cushion == null ? "warn" : cushion.rungs.some((x) => x.breached) ? "bad" : cushion.rungs[0].marginPp < 2 ? "warn" : "ok",
+    },
     { id: "dist", label: "Distributions", group: true },
+    {
+      id: "concentration",
+      label: "Concentration",
+      count: themePie.head.filter((x) => x.breach).length || null,
+      tone: themePie.head.some((x) => x.breach) ? "bad" : "ok",
+    },
     { id: "themes", label: "Correlated themes", count: r.byTheme.length, tone: (c.maxTheme?.creditShare ?? 0) > MAX_THEME_CREDIT_SHARE ? "bad" : "ok" },
     { id: "sector", label: "By sector", count: r.bySector.length },
     { id: "dte", label: "By days to expiry", count: r.byDte.length },
@@ -361,7 +607,7 @@ export default async function RiskPage() {
       <DeltaProvenanceNote p={deltaProvenance} className="mt-2 max-w-4xl" />
 
       {/* The rail plus every section beside it. Anchors only — no client JS. */}
-      <div className="mt-4 flex items-start gap-6">
+      <div className="mt-4 lg:flex lg:items-start lg:gap-6">
         <PageToc items={toc} />
         <div className="min-w-0 flex-1">
       {/* ── the brief: what the data says, not what it contains ──────────── */}
@@ -408,7 +654,7 @@ export default async function RiskPage() {
         <>
           <H2
             id="acquisition"
-            note={`${r.acquisition.contracts} contracts · ${money(r.acquisition.delivery)} to take delivery · ${pct(r.acquisition.deliveryVsCash)} of settled cash`}
+            note={`${r.acquisition.contracts} contracts · ${money(r.acquisition.delivery)} to take delivery · ${pct(r.acquisition.deliveryVsCash)} of cash`}
           >
             Acquisition book
           </H2>
@@ -494,7 +740,7 @@ export default async function RiskPage() {
             </table>
           </div>
           <p className="mt-1.5 text-small leading-snug text-ink-muted">
-            Promised delivery {money(r.acquisition.delivery)} against {money(r.acquisition.cash)} of settled cash (
+            Promised delivery {money(r.acquisition.delivery)} against {money(r.acquisition.cash)} of total cash (
             {pct(r.acquisition.deliveryVsCash)}) and {pct(r.acquisition.deliveryVsNlv)} of NLV. That cash is also what backs the
             premium book&rsquo;s margin — nothing in the system ring-fences it, which is open question §7.3 of the spec.{" "}
             {r.acquisition.delivery > 0 && r.acquisition.weightedDelivery > 0 && (
@@ -664,7 +910,7 @@ export default async function RiskPage() {
           tone={(t.accountMarginPctOfNlv ?? t.marginPctOfNlvExtrapolated ?? 0) > MAX_MARGIN_PCT_NLV ? "text-rose-700" : "text-ink"}
           sub={
             t.accountMarginPctOfNlv != null
-              ? `${pct(t.accountMarginPctOfNlv)} of NLV ${money(r.balance?.netLiquidation ?? null)} (limit ${pct(MAX_MARGIN_PCT_NLV)}) — IB's own account requirement · excess liquidity ${money(t.excessLiquidity)} = ${pct(t.excessLiquidityPctOfNlv)} cushion · this book's synced legs sum to ${money(t.maintMargin)}`
+              ? `${pct(t.accountMarginPctOfNlv)} of NLV ${money(r.balance?.netLiquidation ?? null)} (limit ${pct(MAX_MARGIN_PCT_NLV)}) — IB's own account requirement · this book's synced legs sum to ${money(t.maintMargin)} · cushion below`
               : `${pct(t.marginPctOfNlv)} of NLV ${money(r.balance?.netLiquidation ?? null)}${
                   t.marginCoverage < 1 ? ` · only ${pct(t.marginCoverage)} of legs priced → ~${money(t.maintMarginExtrapolated)} (${pct(t.marginPctOfNlvExtrapolated)}) real` : ""
                 }`
@@ -827,6 +1073,126 @@ export default async function RiskPage() {
       </p>
 
       {/* ── distributions ────────────────────────────────────────────────── */}
+      <H2 id="cushion" note="the only risk that can end the program without the market being wrong">Liquidity cushion</H2>
+      <CushionLadderBlock l={cushion} />
+
+      {/* ── concentration, as a picture ──────────────────────────────────── */}
+      <H2
+        id="concentration"
+        note={`${themePie.legs} legs · ${money(themePie.total)} ${pieWeight} · book snapshot ${r.balance?.at ? formatTimestamp(new Date(r.balance.at)) : "unknown"}`}
+      >
+        Concentration
+      </H2>
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-small">
+        <span className="text-ink-muted">side:</span>
+        {PIE_VIEWS.map((v) => (
+          <a
+            key={v}
+            href={`?pie=${v}&w=${pieWeight}#concentration`}
+            className={`px-1.5 py-0.5 ${v === pieView ? "bg-[#eef1f4] font-semibold text-ink" : "text-ink-muted hover:text-ink"}`}
+          >
+            {v === "merged" ? "calls + puts" : v}
+          </a>
+        ))}
+        <span className="ml-2 text-ink-muted">weight:</span>
+        {PIE_WEIGHTS.map((w) => (
+          <a
+            key={w}
+            href={`?pie=${pieView}&w=${w}#concentration`}
+            className={`px-1.5 py-0.5 ${w === pieWeight ? "bg-[#eef1f4] font-semibold text-ink" : "text-ink-muted hover:text-ink"}`}
+          >
+            {w === "credit" ? "credit" : "assignment notional"}
+          </a>
+        ))}
+      </div>
+
+      <div className="mt-3 grid grid-cols-1 gap-px bg-line">
+        <ConcentrationPie
+          pie={themePie}
+          idPrefix="theme"
+          title={`By correlated theme${pieView === "merged" ? "" : ` — ${pieView} only`}`}
+          note={
+            themePie.ruleApplies
+              ? `SC-B1 caps any one theme at ${pct(MAX_THEME_CREDIT_SHARE, 0)} of open credit`
+              : "diagnostic cut — no rule caps a theme per side or by notional"
+          }
+          colorOf={(_k, i) => themeColor(i)}
+        />
+        <ConcentrationPie
+          pie={sectorPie}
+          idPrefix="sector"
+          title={`By sector${pieView === "merged" ? "" : ` — ${pieView} only`}`}
+          note="secondary: no sector limit exists in the rule registry, so no slice here is a breach"
+          colorOf={(k) => sectorColor(k)}
+        />
+      </div>
+
+      <div className="mt-2 space-y-1.5">
+        {/* Effective themes is a property of the WHOLE pie, so it is a caption with its margin,
+            never a per-slice colour: it is the number that says "this pie should have more
+            slices", which no single slice can express. */}
+        <p className="max-w-[88ch] text-small text-ink">
+          <span className={`tnum font-semibold ${(c.effectiveThemes ?? 0) >= MIN_EFFECTIVE_THEMES ? "text-emerald-700" : "text-rose-700"}`}>
+            {num(c.effectiveThemes, 1)} effective themes
+          </span>{" "}
+          against a floor of {MIN_EFFECTIVE_THEMES} ({((c.effectiveThemes ?? 0) - MIN_EFFECTIVE_THEMES).toFixed(1)} margin) — 1 ÷ HHI{" "}
+          {num(c.hhiTheme, 3)}. Thirteen named themes concentrate to under four.
+        </p>
+        {overCapNames.length > 0 && (
+          <p className="max-w-[88ch] text-small text-ink">
+            <span className="font-semibold text-rose-700">SC-E3</span> — {overCapNames.length} names over the{" "}
+            {pct(MAX_NAME_CREDIT_SHARE, 0)} per-name cap:{" "}
+            {overCapNames.map((n, i) => (
+              <span key={n.symbol}>
+                {i > 0 ? " · " : ""}
+                <span className="font-medium">{n.symbol}</span> <span className="tnum">{pct(n.share, 1)}</span>{" "}
+                <span className="tnum text-rose-700">{n.marginPp.toFixed(1)}pp</span>
+              </span>
+            ))}
+            . Names are a footnote rather than slices: {t.symbols} of them cannot be a readable pie, and it is the next
+            sale these actually constrain.
+          </p>
+        )}
+        {themePie.acquisition > 0 && (
+          <p className="max-w-[88ch] text-small text-ink">
+            Hatched wedges are the <Link href="#acquisition" className="text-accent hover:underline">declared acquisition book</Link> —{" "}
+            {money(themePie.acquisition)}, {pct(themePie.acquisitionShare, 1)} of this view. Assignment is the goal there,
+            so it is drawn apart from premium positions whose success is the opposite. SC-B1 <em>includes</em> it in the
+            theme share while SC-B4 <em>excludes</em> it; that asymmetry is deliberate — correlated deltas rise together
+            whatever the intent — and the per-slice line above states how much of each breach is intentional.
+          </p>
+        )}
+        {/* The side views exist to answer "which side is the concentration?", so the answer is
+            stated rather than left for the reader to infer from two charts. Computed from the
+            same slices, so it cannot drift from them. */}
+        {(() => {
+          const callTop = buildPie(r.legs, "theme", "calls", "credit").head[0];
+          const putTop = buildPie(r.legs, "theme", "puts", "credit").head[0];
+          const mergedTop = buildPie(r.legs, "theme", "merged", "credit").head[0];
+          if (!callTop || !putTop || !mergedTop) return null;
+          const callsInside = callTop.share <= MAX_THEME_CREDIT_SHARE;
+          const putsOver = putTop.share > MAX_THEME_CREDIT_SHARE;
+          return (
+            <p className="max-w-[88ch] text-small text-ink">
+              <span className="font-semibold">Which side is it?</span> The call book&rsquo;s largest theme is {callTop.key}{" "}
+              at {pct(callTop.share, 1)}
+              {callsInside ? `, inside the ${pct(MAX_THEME_CREDIT_SHARE, 0)} cap` : ""}; the put book&rsquo;s is {putTop.key}{" "}
+              at {pct(putTop.share, 1)}
+              {putsOver ? ", over it" : ""}.{" "}
+              {callsInside && putsOver
+                ? `So the ${pct(mergedTop.share, 1)} ${mergedTop.key} breach is a put-side phenomenon, and selling fewer calls would not fix it.`
+                : "Neither side is the sole source of the merged reading."}{" "}
+              Nothing in the doctrine caps a theme per side, so neither side view carries a gate — this is the diagnosis,
+              not a rule.
+            </p>
+          );
+        })()}
+        <p className="max-w-[88ch] text-small text-ink-muted">
+          Credit and notional rank the book differently: switch the weighting to see it. A pie must reconcile with the
+          tables below — Σ slices = {money(themePie.total)} across {themePie.legs} legs.
+        </p>
+      </div>
+
       <H2 id="themes" note="credit-weighted; “at risk” = strike × 100 × contracts if assigned">Correlated themes</H2>
       <div className="mt-3">
         <SliceTable slices={r.byTheme} label="Theme" />

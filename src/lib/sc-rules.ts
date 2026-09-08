@@ -538,7 +538,7 @@ export const SC_VERSIONS: ScVersion[] = [
       {
         change: "§1 amended: the call book holds no underlying, but the ACCOUNT will, by design",
         why: "The claim 'no underlying is ever held' became false the moment an acquisition put was declared; leaving it would have made the delivery obligation invisible to the program that shares the cash.",
-        test: "delivery obligation reported against settled cash (AP-4, R-DELIVERY)",
+        test: "delivery obligation reported against total cash (AP-4, R-DELIVERY)",
         minTrades: 1,
       },
     ],

@@ -333,7 +333,18 @@ export function buildCandidates(
       const klass: Candidate["klass"] = isLongLeveragedEtf(s) ? "leveraged ETF" : s.type === "etf" ? "ETF" : "single stock";
       const proposal = propose(s, asOf, window.dteMin, window.dteMax);
       const inverse = s.type === "etf" && INVERSE.test(s.name);
-      const earningsInLife = s.earningsInDays != null && proposal != null ? s.earningsInDays >= 0 && s.earningsInDays <= proposal.dte : s.earningsInDays != null ? false : null;
+      // An ETF has no report date by construction, so the earnings gate is CLEAR for one —
+      // not "cannot confirm". Feeding it `null` made SC-S6 read "earnings date unknown" on
+      // every fund, which is a fact about our data rather than about the instrument, and it
+      // contradicted this module's own `profileGates` (which already special-cases ETFs).
+      const isEtf = klass !== "single stock";
+      const earningsInLife = isEtf
+        ? false
+        : s.earningsInDays != null && proposal != null
+          ? s.earningsInDays >= 0 && s.earningsInDays <= proposal.dte
+          : s.earningsInDays != null
+            ? false
+            : null;
 
       const gates = [
         ...evaluateRules("selection", {
