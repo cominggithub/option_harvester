@@ -60,12 +60,23 @@ export const EARNINGS_NEAR_DAYS = 21; // inside three weeks
 // belong in the same cluster, so the geared shelf brought its own themes with it
 // (Banks & credit, Healthcare, Homebuilders, …) and those are filled in here.
 const THEMES: Record<string, string[]> = {
-  Semiconductors: ["SOXX", "SOXL", "SOXS", "SMH", "TSM", "NVDA", "NVDL", "AMD", "INTC", "MU", "MRVL", "KLAC", "LRCX", "AMAT", "TXN", "ON", "ASML", "ARM", "QCOM", "AVGO", "SMCI"],
-  "US technology": ["XLK", "VGT", "IGV", "TECL"],
-  "Precious metals": ["GDX", "GDXJ", "NUGT", "DUST", "JNUG", "GLD", "IAU", "SLV", "AG", "AGQ", "UGL", "NEM", "GOLD", "PAAS", "WPM", "FNV"],
+  Semiconductors: ["SOXX", "SOXL", "SOXS", "SMH", "TSM", "NVDA", "NVDL", "AMD", "INTC", "MU", "MRVL", "KLAC", "LRCX", "AMAT", "TXN", "ON", "ASML", "ARM", "QCOM", "AVGO", "SMCI", "EWT"],
+  // EWT is 55% TSMC: a Taiwan fund is a chip bet, not a diversifier from one. EWY (Korea,
+  // ~35% Samsung + Hynix) stays with China below — the regional cycle is the larger part
+  // of it — but that is a judgement, and it is the one to revisit first if the mix ever
+  // looks like it double-counts Asia.
+  // ARKK belongs here rather than on its own: TSLA/COIN/PLTR/HOOD is not software and not
+  // semis, but no macro turn re-rates chips without re-rating it, which is the only
+  // question a concentration cap asks.
+  "US technology": ["XLK", "VGT", "IGV", "TECL", "ARKK"],
+  "Precious metals": ["GDX", "GDXJ", "NUGT", "DUST", "JNUG", "GLD", "IAU", "SLV", "SIL", "SILJ", "AG", "AGQ", "UGL", "NEM", "GOLD", "PAAS", "WPM", "FNV"],
   "Crypto-linked": ["IBIT", "MSTR", "MSTU", "MSTX", "COIN", "MARA", "RIOT", "CLSK", "HOOD", "BITO", "ETHE", "GBTC"],
   China: ["YINN", "FXI", "KWEB", "MCHI", "BABA", "JD", "PDD", "NIO", "EWY"],
-  "Emerging markets": ["EEM", "EMB"],
+  // EM country funds cluster with the EM complex: one dollar/flows move re-prices all of
+  // them. Developed single-country funds (EWJ/EWG/EWU/EFA) are deliberately absent — they
+  // fall back to the "International" sector, which is coarser but does not claim Japan and
+  // Brazil are one bet.
+  "Emerging markets": ["EEM", "EMB", "EWZ", "EWW", "INDA"],
   "Energy & oil": ["USO", "UCO", "XLE", "XOP", "GUSH", "OIH", "BOIL", "KOLD", "UNG", "NRG", "FSLR", "ENPH"],
   Biotech: ["LABU", "LABD", "XBI", "IBB", "MRNA", "BNTX", "CRSP", "NVAX"],
   Healthcare: ["XLV"],

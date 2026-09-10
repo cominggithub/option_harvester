@@ -1,7 +1,16 @@
 import { prisma } from "@/lib/db";
 import type { SecurityRow } from "@/lib/securities";
-import { NC_MIN_WEEKLY_BUCKETS } from "@/lib/securities";
-import { isLongLeveragedEtf, levEtf, familiesOverlap, LEV_MIN_FACTOR } from "@/lib/leveraged";
+import { NC_IV_MIN, NC_MIN_WEEKLY_BUCKETS } from "@/lib/securities";
+import { themeOf } from "@/lib/bookrisk";
+import {
+  isInverseFund,
+  isLongLeveragedEtf,
+  isVolFuturesFund,
+  levEtf,
+  leverageFactor,
+  familiesOverlap,
+  LEV_MIN_FACTOR,
+} from "@/lib/leveraged";
 
 // Watchlists shown on /watchlists (and, later, pushed to IB by the plugin).
 //
@@ -25,25 +34,57 @@ export const HIV_IV_MIN = 50;
 export const HIVS_PRICE_MIN = 20;
 export const HIVS_PRICE_MAX = 200;
 
-// LEVHIV / LEVMIX — the *writable* end of the geared shelf. LEV is the whole shelf
+// LEVHIV / LEVMIX — the *writable* end of the ETF shelf. LEV is the geared universe
 // (every 2x/3x long fund the ingest tracks); these two answer the next question, "which
-// of them can I actually sell a call on, and which set of them is not the same bet
-// repeated?"
+// funds can I actually sell a call on, and which set of them is not the same bet
+// repeated?" Since 2026-09-08 they are not geared-only: an unleveraged fund carrying
+// genuinely rich premium belongs on a premium list, and the leverage was never the point —
+// the premium was. Inverse funds of ANY gearing stay out (a call written on a fund that
+// shorts an index is a bullish bet on it), as do VIX-futures funds.
 //
-// IV floor: the same 50% as HIV. Leveraged IV is structurally high (2–3× the index's
-// vol), so this floor is not what makes the list interesting — it is what removes the
-// funds whose gearing does NOT produce premium: measured 2026-09-08, TMF sat at 32%,
-// ERX 44%, UGL 47%, DRN 41%, UDOW 37%. A 3x fund at 32% IV pays like a 1x name while
-// carrying 3× the gap risk, which is the one trade on this shelf that is strictly worse
-// than its unleveraged sibling.
+// TWO IV FLOORS, because the same number means different things at different gearing.
+// A 3x fund at 50% IV implies ~17% on the index it tracks — poor premium wearing a big
+// number. A 1x fund at 45% is the index at 45%. So the geared arm keeps HIV's 50% and the
+// 1x arm uses the naked-call screen's own floor (NC_IV_MIN, 40%): both say "premium worth
+// selling", measured against what the fund actually is. Measured 2026-09-08, the geared
+// floor is what removes TMF at 32% IV, ERX 44%, UGL 47%, DRN 41% and UDOW 37% — a 3x fund
+// paying 1x premium while carrying 3x gap risk is the one trade on this shelf strictly
+// worse than its own cash sibling.
 export const LEV_IV_MIN = HIV_IV_MIN;
+export const LEV_IV_MIN_1X = NC_IV_MIN;
+
+// ETFHIV / ETFMIX — the same programme run on UNLEVERAGED funds only, because premium is
+// not the only cost of a geared short call: margin is.
+//
+// Measured on this book (option_harvest_position_margin, IB what-if, 2026-09-09), short
+// put legs, maintenance as a share of assignment notional:
+//
+//     SOXL  47.3%   ← geared 3x
+//     SOXX  16.4%   ← the SAME semiconductor bet, unleveraged
+//     GDX   13.5% / 12.5%
+//     COPX   3.5%
+//
+// 2.9× the maintenance for the same exposure. n=1 on the geared side (only 1 of the
+// book's 11 geared legs has a what-if margin row), so this is consistent with the
+// operator's premise rather than proof of it — but the mechanism is not in doubt: IB
+// applies a house multiple to geared funds, and buying power, not premium, is what limits
+// how many positions the book can carry (see `R-MARGIN` on /risk).
+//
+// So the IV floor here is LOWER than either arm of LEVHIV: 30%, the point being cheap
+// maintenance rather than rich premium. A 1x fund at 32% IV pays less per contract than a
+// 3x fund at 90%, and lets the account hold three of them for the same buying power.
+// Deliberately overlapping with LEVHIV's 1x arm (40%): that list answers "where is the
+// premium richest", this one answers "what can I afford to hold".
+export const ETF_IV_MIN = 30;
 
 // Liquidity floor in DOLLARS traded per day, not shares — share counts rank these funds
 // backwards. RETL trades 469k shares/day at $8.67 ($4M) while DPST trades 275k at $139
 // ($38M): by share count the unwritable one wins by 70%. $10M/day is where the measured
 // shelf splits: UTSL $5M, RETL $4M, UGLD $1M, UYM $0.4M (ATM spread 164% — a market in
-// name only) below it; CURE and DRN at $10M, DFEN $12M, CWEB $11M above.
-export const LEV_MIN_DOLLAR_VOL = 10_000_000;
+// name only) below it; CURE and DRN at $10M, DFEN $12M, CWEB $11M above. Shared by every
+// shelf list (geared or not) — the question "can I get out of this?" does not depend on
+// gearing.
+export const SHELF_MIN_DOLLAR_VOL = 10_000_000;
 
 // A tradable expiry inside the strategy's window. `weeklyBuckets` counts expiries within
 // 42 days (capped at 6), and §2 sells 30–45 DTE, so 2 is the real floor here: it means a
@@ -52,61 +93,106 @@ export const LEV_MIN_DOLLAR_VOL = 10_000_000;
 // CURE, ERX, UCO, UGL, DFEN, DRN, UTSL, EDC, TECL and USD all show 2 — for a density
 // this strategy never uses. Zero means the fund has no option market at all, which is
 // what excludes the operator's BTCU / EVMU / URAA picks until one lists.
-export const LEV_MIN_LADDER = 2;
+export const SHELF_MIN_LADDER = 2;
 
-/** Dollars of the fund traded per day — the liquidity measure for a geared ETF. */
+/** Dollars of the fund traded per day — the liquidity measure for any shelf fund. */
 const dollarVolume = (s: SecurityRow): number | null =>
   s.price != null && s.volume != null ? s.price * s.volume : null;
 
-/** The LEVHIV gate, over the fields both a SecurityRow and a /wl-log snapshot row have. */
+/** The shelf gate, over the fields both a SecurityRow and a /wl-log snapshot row have. */
 export type LevGateInput = {
   ticker: string;
-  /** Name-derived leveraged-long flag (`isLongLeveragedEtf`). */
-  lev: boolean;
+  /** Fund name — carries the gearing, the inverse marker and the VIX marker. */
+  name: string | null;
+  /** "etf" | "stock"; single stocks are screened by NC/HIV, not here. */
+  type: string | null;
   ivPct: number | null;
   weeklyBuckets: number | null;
   price: number | null;
   volume: number | null;
 };
 
-export function isLevWritable(x: LevGateInput): boolean {
-  const e = levEtf(x.ticker);
-  // Hazard first, so no amount of IV can argue a vol-futures fund onto a sell list.
-  if (e?.hazard) return false;
-  // Geared and long — either on the curated shelf or read off its own name, so a fund
-  // the sponsor launches next month qualifies without waiting for a code change.
-  if (!e && !x.lev) return false;
-  const dv = x.price != null && x.volume != null ? x.price * x.volume : null;
-  return (
-    (x.ivPct ?? 0) >= LEV_IV_MIN &&
-    dv != null &&
-    dv >= LEV_MIN_DOLLAR_VOL &&
-    (x.weeklyBuckets ?? 0) >= LEV_MIN_LADDER
-  );
+/**
+ * The three bars every shelf list shares, whatever its gearing: it must be a fund, it
+ * must be long, and it must not be a volatility-futures product. Everything after this is
+ * a measured threshold.
+ */
+function shelfEligible(x: LevGateInput): boolean {
+  if ((x.type ?? "").toLowerCase() !== "etf") return false;
+  // Direction first: an inverse fund is the mirror of the trade we want, at any gearing.
+  if (isInverseFund(x.name)) return false;
+  // Then the categorical bar — a VIX-futures fund is never writable, however rich.
+  if (isVolFuturesFund(x.name)) return false;
+  return levEtf(x.ticker)?.hazard == null;
 }
 
-/** Exposure family — the curated one, else the ticker itself (never merge two unknowns). */
-export const levFamilyOf = (ticker: string): string => levEtf(ticker)?.family ?? ticker.toUpperCase();
+/** Liquid enough to get out of, with an expiry the strategy can actually use. */
+function shelfTradable(x: LevGateInput): boolean {
+  const dv = x.price != null && x.volume != null ? x.price * x.volume : null;
+  return dv != null && dv >= SHELF_MIN_DOLLAR_VOL && (x.weeklyBuckets ?? 0) >= SHELF_MIN_LADDER;
+}
+
+/** Gearing as written on the fund's name, falling back to the curated shelf. */
+export function shelfFactor(x: Pick<LevGateInput, "ticker" | "name">): number {
+  return leverageFactor(x.name) ?? levEtf(x.ticker)?.factor ?? 1;
+}
+
+export function isLevWritable(x: LevGateInput): boolean {
+  if (!shelfEligible(x)) return false;
+  const ivFloor = shelfFactor(x) >= LEV_MIN_FACTOR ? LEV_IV_MIN : LEV_IV_MIN_1X;
+  return (x.ivPct ?? 0) >= ivFloor && shelfTradable(x);
+}
+
+/** ETFHIV: unleveraged only — the margin-cheap arm. Geared funds belong to LEVHIV. */
+export function isPlainWritable(x: LevGateInput): boolean {
+  if (!shelfEligible(x)) return false;
+  if (shelfFactor(x) >= LEV_MIN_FACTOR) return false;
+  return (x.ivPct ?? 0) >= ETF_IV_MIN && shelfTradable(x);
+}
 
 /**
- * LEVMIX selection: richest IV first, and a name is taken only if its family is unused
- * AND no family already taken is adjacent to it in the overlap graph (lib/leveraged.ts).
+ * Exposure family — the de-overlap axis. The curated one for a geared fund; otherwise the
+ * correlated theme, which is what makes this work for cash funds: their families are not
+ * curated, so without the theme fallback every one of them would be its own family and
+ * "one name per bet" would degrade to "every name". Ticker only as the last resort, so two
+ * genuinely unknown funds are never merged.
+ */
+export const levFamilyOf = (ticker: string, theme?: string | null): string =>
+  levEtf(ticker)?.family ?? (theme != null && theme !== "" ? theme : ticker.toUpperCase());
+
+/**
+ * LEVMIX selection: richest IV first, and a name is taken only if it is a genuinely new
+ * bet — its exposure **family** unused, its correlated **theme** unused, and no family
+ * already taken adjacent to it in the overlap graph (lib/leveraged.ts).
+ *
+ * The theme test is what makes 1x funds safe to admit. Family is curated only for the
+ * geared shelf, so SLV and GDX would each be their own family and both get picked —
+ * while the risk engine already knows they are one bet ("Precious metals", the theme
+ * AGQ/NUGT/JNUG also carry). Family alone is too fine for cash funds, theme alone is too
+ * coarse for geared ones (Gold, Gold miners and Silver are three families, one theme), so
+ * both apply and the stricter one wins.
  *
  * Greedy on IV rather than exhaustive: the goal is "the best-paying name per distinct
  * bet", and taking the richest name first is what an operator does by hand. The result is
  * order-independent because the sort is total (IV, then dollar volume, then ticker).
  */
-export function pickLevMix<T extends { ticker: string; ivPct: number | null; dollarVol: number | null }>(rows: T[]): T[] {
+export function pickLevMix<T extends { ticker: string; ivPct: number | null; dollarVol: number | null; theme?: string | null }>(
+  rows: T[],
+): T[] {
   const sorted = [...rows].sort(
     (a, b) => (b.ivPct ?? 0) - (a.ivPct ?? 0) || (b.dollarVol ?? 0) - (a.dollarVol ?? 0) || a.ticker.localeCompare(b.ticker),
   );
-  const taken: string[] = [];
+  const families: string[] = [];
+  const themes = new Set<string>();
   const out: T[] = [];
   for (const r of sorted) {
-    const fam = levFamilyOf(r.ticker);
-    if (taken.includes(fam)) continue;
-    if (taken.some((f) => familiesOverlap(f, fam))) continue;
-    taken.push(fam);
+    const theme = r.theme ?? null;
+    const fam = levFamilyOf(r.ticker, theme);
+    if (families.includes(fam)) continue;
+    if (theme != null && theme !== "" && themes.has(theme)) continue;
+    if (families.some((f) => familiesOverlap(f, fam))) continue;
+    families.push(fam);
+    if (theme != null && theme !== "") themes.add(theme);
     out.push(r);
   }
   return out;
@@ -128,8 +214,12 @@ const toMember = (s: SecurityRow): OhMember => ({ ticker: s.ticker, name: s.name
 //          hold a call on yet — i.e. call-writing candidates you've flagged.
 //  roic  — high-ROIC value-quality names (ROIC ≥ HIGH_ROIC_MIN; the /roic screen).
 //  lev   — leveraged LONG ETFs (2x/3x bulls); inverse/short funds excluded.
-//  levhiv— lev with rich IV, real dollar volume, and an expiry in the 30–45d window.
-//  levmix— levhiv thinned to one name per exposure family (overlap graph in leveraged.ts).
+//  levhiv— ETFs with sellable premium: IV ≥ 50% geared / ≥ 40% at 1x, real dollar volume,
+//          an expiry in the 30–45d window; nothing inverse, nothing on VIX futures.
+//  levmix— levhiv thinned to one name per bet (family, theme, and the overlap graph).
+//  etfhiv— UNLEVERAGED ETFs with IV ≥ 30: same premium programme at a fraction of the
+//          maintenance margin, which is what actually limits how many positions fit.
+//  etfmix— etfhiv thinned to one name per bet — the sector-spread version.
 export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
   const nc = securities.filter((s) => s.nc);
   const nccan = nc.filter((s) => !s.held);
@@ -162,15 +252,24 @@ export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
   // purpose (see lib/leveraged.ts): writing calls on a -3x fund is a bullish bet on
   // the index, the opposite of the naked-call book's intent.
   const lev = securities.filter(isLongLeveragedEtf);
-  // LEVHIV — the writable end of that shelf: rich IV, real dollar volume, an expiry in
-  // the strategy's window, and no hazard flag. LEVMIX then thins it to one name per
-  // distinct bet using the family overlap graph, so the list itself is the diversified
-  // set rather than a menu the operator has to de-duplicate by eye.
+  // LEVHIV — the writable end of the shelf: rich IV for what the fund is (50% geared,
+  // 40% unleveraged), real dollar volume, an expiry in the strategy's window, nothing
+  // inverse and nothing on VIX futures. LEVMIX then thins it to one name per distinct
+  // bet, so the list itself is the diversified set rather than a menu the operator has to
+  // de-duplicate by eye.
   const levGate = (s: SecurityRow) =>
-    isLevWritable({ ticker: s.ticker, lev: isLongLeveragedEtf(s), ivPct: s.ivPct, weeklyBuckets: s.weeklyBuckets, price: s.price, volume: s.volume });
+    isLevWritable({ ticker: s.ticker, name: s.name, type: s.type, ivPct: s.ivPct, weeklyBuckets: s.weeklyBuckets, price: s.price, volume: s.volume });
   const levhiv = securities.filter(levGate);
-  const levmix = pickLevMix(levhiv.map((s) => ({ ticker: s.ticker, ivPct: s.ivPct, dollarVol: dollarVolume(s), s })));
-  const levmixRows = levmix.map((r) => r.s);
+  const shelfRow = (s: SecurityRow) => ({ ticker: s.ticker, ivPct: s.ivPct, dollarVol: dollarVolume(s), theme: themeOf(s.ticker, s.sector), s });
+  const levmixRows = pickLevMix(levhiv.map(shelfRow)).map((r) => r.s);
+  // ETFHIV / ETFMIX — the same shelf, unleveraged only, at a lower IV floor: a geared
+  // short call costs multiples of the maintenance margin of the same bet held cash (SOXL
+  // 47.3% of assignment notional vs SOXX 16.4%, measured on this book), and buying power
+  // is what caps the number of positions.
+  const etfGate = (s: SecurityRow) =>
+    isPlainWritable({ ticker: s.ticker, name: s.name, type: s.type, ivPct: s.ivPct, weeklyBuckets: s.weeklyBuckets, price: s.price, volume: s.volume });
+  const etfhiv = securities.filter(etfGate);
+  const etfmixRows = pickLevMix(etfhiv.map(shelfRow)).map((r) => r.s);
 
   return [
     {
@@ -242,14 +341,26 @@ export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
     {
       key: "levhiv",
       name: "LEVHIV",
-      desc: `Writable geared shelf — leveraged long ETFs with IV ≥ ${LEV_IV_MIN}%, at least $${(LEV_MIN_DOLLAR_VOL / 1e6).toFixed(0)}M a day traded in the fund, and ≥${LEV_MIN_LADDER} expiries inside 42 days. Dollar volume, not share count: RETL turns over more shares than DPST and a fifth of the money. Vol-futures funds (UVXY) are barred outright, however rich the IV.`,
+      desc: `Writable premium shelf — ETFs with premium worth selling: IV ≥ ${LEV_IV_MIN}% if the fund is geared 2x/3x, ≥ ${LEV_IV_MIN_1X}% if it is unleveraged (a 3x fund at 50% is only ~17% on its index; a 1x fund at 45% is 45%), plus at least $${(SHELF_MIN_DOLLAR_VOL / 1e6).toFixed(0)}M a day traded in the fund and ≥${SHELF_MIN_LADDER} expiries inside 42 days. Dollar volume, not share count: RETL turns over more shares than DPST and a fifth of the money. Inverse funds are excluded at any gearing, and VIX-futures funds (UVXY, VXX) outright, however rich the IV.`,
       members: levhiv.map(toMember).sort(byTicker),
     },
     {
       key: "levmix",
       name: "LEVMIX",
-      desc: "De-overlapped geared shelf — LEVHIV thinned to the richest-IV name per exposure family, skipping any family that moves with one already taken (TECL after SOXL, AGQ after NUGT, EDC after YINN). Each of these is a different bet, so the list can be written across without doubling a 3x position by another name.",
+      desc: "De-overlapped premium shelf — LEVHIV thinned to the richest-IV name per bet: one per exposure family, one per correlated theme, and never two families that move together (TECL after SOXL, GDX/SLV/NUGT after JNUG, EWY after YINN). Each of these is a different bet, so the list can be written across without doubling a position under a second ticker.",
       members: levmixRows.map(toMember).sort(byTicker),
+    },
+    {
+      key: "etfhiv",
+      name: "ETFHIV",
+      desc: `Margin-cheap premium shelf — UNLEVERAGED ETFs only (no 2x/3x, no inverse, no VIX funds) with IV ≥ ${ETF_IV_MIN}%, at least $${(SHELF_MIN_DOLLAR_VOL / 1e6).toFixed(0)}M a day traded and ≥${SHELF_MIN_LADDER} expiries inside 42 days. The floor is lower than LEVHIV's on purpose: a geared short call costs multiples of the maintenance margin of the same bet held cash — measured on this book, SOXL took 47.3% of assignment notional against SOXX's 16.4% for the same semiconductor exposure — and buying power, not premium, is what caps how many positions the account can carry.`,
+      members: etfhiv.map(toMember).sort(byTicker),
+    },
+    {
+      key: "etfmix",
+      name: "ETFMIX",
+      desc: "De-overlapped margin-cheap shelf — ETFHIV thinned to the richest-IV name per bet: one per correlated theme, and never two families that move together. Sector spread by construction (the silver miners collapse to one name, oil and gas services to one, the semis pair to one), so it can be written across without spending buying power twice on the same exposure.",
+      members: etfmixRows.map(toMember).sort(byTicker),
     },
   ];
 }

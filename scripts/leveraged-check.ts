@@ -13,14 +13,25 @@
 import assert from "node:assert/strict";
 import {
   familiesOverlap,
+  isInverseFund,
   isLongLeveragedEtf,
+  isVolFuturesFund,
   levEtf,
   leverageFactor,
   levOverlapFamilies,
   LEV_ETFS,
   LEV_MIN_FACTOR,
 } from "../src/lib/leveraged";
-import { isLevWritable, levFamilyOf, pickLevMix, LEV_IV_MIN, LEV_MIN_LADDER } from "../src/lib/watchlists";
+import {
+  isLevWritable,
+  isPlainWritable,
+  levFamilyOf,
+  pickLevMix,
+  ETF_IV_MIN,
+  LEV_IV_MIN,
+  LEV_IV_MIN_1X,
+  SHELF_MIN_LADDER,
+} from "../src/lib/watchlists";
 import { themeOf } from "../src/lib/bookrisk";
 
 let pass = 0;
@@ -197,30 +208,79 @@ ok(!familiesOverlap("Biotech", "Long treasury"), "unrelated families do not over
 ok(!familiesOverlap("Biotech", "Nonexistent family"), "an unknown family overlaps nothing");
 
 // ── the LEVHIV gate ──────────────────────────────────────────────────────────
-// Three measured conditions plus the hazard bar. `lev` is the name-derived flag, so a
-// fund off the shelf can still qualify — that is how a fund launched next month gets in.
+// Four measured conditions (type, IV against the floor for that gearing, dollar volume,
+// ladder) and three categorical bars (inverse at any gearing, VIX futures, curated
+// hazard). A fund off the curated shelf still qualifies on its name — that is how a fund
+// launched next month gets in, geared or not.
 const gate = (o: Partial<Parameters<typeof isLevWritable>[0]>) =>
-  isLevWritable({ ticker: "SOXL", lev: true, ivPct: 100, weeklyBuckets: 6, price: 100, volume: 1_000_000, ...o });
+  isLevWritable({
+    ticker: "SOXL",
+    name: "Direxion Daily Semiconductor Bull 3X",
+    type: "etf",
+    ivPct: 100,
+    weeklyBuckets: 6,
+    price: 100,
+    volume: 1_000_000,
+    ...o,
+  });
 
 ok(gate({}), "a rich, liquid, laddered geared fund is writable");
-ok(!gate({ ivPct: LEV_IV_MIN - 0.1 }), `IV below ${LEV_IV_MIN}% is out`);
-ok(gate({ ivPct: LEV_IV_MIN }), "…exactly at the floor is in (the gate is ≥)");
+ok(!gate({ type: "stock", name: "NVIDIA Corporation" }), "a single stock is screened by NC/HIV, not here");
+ok(!gate({ ivPct: LEV_IV_MIN - 0.1 }), `a geared fund below ${LEV_IV_MIN}% is out`);
+ok(gate({ ivPct: LEV_IV_MIN }), "…exactly at the geared floor is in (the gate is ≥)");
 ok(!gate({ ivPct: null }), "unmeasured IV is out, not assumed rich");
 ok(!gate({ price: 8.67, volume: 469_011 }), "RETL's $4M/day is out");
-ok(gate({ ticker: "DPST", price: 139.21, volume: 275_432 }), "DPST's $38M/day is in — on fewer shares than RETL");
+ok(gate({ ticker: "DPST", name: "Direxion Daily Regional Banks Bull 3X Shares", price: 139.21, volume: 275_432 }), "DPST's $38M/day is in — on fewer shares than RETL");
 ok(!gate({ price: null }), "no price ⇒ no dollar volume ⇒ out");
 ok(!gate({ volume: null }), "no volume ⇒ out");
-ok(!gate({ weeklyBuckets: LEV_MIN_LADDER - 1 }), `an expiry ladder under ${LEV_MIN_LADDER} is out`);
-ok(gate({ weeklyBuckets: LEV_MIN_LADDER }), "…and exactly at it is in");
+ok(!gate({ weeklyBuckets: SHELF_MIN_LADDER - 1 }), `an expiry ladder under ${SHELF_MIN_LADDER} is out`);
+ok(gate({ weeklyBuckets: SHELF_MIN_LADDER }), "…and exactly at it is in");
 ok(!gate({ weeklyBuckets: 0 }), "no option market at all is out (BTCU / EVMU / URAA today)");
-ok(!gate({ ticker: "UVXY", lev: false }), "UVXY is barred by its hazard flag…");
-ok(!gate({ ticker: "UVXY", lev: true, ivPct: 500, volume: 100_000_000 }), "…and no amount of IV or volume argues it back in");
-ok(!gate({ ticker: "SPY", lev: false }), "an unleveraged fund is not on this list");
-ok(gate({ ticker: "XXXX", lev: true }), "an uncurated geared fund still qualifies on its name");
+ok(!gate({ ticker: "UVXY", name: "ProShares Ultra VIX Short-Term Futures ETF" }), "UVXY is barred…");
+ok(!gate({ ticker: "UVXY", name: "ProShares Ultra VIX Short-Term Futures ETF", ivPct: 500, volume: 100_000_000 }), "…and no amount of IV or volume argues it back in");
+ok(gate({ ticker: "XXXX", name: "Whoever Daily Something Bull 3X Shares" }), "an uncurated geared fund still qualifies on its name");
+
+// The 1x arm (2026-09-08): an unleveraged fund needs only the naked-call screen's own IV
+// floor, because at 1x that number IS the index's vol — a 3x fund at 50% implies ~17%.
+const oneX = (o: Partial<Parameters<typeof isLevWritable>[0]>) =>
+  gate({ ticker: "SLV", name: "iShares Silver Trust", ...o });
+
+ok(oneX({ ivPct: 45.1, price: 44.2, volume: 17_000_000 }), "SLV at 45% IV and $752M/day is writable");
+ok(oneX({ ivPct: LEV_IV_MIN_1X }), `…exactly at the 1x floor (${LEV_IV_MIN_1X}%) is in`);
+ok(!oneX({ ivPct: LEV_IV_MIN_1X - 0.1 }), "…and just under it is out");
+ok(!gate({ ivPct: LEV_IV_MIN_1X }), "the SAME IV on a 3x fund is NOT enough — 40% at 3x is ~13% on the index");
+ok(oneX({ ivPct: 44.2, ticker: "USO", name: "United States Oil Fund" }), "USO qualifies on the 1x floor");
+ok(!oneX({ ivPct: 30 }), "a quiet 1x fund (XLU-like) is out");
+ok(!oneX({ ticker: "SPY", name: "SPDR S&P 500 ETF Trust", ivPct: 15 }), "SPY's 15% IV is not premium");
+
+// Direction, at every gearing. This is what the 1x arm made load-bearing: `leverageFactor`
+// returns null for an inverse fund AND for an unleveraged one, so before the arm existed
+// the two were indistinguishable and it did not matter. Now it does.
+ok(isInverseFund("ProShares Short S&P500 (-1x)"), "a -1x fund reads inverse");
+ok(isInverseFund("ProShares Short QQQ"), "…and so does the word form with no digits");
+ok(isInverseFund("Direxion Daily Semiconductor Bear 3X"), "Bear reads inverse");
+ok(isInverseFund("ProShares UltraShort Silver"), "UltraShort reads inverse");
+ok(!isInverseFund("iShares Silver Trust"), "a plain long fund does not");
+ok(!isInverseFund(null) && !isInverseFund(""), "no name ⇒ not inverse");
+ok(!gate({ ticker: "SH", name: "ProShares Short S&P500 (-1x)", ivPct: 90 }), "a -1x inverse fund is out even at 90% IV");
+ok(!gate({ ticker: "SQQQ", name: "ProShares UltraPro Short QQQ (-3x Nasdaq-100)", ivPct: 56, price: 20, volume: 68_000_000 }), "SQQQ is out: rich, liquid, and the wrong direction");
+ok(!gate({ ticker: "TZA", name: "Direxion Daily Small Cap Bear 3X", ivPct: 55, price: 20, volume: 8_000_000 }), "TZA likewise");
+
+// VIX futures, by name, at any gearing — the category bar that does not need curation.
+ok(isVolFuturesFund("iPath Series B S&P 500 VIX Short-Term Futures ETN"), "VXX reads as a vol-futures fund");
+ok(isVolFuturesFund("ProShares VIX Mid-Term Futures ETF"), "VIXM too");
+ok(isVolFuturesFund("ProShares Ultra VIX Short-Term Futures ETF"), "and UVXY");
+ok(!isVolFuturesFund("iShares Silver Trust"), "a silver fund is not a vol fund");
+ok(!isVolFuturesFund("Volatility Shares 2x Ether ETF"), "…nor is a sponsor merely NAMED Volatility Shares");
+ok(gate({ ticker: "ETHU", name: "Volatility Shares 2x Ether ETF", ivPct: 112 }), "…so ETHU is still writable");
+ok(!gate({ ticker: "VXX", name: "iPath Series B S&P 500 VIX Short-Term Futures ETN", ivPct: 70, price: 45, volume: 10_000_000 }), "VXX is barred without ever being curated");
 
 // ── LEVMIX: one bet per name ──────────────────────────────────────────────────
-const row = (ticker: string, ivPct: number, dollarVol = 50e6) => ({ ticker, ivPct, dollarVol });
-const mixOf = (rows: { ticker: string; ivPct: number; dollarVol: number }[]) => pickLevMix(rows).map((r) => r.ticker);
+const row = (ticker: string, ivPct: number, dollarVol = 50e6, theme?: string | null) => ({ ticker, ivPct, dollarVol, theme });
+const mixOf = (rows: ReturnType<typeof row>[]) => pickLevMix(rows).map((r) => r.ticker);
+// The themes the risk engine actually reports, so the test data cannot drift from it.
+const SECTORS: Record<string, string> = { EWT: "International", ARKK: "Information Technology", IGV: "Information Technology", XBI: "Health Care", SLV: "Commodities", USO: "Commodities", UNG: "Commodities", GDX: "Materials", GDXJ: "Materials", SIL: "Materials", SILJ: "Materials", EWZ: "International", SOXX: "Information Technology", SMH: "Information Technology" };
+const themed = (ticker: string, ivPct: number, dollarVol = 50e6) => row(ticker, ivPct, dollarVol, themeOf(ticker, SECTORS[ticker] ?? "Leveraged / Inverse"));
 
 ok(levFamilyOf("SOXL") === "Semiconductors" && levFamilyOf("TECL") === "US technology", "families come off the shelf");
 ok(levFamilyOf("xxxx") === "XXXX", "an uncurated fund is its own family — two unknowns are never merged");
@@ -240,16 +300,75 @@ ok(
   "an IV tie is broken by dollar volume, not by ticker",
 );
 ok(mixOf([]).length === 0, "an empty shelf yields an empty mix");
+
+// The theme test — what makes 1x funds safe to admit, in two ways: it de-duplicates on
+// the cluster the risk engine already uses, AND it becomes the family for a fund the
+// geared shelf does not curate (so the overlap graph applies to cash funds too).
+ok(themeOf("SLV", "Commodities") === themeOf("AGQ", "Leveraged / Inverse"), "SLV and AGQ are one theme in the engine");
+ok(levFamilyOf("SLV", "Precious metals") === "Precious metals", "an uncurated fund takes its theme as its family");
+ok(levFamilyOf("AGQ", "Precious metals") === "Silver", "…while a curated fund keeps its finer family");
+ok(levFamilyOf("ZZZZ", null) === "ZZZZ" && levFamilyOf("ZZZZ", "") === "ZZZZ", "no theme ⇒ the ticker, so two unknowns are never merged");
+ok(mixOf([themed("JNUG", 104), themed("SLV", 45), themed("GDX", 47), themed("GDXJ", 53), themed("SIL", 53)]).join() === "JNUG", "the whole metals complex, geared and cash, reduces to one name");
+ok(mixOf([themed("SLV", 45), themed("JNUG", 104)]).join() === "JNUG", "…and the geared one wins only because its IV is higher, not because it is geared");
+ok(mixOf([themed("SLV", 45), themed("USO", 44), themed("XBI", 31)]).join() === "SLV,USO,XBI", "metals, oil and biotech are three bets");
+ok(mixOf([themed("USO", 44), themed("UNG", 42), themed("BOIL", 76)]).join() === "BOIL", "oil, gas and geared gas are one energy bet");
+ok(mixOf([themed("SOXL", 118), themed("SOXX", 50), themed("SMH", 49)]).join() === "SOXL", "the semis complex likewise");
+// The graph now reaches cash funds through that fallback: EWZ's family is "Emerging
+// markets", which is adjacent to China, so a Brazil fund does not join a China fund.
+ok(mixOf([themed("EWY", 49), themed("EWZ", 43)]).join() === "EWY", "an EM fund is not a second bet next to China");
+ok(mixOf([themed("EWZ", 43), themed("XBI", 31)]).join() === "EWZ,XBI", "…but EM and biotech are two");
+// Country funds whose index is one company are that company's bet, not a country bet.
+ok(themeOf("EWT", "International") === "Semiconductors", "EWT is 55% TSMC — a chip bet");
+ok(mixOf([themed("SOXX", 41), themed("EWT", 34)]).join() === "SOXX", "…so it does not survive next to SOXX");
+ok(themeOf("ARKK", "Information Technology") === "US technology", "ARKK clusters with tech");
+ok(mixOf([themed("SOXX", 41), themed("ARKK", 38), themed("IGV", 31)]).join() === "SOXX", "chips, innovation and software are one bet in a drawdown");
+ok(mixOf([row("AAAA", 50, 50e6, "One theme"), row("BBBB", 45, 50e6, "One theme")]).join() === "AAAA", "two uncurated funds sharing a theme are one bet");
+ok(mixOf([row("AAAA", 50, 50e6, null), row("BBBB", 45, 50e6, null)]).join() === "AAAA,BBBB", "…with no theme at all, only the ticker distinguishes them");
 {
-  const mix = mixOf(LEV_ETFS.filter((e) => !e.hazard).map((e) => row(e.ticker, 60 + (e.factor === 3 ? 1 : 0))));
-  const fams = mix.map(levFamilyOf);
+  const mix = mixOf(LEV_ETFS.filter((e) => !e.hazard).map((e) => themed(e.ticker, 60 + (e.factor === 3 ? 1 : 0))));
+  const fams = mix.map((t) => levFamilyOf(t, themeOf(t, "Leveraged / Inverse")));
+  const themes = mix.map((t) => themeOf(t, "?"));
   ok(new Set(fams).size === fams.length, "the whole shelf reduces to distinct families");
+  ok(new Set(themes).size === themes.length, "…and to distinct themes");
   ok(
     !fams.some((a, i) => fams.some((b, j) => i !== j && familiesOverlap(a, b))),
     "…and no two survivors are in overlapping families",
   );
   ok(mix.length >= 12, `…leaving ${mix.length} genuinely different bets to choose from`);
 }
+
+// ── ETFHIV: the unleveraged, margin-cheap arm ─────────────────────────────────
+// Same eligibility bars, a LOWER IV floor (30%), and geared funds excluded outright —
+// the whole point is the maintenance margin a 3x fund costs, not the premium it pays.
+const plain = (o: Partial<Parameters<typeof isPlainWritable>[0]>) =>
+  isPlainWritable({
+    ticker: "XBI",
+    name: "SPDR S&P Biotech ETF",
+    type: "etf",
+    ivPct: 35,
+    weeklyBuckets: 6,
+    price: 160,
+    volume: 5_000_000,
+    ...o,
+  });
+
+ok(plain({}), "a liquid 1x fund at 35% IV is writable");
+ok(plain({ ivPct: ETF_IV_MIN }), `…exactly at the ${ETF_IV_MIN}% floor is in`);
+ok(!plain({ ivPct: ETF_IV_MIN - 0.1 }), "…and just under it is out");
+ok(!plain({ ivPct: null }), "unmeasured IV is out");
+ok(ETF_IV_MIN < LEV_IV_MIN_1X, "the unleveraged floor is LOWER than LEVHIV's 1x floor — margin, not premium, is the point");
+ok(plain({ ticker: "ITB", name: "iShares U.S. Home Construction ETF", ivPct: 30.5 }), "ITB at 30.5% qualifies here…");
+ok(!isLevWritable({ ticker: "ITB", name: "iShares U.S. Home Construction ETF", type: "etf", ivPct: 30.5, weeklyBuckets: 6, price: 91, volume: 2_000_000 }), "…and not for LEVHIV, which wants 40% from a 1x fund");
+// Geared funds are the one thing this list refuses that LEVHIV accepts.
+ok(!plain({ ticker: "SOXL", name: "Direxion Daily Semiconductor Bull 3X", ivPct: 118 }), "a 3x fund is out at any IV — that is the list's purpose");
+ok(!plain({ ticker: "AGQ", name: "ProShares Ultra Silver (2x)", ivPct: 97 }), "a 2x fund likewise");
+ok(!plain({ ticker: "SOXS", name: "Direxion Daily Semiconductor Bear 3X", ivPct: 118 }), "and an inverse fund, as everywhere");
+ok(!plain({ ticker: "SH", name: "ProShares Short S&P500 (-1x)", ivPct: 90 }), "…including a -1x one, which IS unleveraged");
+ok(!plain({ ticker: "VXX", name: "iPath Series B S&P 500 VIX Short-Term Futures ETN", ivPct: 70 }), "VIX funds stay barred");
+ok(!plain({ type: "stock", name: "NVIDIA Corporation", ivPct: 60 }), "a single stock is not an ETF");
+ok(!plain({ price: 91, volume: 50_000 }), "an illiquid 1x fund is out ($4.5M/day)");
+ok(!plain({ weeklyBuckets: 1 }), "…as is one without an expiry the strategy can use");
+ok(plain({ ticker: "IBIT", name: "iShares Bitcoin Trust ETF", ivPct: 39.3, price: 43.9, volume: 76_000_000 }), "IBIT qualifies — a spot crypto fund is unleveraged");
 
 console.log(
   `leveraged-check: ${pass} assertions passed (LEV_MIN_FACTOR = ${LEV_MIN_FACTOR}x, inverse/short excluded, ` +

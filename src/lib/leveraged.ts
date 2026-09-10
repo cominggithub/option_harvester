@@ -48,6 +48,34 @@ export function isLongLeveragedEtf(s: { type?: string | null; name?: string | nu
   return f != null && f >= LEV_MIN_FACTOR;
 }
 
+/**
+ * Inverse / short by name — the one test that must also work on **1x** funds.
+ *
+ * `leverageFactor` returns null for both "an inverse fund" and "an unleveraged fund",
+ * which was fine while only geared funds were being screened. Once a 1x fund can reach a
+ * sell list, the two must be told apart: SH (-1x S&P 500) and XLE are both "factor null",
+ * and writing a call on the first is a bullish bet on the index it shorts.
+ *
+ * False positives are safe here and false negatives are not, so the word test stays
+ * broad: a short-duration bond fund ("… Short Term Treasury …") is wrongly excluded and
+ * loses nothing, because it has no premium worth selling anyway.
+ */
+export function isInverseFund(name: string | null | undefined): boolean {
+  return INVERSE_RE.test((name ?? "").trim());
+}
+
+// Volatility-futures funds: VIX ETPs of any gearing, including 1x (VXX, VIXY). Barred
+// from every sell list by NAME, not by curation, because the shelf cannot list a fund
+// nobody has ingested yet and this is the one category where being late is unrecoverable:
+// the instrument can double in a day while every equity name is falling, so the short and
+// whatever hedges it lose together. UVXY carries an explicit `hazard` too — belt and
+// braces, and the check pins both.
+const VOL_FUTURES_RE = /\bvix\b|volatility\s+(short-?term|mid-?term|index|futures)/i;
+
+export function isVolFuturesFund(name: string | null | undefined): boolean {
+  return VOL_FUTURES_RE.test((name ?? "").trim());
+}
+
 // ── the curated shelf: what each fund is exposed to, and what it duplicates ───
 //
 // The classifier above answers "is this leveraged and long?" from the name. It cannot

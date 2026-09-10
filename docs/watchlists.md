@@ -15,9 +15,9 @@ user's Interactive Brokers lists, *synced* in by the extension.
 Derived live at read time from the dashboard data (`getDashboardData`) — they
 always reflect the latest ingest + synced positions. Defined in
 **`src/lib/watchlists.ts`** (`computeOhWatchlists`), shared by the page and the
-OH→IB push so membership has one source of truth. There are **13 OH lists** in a
-fixed order (NC, NCcan, Cpos, Ppos, RED, HIV, HIVS, HIVSC, OTC, ROIC, LEV, LEVHIV, LEVMIX) — that order sets
-the OH→IB suggested ids **990001–990013** (`OH_ID_BASE` in `ohpush.ts`), so **only
+OH→IB push so membership has one source of truth. There are **15 OH lists** in a
+fixed order (NC, NCcan, Cpos, Ppos, RED, HIV, HIVS, HIVSC, OTC, ROIC, LEV, LEVHIV, LEVMIX, ETFHIV, ETFMIX) — that order sets
+the OH→IB suggested ids **990001–990015** (`OH_ID_BASE` in `ohpush.ts`), so **only
 append new lists at the end** to keep existing ids stable.
 
 **Shared thresholds** — one source of truth, all exported constants; never inline a
@@ -33,9 +33,11 @@ magic number:
 | `HIVS_PRICE_MIN` / `HIVS_PRICE_MAX` | $20 / $200 | `watchlists.ts` | HIVS, HIVSC |
 | `HIGH_ROIC_MIN` | 15 % | `roic.ts` | ROIC |
 | `LEV_MIN_FACTOR` | 2 (2x and up) | `leveraged.ts` | LEV |
-| `LEV_IV_MIN` | 50 % (= `HIV_IV_MIN`) | `watchlists.ts` | LEVHIV, LEVMIX |
-| `LEV_MIN_DOLLAR_VOL` | $10,000,000 traded/day | `watchlists.ts` | LEVHIV, LEVMIX |
-| `LEV_MIN_LADDER` | 2 expiries inside 42 d | `watchlists.ts` | LEVHIV, LEVMIX |
+| `LEV_IV_MIN` | 50 % (= `HIV_IV_MIN`) — **geared** funds | `watchlists.ts` | LEVHIV, LEVMIX |
+| `LEV_IV_MIN_1X` | 40 % (= `NC_IV_MIN`) — **1x** funds | `watchlists.ts` | LEVHIV, LEVMIX |
+| `ETF_IV_MIN` | 30 % — unleveraged only | `watchlists.ts` | ETFHIV, ETFMIX |
+| `SHELF_MIN_DOLLAR_VOL` | $10,000,000 traded/day | `watchlists.ts` | LEVHIV, LEVMIX, ETFHIV, ETFMIX |
+| `SHELF_MIN_LADDER` | 2 expiries inside 42 d | `watchlists.ts` | LEVHIV, LEVMIX, ETFHIV, ETFMIX |
 | assignment-risk delta | \|Δ\| > 0.30 (inline) | `watchlists.ts` | RED |
 
 **The lists**, grouped by family. "Requires" is the data a list needs to be
@@ -54,8 +56,10 @@ correct — a list silently under-populates if its inputs are stale/unsynced.
 | `otc`  | OTC    | target   | `(s.target \|\| s.position.call !== 0 \|\| s.position.put !== 0) && s.position.call === 0` — "Option Targets, no Call": names in the Analyzer's Option Targets (flagged bullseye **or** any held option leg) that you don't yet hold a **call** on. Your call-writing candidates; excludes anything already in Cpos. | marks (target) + position sync |
 | `roic` | ROIC   | value    | `s.highRoic` — value-quality names with Return on Invested Capital ≥ `HIGH_ROIC_MIN` (15 %). Same membership as the `/roic` screen; stocks only (ETFs have no ROIC). The cash-backed put-write quality universe. | ingest (fundamentals → ROIC) |
 | `lev`  | LEV    | leverage | `isLongLeveragedEtf(s)` — **leveraged long ETFs**: `type === "etf"` and a name-derived leverage factor ≥ `LEV_MIN_FACTOR` (2x/3x — "Ultra" = 2x, "UltraPro" = 3x, "Bull 2X/3X", "(2x)", "2x Long"). **Inverse/short funds are excluded** ("Bear", "Short", "UltraShort", "Inverse", any `-2x`/`-3x`). | ingest (name + type) |
-| `levhiv`| LEVHIV | leverage | `isLevWritable(s)` — the **writable** end of the geared shelf: LEV **and** IV ≥ `LEV_IV_MIN` **and** price × volume ≥ `LEV_MIN_DOLLAR_VOL` **and** weeklyBuckets ≥ `LEV_MIN_LADDER`, minus any fund carrying a `hazard` on the shelf (today: UVXY). Liquidity is measured in **dollars**, not shares — RETL turns over more shares than DPST and a fifth of the money. A geared fund that is *not* on the curated shelf still qualifies on its name, so a newly launched 3x fund needs no code change. | ingest (IV + price + volume + ladder) |
-| `levmix`| LEVMIX | leverage | `pickLevMix(levhiv)` — LEVHIV thinned to **one name per exposure family**, richest IV first, skipping any family adjacent to one already taken in the overlap graph (`leveraged.ts`). Set-valued: whether a fund is in depends on which others outrank it that day. This is the list you can write straight down without doubling a 3x bet under a second ticker. | same as LEVHIV |
+| `levhiv`| LEVHIV | leverage | `isLevWritable(s)` — every ETF with **premium worth selling**: `type === "etf"`, **not** inverse at any gearing (`isInverseFund` — a call on a fund that shorts an index is a bullish bet on it), **not** a VIX-futures fund (`isVolFuturesFund` — VXX/VIXY/UVXY, barred by name so an un-curated one cannot slip in), no `hazard` on the shelf, and then IV ≥ `LEV_IV_MIN` if geared **or** IV ≥ `LEV_IV_MIN_1X` if 1x, plus price × volume ≥ `LEV_MIN_DOLLAR_VOL` and weeklyBuckets ≥ `LEV_MIN_LADDER`. **Two IV floors on purpose:** a 3x fund at 50 % implies ~17 % on its index, a 1x fund at 45 % *is* 45 %, so the same number means different things and each is measured against what the fund is. Liquidity is in **dollars**, not shares — RETL turns over more shares than DPST and a fifth of the money. A fund off the curated shelf still qualifies on its name, so a new launch needs no code change. | ingest (IV + price + volume + ladder) |
+| `levmix`| LEVMIX | leverage | `pickLevMix(levhiv)` — LEVHIV thinned to **one name per bet**, richest IV first: a name is taken only if its exposure **family** is unused, its correlated **theme** is unused, and no family already taken is **adjacent** to it in the overlap graph (`leveraged.ts`). For a fund the geared shelf does not curate, the **theme becomes the family**, which is what makes the graph reach cash funds (EWZ's "Emerging markets" is adjacent to China, so a Brazil fund does not join a Korea fund); ticker only when there is no theme either, so two unknowns are never merged. Set-valued: whether a fund is in depends on which others outrank it that day. | same as LEVHIV |
+| `etfhiv`| ETFHIV | margin | `isPlainWritable(s)` — the same shelf **unleveraged only** (2x/3x excluded outright, inverse and VIX funds as everywhere) with IV ≥ `ETF_IV_MIN` (30 %) plus the shared liquidity and ladder floors. The floor is **lower** than either LEVHIV arm on purpose: this list is about what the account can afford to hold, not where premium is richest. Measured on this book (`option_harvest_position_margin`, IB what-if, 2026-09-09), maintenance as a share of assignment notional was **SOXL 47.3 %** against **SOXX 16.4 %** for the same semiconductor bet — 2.9×, and buying power is what `R-MARGIN` reports as the binding constraint. n=1 on the geared side (1 of the book's 11 geared legs has a what-if row), so that is consistent with the premise rather than proof of it; the mechanism (IB's house multiple on geared funds) is not in doubt. | ingest (IV + price + volume + ladder) |
+| `etfmix`| ETFMIX | margin | `pickLevMix(etfhiv)` — ETFHIV thinned the same way, so the list is sector-spread by construction: the silver miners collapse to one name, oil and oil services to one, SOXX/SMH/ARKK/IGV/EWT to one. This is the list to write across when maintenance margin, not premium, is the scarce resource. | same as ETFHIV |
 
 Family notes / invariants:
 - **screen** — the doctrine's naked-call funnel. `NCcan = NC − held`; see docs/spec.md §3 and docs/strategy.md.
@@ -63,10 +67,13 @@ Family notes / invariants:
 - **IV** — volatility funnel: `HIVSC ⊆ HIVS ⊆ HIV`. HIV is the high-IV universe that also has a tradable 1/2/3/4-week option ladder (so there's near-term premium to sell), HIVS narrows to a tradable price band, HIVSC removes anything you already have an option position on (so it's the actionable "write here next" IV list — the IV analogue of NCcan).
 - **target** — OTC is the flag/hold-driven call-writing queue; a name leaves OTC the moment a call is written on it (it becomes Cpos).
 - **value** — ROIC is the standalone value-quality universe (the `/roic` screen), independent of positions/IV; it's the pool you'd sell cash-backed puts into on a panic. ETFs are excluded (no ROIC).
-- **leverage** — LEV is the 2x/3x **long** ETF shelf (`lib/leveraged.ts`, self-check `scripts/leveraged-check.ts`): the structurally richest call premium in the universe, where daily-rebalancing decay works *for* the writer. Inverse funds are deliberately absent — writing a call on a `-3x` fund is a *bullish* index bet, the opposite of the NC book. Membership is a static property of the instrument's name, so `/wl-log` only shows a LEV change when the universe itself gains/drops a fund. Classification is name-based (Yahoo exposes no leverage field); the sponsors' naming is rigidly conventional, and the check pins every fund currently tracked.
+- **margin** — ETFHIV/ETFMIX are the geared pair's answer to the cost the geared pair ignores. Premium is not the only price of a short call: a 3x fund consumes multiples of the maintenance margin of the same exposure held cash, and since `R-MARGIN` reports buying power (not the market) as this book's binding constraint, a fund that pays half the premium at a fifth of the margin can be the better trade. Hence a **lower** IV floor (30 %) than the geared list, and no 2x/3x at all. The two pairs deliberately overlap on 1x funds: LEVHIV admits them at 40 % because it asks "where is premium richest", ETFHIV at 30 % because it asks "what fits".
+  - **Judgement calls in the theme map, visible so they can be revisited.** `EWT` is filed under Semiconductors (55 % TSMC — a Taiwan fund is a chip bet, not a diversifier from one) and `ARKK` under US technology (TSLA/COIN/PLTR is neither software nor semis, but no macro turn re-rates chips without re-rating it). `EWY` stays with China despite ~35 % Samsung + Hynix, because the regional cycle is the larger part of it — that is the first line to revisit if the mix ever looks like it double-counts Asia.
+- **leverage** — LEV is the 2x/3x **long** ETF shelf (`lib/leveraged.ts`, self-check `scripts/leveraged-check.ts`): the structurally richest call premium in the universe, where daily-rebalancing decay works *for* the writer. Inverse funds are deliberately absent — writing a call on a `-3x` fund is a *bullish* index bet, the opposite of the NC book. Membership is a static property of the instrument's name, so `/wl-log` only shows a LEV change when the universe itself gains/drops a fund. Classification is name-based (Yahoo exposes no leverage field); the sponsors' naming is rigidly conventional, and the check pins every fund currently tracked. LEVHIV/LEVMIX sit on top of it and are **not** geared-only (see below): the family keeps the `LEV` prefix because the IB list ids and names are pushed by it, but the question they answer is "which ETFs pay enough to write, and which of those are different bets".
   - **`LEV_ETFS` — the curated shelf** (`lib/leveraged.ts`) is what the ingest universe, these three lists and the risk engine's theme map all read. Each of the 47 funds carries a **factor** (confirmed against its own name), an exposure **family**, its **driver** in plain terms, a correlated **theme**, and optionally a **hazard**. Two things the classifier cannot know live here: *what moves it* ("Homebuilders & Supplies Bull 3X" is a mortgage-rate bet, and the name never says so) and *what it duplicates*.
   - **Families and the overlap graph** — a family is the finest cut that is genuinely one bet (Gold, Gold miners and Silver are three families, one theme); the graph names families that move together without being identical, declared one-directionally and applied symmetrically. It is the executable form of the operator's own "與哪些容易重複" column, and it is the only thing LEVMIX selects against. Adjacency is deliberately asymmetric in meaning: housing/REITs/the long bond collapse to one bet, while Utilities stays separate — adjacent to the long bond and to REITs, but AI power demand is not housing.
-  - **`hazard` = watched, never written.** UVXY is on the shelf (the operator asked to watch it) and barred from LEVHIV/LEVMIX no matter how rich its IV: a naked call on a VIX-futures fund is the one position here whose loss the strategy cannot size, and it spikes precisely when every other name on the shelf is falling. Note the accident that its name (`… Short-Term Futures …`) also trips the inverse guard, so it never enters LEV either — the check pins both facts separately, because relying on the accident would be relying on a regex.
+  - **`hazard` = watched, never written.** UVXY is on the shelf (the operator asked to watch it) and barred from LEVHIV/LEVMIX no matter how rich its IV: a naked call on a VIX-futures fund is the one position here whose loss the strategy cannot size, and it spikes precisely when every other name on the shelf is falling. Note the accident that its name (`… Short-Term Futures …`) also trips the inverse guard, so it never enters LEV either — the check pins both facts separately, because relying on the accident would be relying on a regex. Since 2026-09-08 the whole *category* is barred by name (`isVolFuturesFund`: `\bVIX\b` or "volatility short/mid-term|index|futures"), so VXX and VIXY are out before anyone curates them — while "Volatility Shares 2x Ether ETF" (a sponsor name, not a vol fund) stays in.
+  - **1x funds are admitted, inverse funds never** (2026-09-08, at operator request). The leverage was never the point — the premium was — so an unleveraged ETF clearing `LEV_IV_MIN_1X` (40 %, the NC screen's own floor) belongs on a premium list. This made `isInverseFund` load-bearing: `leverageFactor` returns null for an inverse fund *and* for an unleveraged one, which did not matter while only geared funds were screened. Now SH (−1x) and XLE are both "factor null" and only one of them is writable. The word test is deliberately broad (a "Short Term Treasury" fund is wrongly excluded and loses nothing — it has no premium anyway); a false negative would put a bullish index bet on a sell list.
   - **Themes, not the sector bucket.** Every geared fund's `theme` is merged into `lib/bookrisk`'s theme map. Without it these funds fall back to their sector, and their sector is the single bucket "Leveraged / Inverse" — the SC-B1 credit cap would then read a utilities 3x and a defense 3x as one bet, and a gold 2x and a China 3x as the same one. The shelf brought its unleveraged siblings with it (DPST clusters with XLF/KRE/KBE, NAIL with ITB/XHB, and so on), so a geared fund and its cash sibling can never look like two themes.
 
 **Adding a new OH list** (requirement checklist): add it to `computeOhWatchlists`
@@ -99,8 +106,8 @@ Columns: `watchlist_id`, `watchlist_name`, `position` (order in list), `conid`,
 
 `src/app/watchlists/page.tsx` → `WatchlistBrowser` (client). Mirrors the Analyzer:
 
-- **Left-nav tabs** in two groups — **Option Harvester** (all 13 computed lists:
-  NC, NCcan, Cpos, Ppos, RED, HIV, HIVS, HIVSC, OTC, ROIC, LEV, LEVHIV, LEVMIX — built dynamically from
+- **Left-nav tabs** in two groups — **Option Harvester** (all 15 computed lists:
+  NC, NCcan, Cpos, Ppos, RED, HIV, HIVS, HIVSC, OTC, ROIC, LEV, LEVHIV, LEVMIX, ETFHIV, ETFMIX — built dynamically from
   `computeOhWatchlists`, so a new OH list appears here automatically) and
   **Interactive Brokers** (the synced lists) — each with a member count.
 - **Table view** = the Analyzer's wide table (`WideStockList`): a three-line left
@@ -166,18 +173,70 @@ All run in the user's **logged-in IB portal tab** (session cookies) and target t
 backend in the popup (default prod `http://114.33.62.221:19210`). The extension is
 manifest v3; **bump `manifest.json` version on every edit**.
 
-### 4a. IB → web  (popup: **Sync now**; auto-sync; sync-on-login)
+### 4a. IB → web  (popup: **Sync now** / **Quick sync**; auto-sync; sync-on-login)
 `fetchAllInPage` also pulls watchlists: `GET /iserver/watchlists` (the
 `data.user_lists`) → `GET /iserver/watchlist?id=<id>` per list → `POST /api/watchlist
 { ibWatchlists }`. The endpoint parses (`parseIbPortalWatchlists`) and
 **deleteMany + createMany** — a full replace. It runs alongside positions/orders/
-trades/balances, then pushes OH → IB (4b) and reads the result back (4f). **Sync now is
-intentionally fast and background-safe**: no per-contract timers, so switching tabs
-or closing the popup does not strand a long heavy run. A **manual** Sync now also runs
-the **batched greeks** pass (§ greeks endpoint — many conids per snapshot, quick and
-best-effort) so held-option Δ/Θ/Γ refresh without a separate Deep sync. **Auto-sync**
-uses the same light path but **skips greeks** (a backgrounded tab would throttle the
-in-page poll loop).
+trades/balances, then pushes OH → IB (4b) and reads the result back (4f).
+
+**Three tiers, since 0.9.10** (`extension/background.js`):
+
+| Button | Runs | Cost | Logged as |
+| --- | --- | --- | --- |
+| **Sync now** (`runAll`) | **everything**, in dependency order: the pull → batched greeks → IB's 30-day IV for every underlying → exact margin (what-if) → underlying + conid re-resolve → OH push → read-back verify | 2–5 min, **needs the IB tab in front** | `full` |
+| **Quick sync** (`runSync`) | the pull alone: positions/orders/trades/watchlists/balances + greeks + OH push/verify | seconds, background-safe | `quick` |
+| **Deep sync** (`runDeep`) | the heavy passes only, no re-pull — for when positions are already current | 2–5 min, needs the tab in front | `deep` |
+
+**Why "Sync now" is the everything button.** It used to be the fast pull, which meant the
+dashboard could show a minutes-old delta beside a days-old margin with nothing on the page
+to say so — the operator's reasonable reading of "Sync now" is "the data is now current".
+Quick sync is the escape hatch that keeps the old behaviour when only positions and
+balances matter.
+
+Two ordering rules inside the full run, both load-bearing: the pull goes **first**
+(every heavy pass asks the backend which conids to measure), and the OH push goes
+**last** (conid/underlying re-resolution changes what the lists should contain, so
+pushing before it would send IB conids that are about to be corrected). The light phase
+therefore runs with `deferOh` and `skipLog`, and the whole run files **one** `/sync` row.
+
+**Auto-sync and sync-on-login stay on the quick path** — deliberately. They fire
+unattended (a 15-minute alarm; the not-ready→ready login edge), and the heavy passes are
+paced by in-page `setTimeout`s that Chrome throttles to a crawl in a backgrounded tab, so
+a 2–5 minute foreground-dependent run has no business on a timer. Both take greeks
+**when the IB tab happens to be the one on screen** (`withGreeks: "foreground"`), which is
+the most that can be promised without hijacking the screen.
+
+**IB IV keeps itself current (0.9.13+).** The full 7283 sweep is a 2–5 minute
+foreground-bound run and belongs to **Sync now**. But a value that only moves when someone
+presses a button goes a week stale, so the **unattended** syncs (timer + login edge) also top
+up a bounded slice while the IB tab happens to be in front: `GET
+/api/underlying-iv?staleHours=48&limit=120`, oldest first with never-measured names ahead of
+merely-old ones, one round, ~15s. 660 instruments against a 48-hour floor converge on their
+own. The operator's own tolerance is the design input here — two or three days behind is
+acceptable, a week is not.
+
+**Version gate (0.9.11+).** Every request carries `X-OH-Ext-Version`, and
+`src/middleware.ts` refuses **writes** from installs below `MIN_EXT_VERSION`
+(`src/lib/extversion.ts`) with `409 { staleExtension: true, minVersion }`. The extension
+treats that as an order to stand down: it clears both alarms, stores `staleBlocked`, and
+every popup action answers with "this install is out of date" until the folder is updated
+and reloaded (the block clears itself when the manifest version reaches the minimum).
+
+Reads pass, and `/api/ext-log` is exempt — that route is how a stale install identifies
+itself, and blocking it would remove the only evidence it exists. A request with **no**
+version header is also allowed: the web app, the `npm run` scripts and curl send none, and
+refusing what cannot be identified would break them while still not stopping the installs
+this was written for. So pre-0.9.11 copies are *named* instead: `/sync` lists every install
+whose **newest** report is stale (grouped by `extId`, dated by `clientAt` where present, so
+an install's own history and a drained report queue don't masquerade as live copies). The
+banner clearing is the confirmation the old folder is gone.
+
+Why it matters: on 2026-09-10 a 0.9.6 copy was still running its login watcher every 15
+minutes beside 0.9.10. Two installs against one IB tab compete for IB's finite market-data
+lines (a greeks batch that should return 49 contracts returns some of 49) and both write the
+same shapes, so `/sync`'s freshness stamps belong to whichever ran last with nothing on the
+page to say which.
 
 **Sync on IB login** (popup checkbox, **on by default**) runs that same light path
 **once per login**, so the OH↔IB watchlists are in sync the moment a session exists

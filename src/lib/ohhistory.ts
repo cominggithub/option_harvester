@@ -12,13 +12,17 @@ import {
   HIVS_PRICE_MIN,
   HIVS_PRICE_MAX,
   isLevWritable,
+  isPlainWritable,
   levFamilyOf,
   pickLevMix,
+  ETF_IV_MIN,
   LEV_IV_MIN,
-  LEV_MIN_DOLLAR_VOL,
-  LEV_MIN_LADDER,
+  LEV_IV_MIN_1X,
+  SHELF_MIN_DOLLAR_VOL,
+  SHELF_MIN_LADDER,
 } from "@/lib/watchlists";
-import { isLongLeveragedEtf } from "@/lib/leveraged";
+import { isLongLeveragedEtf, leverageFactor, LEV_MIN_FACTOR } from "@/lib/leveraged";
+import { themeOf } from "@/lib/bookrisk";
 import { HIGH_ROIC_MIN, isHighRoic } from "@/lib/roic";
 
 // OH-watchlist change log. OH lists (NC/NCcan/Cpos/Ppos/RED) are computed live and
@@ -86,6 +90,13 @@ type Snap = {
   trendM3: string | null;
   trendM6: string | null;
   lev: boolean; // leveraged long ETF — derived from the security's name, not stored
+  // Static instrument properties, same as `lev`: read from the current securities row
+  // rather than the snapshot, which stores only the day-varying screen inputs. The gate
+  // needs the NAME (gearing, inverse and VIX markers all live there) and the TYPE, and
+  // LEVMIX needs the correlated THEME to tell one bet from two tickers.
+  name: string | null;
+  type: string | null;
+  theme: string | null;
 };
 
 export type OhChange = { ticker: string; name: string | null; reason: string };
@@ -130,16 +141,32 @@ const LIST_META: { key: string; name: string; inList: (r: Snap) => boolean; sele
     key: "levmix",
     name: "LEVMIX",
     inList: (r) => isLevWritable(r),
-    select: (rows) =>
-      new Set(
-        pickLevMix(
-          rows
-            .filter((r) => isLevWritable(r))
-            .map((r) => ({ ticker: r.ticker, ivPct: r.ivPct, dollarVol: r.price != null && r.volume != null ? r.price * r.volume : null })),
-        ).map((r) => r.ticker),
-      ),
+    select: (rows) => mixOf(rows.filter((r) => isLevWritable(r))),
+  },
+  // ETFHIV / ETFMIX — the unleveraged shelf at a lower IV floor (margin, not premium, is
+  // the binding cost). Same shape as the pair above: one per-row gate, one set-valued.
+  { key: "etfhiv", name: "ETFHIV", inList: (r) => isPlainWritable(r) },
+  {
+    key: "etfmix",
+    name: "ETFMIX",
+    inList: (r) => isPlainWritable(r),
+    select: (rows) => mixOf(rows.filter((r) => isPlainWritable(r))),
   },
 ];
+
+/** The set-valued LEVMIX/ETFMIX selection over one day's snapshot rows. */
+function mixOf(rows: Snap[]): Set<string> {
+  return new Set(
+    pickLevMix(
+      rows.map((r) => ({
+        ticker: r.ticker,
+        ivPct: r.ivPct,
+        dollarVol: r.price != null && r.volume != null ? r.price * r.volume : null,
+        theme: r.theme,
+      })),
+    ).map((r) => r.ticker),
+  );
+}
 
 const fmtM = (v: number | null) => (v == null ? "?" : `${(v / 1_000_000).toFixed(1)}M`);
 const fmtIv = (v: number | null) => (v == null ? "?" : `${v.toFixed(0)}%`);
@@ -298,30 +325,37 @@ function reasonFor(key: string, prev: Snap | undefined, cur: Snap, dir: "added" 
       // Static membership (the fund's name), so the only cause is universe churn.
       return dir === "added" ? "leveraged long ETF entered the universe" : "left the universe";
     }
-    case "levhiv": {
-      // Three gates, so name the one that moved rather than restating the rule.
+    case "levhiv":
+    case "etfhiv": {
+      // Three measured gates and two IV floors, so name the one that moved rather than
+      // restating the rule. The static bars (inverse, VIX futures, type) never flip.
       const dv = (r: Snap | undefined) => (r?.price != null && r?.volume != null ? r.price * r.volume : null);
       const fmtDv = (v: number | null) => (v == null ? "?" : `$${(v / 1e6).toFixed(0)}M`);
       const iv = (r: Snap | undefined) => (r?.ivPct != null ? `${r.ivPct.toFixed(0)}%` : "?");
+      const geared = (leverageFactor(cur.name) ?? 1) >= LEV_MIN_FACTOR;
+      const floor = key === "etfhiv" ? ETF_IV_MIN : geared ? LEV_IV_MIN : LEV_IV_MIN_1X;
+      const at = key === "etfhiv" ? `unleveraged floor ${floor}%` : `${geared ? "geared" : "1x"} floor ${floor}%`;
       if (dir === "added") {
-        if (prev && (prev.ivPct ?? 0) < LEV_IV_MIN && (cur.ivPct ?? 0) >= LEV_IV_MIN) return `IV ${iv(prev)}→${iv(cur)} (≥${LEV_IV_MIN}%)`;
-        if (prev && (dv(prev) ?? 0) < LEV_MIN_DOLLAR_VOL) return `dollar volume ${fmtDv(dv(prev))}→${fmtDv(dv(cur))} (≥$${(LEV_MIN_DOLLAR_VOL / 1e6).toFixed(0)}M)`;
-        if (prev && (prev.weeklyBuckets ?? 0) < LEV_MIN_LADDER) return `expiry ladder ${prev.weeklyBuckets ?? 0}→${cur.weeklyBuckets ?? 0} (≥${LEV_MIN_LADDER})`;
-        return `writable geared fund — IV ${iv(cur)}, ${fmtDv(dv(cur))}/day`;
+        if (prev && (prev.ivPct ?? 0) < floor && (cur.ivPct ?? 0) >= floor) return `IV ${iv(prev)}→${iv(cur)} (≥ ${at})`;
+        if (prev && (dv(prev) ?? 0) < SHELF_MIN_DOLLAR_VOL) return `dollar volume ${fmtDv(dv(prev))}→${fmtDv(dv(cur))} (≥$${(SHELF_MIN_DOLLAR_VOL / 1e6).toFixed(0)}M)`;
+        if (prev && (prev.weeklyBuckets ?? 0) < SHELF_MIN_LADDER) return `expiry ladder ${prev.weeklyBuckets ?? 0}→${cur.weeklyBuckets ?? 0} (≥${SHELF_MIN_LADDER})`;
+        return `writable ${geared ? "geared fund" : "fund"} — IV ${iv(cur)}, ${fmtDv(dv(cur))}/day`;
       }
-      if ((cur.ivPct ?? 0) < LEV_IV_MIN) return `IV ${iv(prev)}→${iv(cur)} (<${LEV_IV_MIN}%)`;
-      if ((dv(cur) ?? 0) < LEV_MIN_DOLLAR_VOL) return `dollar volume ${fmtDv(dv(prev))}→${fmtDv(dv(cur))} (<$${(LEV_MIN_DOLLAR_VOL / 1e6).toFixed(0)}M)`;
-      if ((cur.weeklyBuckets ?? 0) < LEV_MIN_LADDER) return `expiry ladder ${prev?.weeklyBuckets ?? "?"}→${cur.weeklyBuckets ?? 0} (<${LEV_MIN_LADDER})`;
-      return "no longer a writable geared fund";
+      if ((cur.ivPct ?? 0) < floor) return `IV ${iv(prev)}→${iv(cur)} (< ${at})`;
+      if ((dv(cur) ?? 0) < SHELF_MIN_DOLLAR_VOL) return `dollar volume ${fmtDv(dv(prev))}→${fmtDv(dv(cur))} (<$${(SHELF_MIN_DOLLAR_VOL / 1e6).toFixed(0)}M)`;
+      if ((cur.weeklyBuckets ?? 0) < SHELF_MIN_LADDER) return `expiry ladder ${prev?.weeklyBuckets ?? "?"}→${cur.weeklyBuckets ?? 0} (<${SHELF_MIN_LADDER})`;
+      return "no longer writable";
     }
-    case "levmix": {
+    case "levmix":
+    case "etfmix": {
       // Membership is relative: a name can leave untouched because a rival in its own
-      // family (or an overlapping one) out-earned it that day.
-      const fam = levFamilyOf(cur.ticker);
+      // family, its theme, or an overlapping family out-earned it that day.
+      const fam = levFamilyOf(cur.ticker, cur.theme);
+      const bet = cur.theme && cur.theme !== fam ? `${fam} / ${cur.theme}` : fam;
       const iv = cur.ivPct != null ? `${cur.ivPct.toFixed(0)}%` : "?";
       return dir === "added"
-        ? `richest writable name in ${fam} (IV ${iv})`
-        : `outranked in ${fam} or an overlapping family (IV ${iv}), or it left LEVHIV`;
+        ? `richest writable name in ${bet} (IV ${iv})`
+        : `outranked in ${bet} or an overlapping family (IV ${iv}), or it left the shelf`;
     }
     default:
       return dir;
@@ -339,9 +373,10 @@ export async function getOhChangeLog(limitDates = 30): Promise<OhChangeLog> {
   // Ticker → display name, plus the LEV flag (leveraged long ETF). Both are static
   // instrument properties, so the current securities row is the right source — the
   // snapshot stores only the day-varying screen inputs.
-  const secRows = await prisma.security.findMany({ select: { ticker: true, name: true, type: true } });
+  const secRows = await prisma.security.findMany({ select: { ticker: true, name: true, type: true, sector: true } });
   const names = new Map(secRows.map((s) => [s.ticker, s.name]));
   const levTickers = new Set(secRows.filter((s) => isLongLeveragedEtf(s)).map((s) => s.ticker));
+  const meta = new Map(secRows.map((s) => [s.ticker, { name: s.name, type: s.type, theme: themeOf(s.ticker, s.sector) }]));
 
   // date ISO → (ticker → Snap)
   const byDate = new Map<string, Map<string, Snap>>();
@@ -366,6 +401,9 @@ export async function getOhChangeLog(limitDates = 30): Promise<OhChangeLog> {
       trendM3: r.trendM3,
       trendM6: r.trendM6,
       lev: levTickers.has(r.ticker),
+      name: meta.get(r.ticker)?.name ?? null,
+      type: meta.get(r.ticker)?.type ?? null,
+      theme: meta.get(r.ticker)?.theme ?? null,
     });
   }
 
