@@ -9,6 +9,7 @@ import { prisma } from "./db";
 import { getAtmIv } from "../../scripts/iv";
 import { computeTrend } from "./trend";
 import { computeRoic, type RoicInputs } from "./roic";
+import { ivPlausibility } from "./ivsanity";
 
 const yf = new YahooFinance({ suppressNotices: ["yahooSurvey"] });
 
@@ -209,6 +210,9 @@ export function ivDateFor(nowMs: number): Date {
 // Enrich one constituent and upsert security + quote + today's iv-history row.
 // Throws on Yahoo/DB failure (callers count/log per-ticker). Position-sourced
 // tickers take name/type/sub-industry from Yahoo and bucket under Off-Index.
+/** Rejected IV readings from the last ingest, for the run's own log line. */
+export const ivRejections: { ticker: string; reason: string }[] = [];
+
 export async function ingestConstituent(c: Constituent, nowMs: number, ivDate: Date): Promise<void> {
   const e = await enrich(toYahooSymbol(c.ticker), nowMs);
   const isPos = c.source === "position";
@@ -221,13 +225,33 @@ export async function ingestConstituent(c: Constituent, nowMs: number, ivDate: D
     create: { ticker: c.ticker, name, description: e.description, sector, subIndustry, type, isActive: true },
     update: { name, description: e.description ?? undefined, sector, subIndustry, type, isActive: true },
   });
+  // Is the IV believable? The nightly run inverts from a LAST TRADE (bid/ask are 0 after
+  // the close), which on a thin chain produced MLM at 166.2% against IB's 28.9% — a number
+  // that had put MLM in the NC screen and the HIV list. Judged against the instrument's own
+  // recent history and IB's reading where we have one; a rejected value leaves the previous
+  // one in place rather than overwriting it with a fiction. lib/ivsanity.ts carries the rule
+  // and why it is deliberately loose (a real vol spike must survive).
+  const prior = await prisma.ivHistory
+    .findMany({ where: { ticker: c.ticker }, orderBy: { date: "desc" }, take: 10, select: { ivPct: true } })
+    .catch(() => [] as { ivPct: Prisma.Decimal | null }[]);
+  const priorQuote = await prisma.quote
+    .findUnique({ where: { ticker: c.ticker }, select: { ibIv30Pct: true, atmBid: true, atmAsk: true } })
+    .catch(() => null);
+  const verdict = ivPlausibility({
+    iv: e.ivPct,
+    history: prior.map((r) => (r.ivPct != null ? Number(r.ivPct) : null)),
+    ibIv: priorQuote?.ibIv30Pct != null ? Number(priorQuote.ibIv30Pct) : null,
+    live: e.atmBid != null && e.atmAsk != null && e.atmBid > 0 && e.atmAsk > 0,
+  });
+  const ivOk = verdict.ok;
+  if (!ivOk) ivRejections.push({ ticker: c.ticker, reason: verdict.reason ?? "implausible" });
+
   const quote = {
     price: e.price,
     marketCap: e.marketCap,
     volume: e.volume,
     changePct: e.changePct,
-    ivPct: e.ivPct,
-    ivDte: e.ivDte,
+    ...(ivOk ? { ivPct: e.ivPct, ivDte: e.ivDte } : {}),
     weeklyBuckets: e.weeklyBuckets,
     atmStrike: e.atmStrike,
     atmMid: e.atmMid,
@@ -255,7 +279,9 @@ export async function ingestConstituent(c: Constituent, nowMs: number, ivDate: D
     update: { ...quote, asOf: new Date() },
   });
   // Append today's IV snapshot to the rolling history (idempotent per day).
-  const ivRow = { ivPct: e.ivPct, ivDte: e.ivDte, weeklyBuckets: e.weeklyBuckets, price: e.price };
+  // A rejected reading is kept out of the history too — otherwise tomorrow's median would
+  // be poisoned by today's bad print, and the guard would slowly talk itself into it.
+  const ivRow = { ...(ivOk ? { ivPct: e.ivPct, ivDte: e.ivDte } : {}), weeklyBuckets: e.weeklyBuckets, price: e.price };
   await prisma.ivHistory.upsert({
     where: { ticker_date: { ticker: c.ticker, date: ivDate } },
     create: { ticker: c.ticker, date: ivDate, ...ivRow },
