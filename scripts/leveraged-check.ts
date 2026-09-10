@@ -12,6 +12,7 @@
  */
 import assert from "node:assert/strict";
 import {
+  absLeverageFactor,
   familiesOverlap,
   isInverseFund,
   isLongLeveragedEtf,
@@ -25,6 +26,7 @@ import {
 import {
   isLevWritable,
   isPlainWritable,
+  isUnleveragedEitherDirection,
   levFamilyOf,
   pickLevMix,
   ETF_IV_MIN,
@@ -370,7 +372,65 @@ ok(!plain({ price: 91, volume: 50_000 }), "an illiquid 1x fund is out ($4.5M/day
 ok(!plain({ weeklyBuckets: 1 }), "…as is one without an expiry the strategy can use");
 ok(plain({ ticker: "IBIT", name: "iShares Bitcoin Trust ETF", ivPct: 39.3, price: 43.9, volume: 76_000_000 }), "IBIT qualifies — a spot crypto fund is unleveraged");
 
+// ── gearing magnitude, ignoring direction ────────────────────────────────────
+// `leverageFactor` answers "how long-geared is this?" and returns null for every short fund,
+// which is why a list that admits inverse funds cannot use it: it reads -3x as unleveraged.
+ok(absLeverageFactor("Direxion Daily Semiconductor Bear 3X") === 3, "a 3x bear reads 3, not null");
+ok(absLeverageFactor("ProShares UltraPro Short QQQ (-3x Nasdaq-100)") === 3, "…and UltraPro Short reads 3");
+ok(absLeverageFactor("ProShares UltraShort S&P 500 (-2x)") === 2, "…and UltraShort reads 2");
+ok(absLeverageFactor("ProShares UltraShort Bloomberg Natural Gas") === 2, "…on the word alone, with no digits");
+ok(absLeverageFactor("ProShares Short S&P500") === 1, "a -1x fund reads 1 — no multiple written IS a multiple of one");
+ok(absLeverageFactor("Direxion Daily S&P 500 Bear 1X Shares") === 1, "…and an explicit 1X reads 1, not null");
+ok(absLeverageFactor("SPDR S&P Biotech ETF") === 1, "an ordinary fund reads 1");
+ok(absLeverageFactor(null) === 1 && absLeverageFactor("") === 1, "…and so does an absent name, rather than throwing");
+ok(absLeverageFactor("Direxion Daily Semiconductor Bull 3X") === 3, "the long side is unchanged by direction-blindness");
+// The pairing that matters: every one of these is null to the long parser.
+for (const n of ["Direxion Daily Semiconductor Bear 3X", "ProShares UltraPro Short S&P 500 (-3x)", "ProShares Short S&P500"]) {
+  ok(leverageFactor(n) == null, `the long parser reports null for "${n.slice(0, 28)}…"`);
+  ok(absLeverageFactor(n) >= 1, "…while the magnitude parser reports a number");
+}
+
+// ── ETF1X: unleveraged either direction ──────────────────────────────────────
+const any1x = (o: Partial<Parameters<typeof isUnleveragedEitherDirection>[0]>) =>
+  isUnleveragedEitherDirection({
+    ticker: "SH",
+    name: "ProShares Short S&P500",
+    type: "etf",
+    ivPct: 35,
+    weeklyBuckets: 2,
+    price: 40,
+    volume: 5_000_000,
+    ...o,
+  });
+
+ok(any1x({}), "a liquid -1x inverse fund at 35% IV is IN ETF1X — this is the whole point of the list");
+ok(any1x({ ticker: "XBI", name: "SPDR S&P Biotech ETF" }), "…and so is an ordinary long 1x fund");
+ok(!any1x({ ivPct: ETF_IV_MIN - 1 }), `below ${ETF_IV_MIN}% it is out`);
+ok(any1x({ ivPct: ETF_IV_MIN - 1, wasIn: true }), "…unless it was in yesterday (the floor is hysteretic here too)");
+// The trap this list creates, pinned: the geared bear complex must not arrive as "1x".
+for (const [ticker, name] of [
+  ["SOXS", "Direxion Daily Semiconductor Bear 3X"],
+  ["SQQQ", "ProShares UltraPro Short QQQ (-3x Nasdaq-100)"],
+  ["SPXU", "ProShares UltraPro Short S&P 500 (-3x)"],
+  ["SDS", "ProShares UltraShort S&P 500 (-2x)"],
+  ["KOLD", "ProShares UltraShort Bloomberg Natural Gas (-2x)"],
+  ["DUST", "Direxion Daily Gold Miners Bear 2X"],
+] as const) {
+  ok(!any1x({ ticker, name, ivPct: 120, volume: 40_000_000 }), `${ticker} is geared, so it is NOT in a 1x list however rich`);
+}
+ok(!any1x({ ticker: "SOXL", name: "Direxion Daily Semiconductor Bull 3X", ivPct: 120 }), "nor is a 3x bull");
+ok(!any1x({ ticker: "VIXY", name: "ProShares VIX Short-Term Futures ETF", ivPct: 80 }), "a 1x VIX fund stays barred — that bar is not about gearing");
+ok(!any1x({ ticker: "UVXY", name: "ProShares Ultra VIX Short-Term Futures ETF", ivPct: 89 }), "…and the curated hazard still bars UVXY");
+ok(!any1x({ type: "stock", name: "NVIDIA Corporation", ivPct: 60 }), "a single stock is not an ETF here either");
+ok(!any1x({ price: 40, volume: 100_000 }), "the $10M/day liquidity floor applies unchanged ($4M)");
+ok(!any1x({ weeklyBuckets: 1 }), "…as does the expiry ladder");
+// ETF1X is a superset of ETFHIV by construction: same floors, one fewer bar.
+const longRow = { ticker: "XBI", name: "SPDR S&P Biotech ETF", type: "etf", ivPct: 35, weeklyBuckets: 6, price: 160, volume: 5_000_000 };
+ok(isPlainWritable(longRow) && isUnleveragedEitherDirection(longRow), "anything in ETFHIV is in ETF1X");
+const invRow = { ...longRow, ticker: "SH", name: "ProShares Short S&P500" };
+ok(!isPlainWritable(invRow) && isUnleveragedEitherDirection(invRow), "…and the difference is exactly the inverse funds");
+
 console.log(
-  `leveraged-check: ${pass} assertions passed (LEV_MIN_FACTOR = ${LEV_MIN_FACTOR}x, inverse/short excluded, ` +
-    `${LEV_ETFS.length} curated funds across ${themeByFamily.size} families).`,
+  `leveraged-check: ${pass} assertions passed (LEV_MIN_FACTOR = ${LEV_MIN_FACTOR}x, inverse/short excluded from every ` +
+    `writable list and admitted only to ETF1X at 1x, ${LEV_ETFS.length} curated funds across ${themeByFamily.size} families).`,
 );

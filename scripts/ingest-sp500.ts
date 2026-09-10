@@ -149,12 +149,42 @@ const INVERSE_ETFS: { ticker: string; name: string; sector: string }[] = [
   { ticker: "DUST", name: "Direxion Daily Gold Miners Bear 2X", sector: LEV_SECTOR },
   { ticker: "KOLD", name: "ProShares UltraShort Bloomberg Natural Gas (-2x)", sector: LEV_SECTOR },
   { ticker: "TMV", name: "Direxion Daily 20+ Year Treasury Bear 3X", sector: LEV_SECTOR },
+  // ── UNLEVERAGED (-1x) inverse funds ────────────────────────────────────────
+  // Added 2026-09-10 for the ETF1X list (unleveraged premium, either direction). Until now
+  // every inverse fund tracked here was geared 2x/3x, so a list restricted to unleveraged
+  // funds had nothing to show on the short side — the operator asked for one and it computed
+  // to exactly the existing long-only ETFHIV, 25 names, byte for byte.
+  //
+  // Admitted on LIQUIDITY, which is the gate that does not move day to day: each of these
+  // clears the shelf's $10M/day floor (measured, 2026-09-10: PSQ $293M, SH $227M, RWM $220M,
+  // SPDN $185M, DIA-mirror DOG $74M, BITI $14M). The IV floor is left to sort itself out —
+  // SH at 20.7% and PSQ at 22.3% simply will not be in ETF1X today, and that is the right
+  // answer for a fund mirroring a 20%-vol index; they belong in the universe so they are
+  // there when vol rises, which is the only time an inverse fund is interesting.
+  //
+  // Deliberately NOT added: EUM $0.4M, EFZ $0.1M, REK $0.2M, SEF $0.4M, MYY $0.1M and SARK
+  // $4.3M all fail the liquidity floor by an order of magnitude, so they could never reach a
+  // list and would be dead rows for the metadata audit to flag.
+  //
+  // A caution that belongs with the numbers, not in a footnote: RWM reads 40.3% IV and SPDN
+  // 32.7% while SH reads 20.7% for the SAME -1x S&P exposure. Two funds tracking one index
+  // cannot differ by 12pp, so at least one reading is the thin-chain after-hours artefact
+  // that lib/ivsource.ts was written for this morning. Tonight's intraday pass reprices them
+  // off live quotes; whether they still qualify tomorrow is the test.
+  { ticker: "SH", name: "ProShares Short S&P500", sector: LEV_SECTOR },
+  { ticker: "PSQ", name: "ProShares Short QQQ", sector: LEV_SECTOR },
+  { ticker: "DOG", name: "ProShares Short Dow30", sector: LEV_SECTOR },
+  { ticker: "RWM", name: "ProShares Short Russell2000", sector: LEV_SECTOR },
+  { ticker: "SPDN", name: "Direxion Daily S&P 500 Bear 1X Shares", sector: LEV_SECTOR },
+  { ticker: "BITI", name: "ProShares Short Bitcoin ETF", sector: LEV_SECTOR },
 ];
 
 // The full ETF universe: the curated cash funds above, the geared LONG shelf
 // (src/lib/leveraged.ts — one source of truth with the LEV/LEVHIV/LEVMIX watchlists and
-// the risk engine's theme map), and the inverse funds, which exist only as the mirror
-// side of the same trade and are never sold into.
+// the risk engine's theme map), and the inverse funds. The inverse side is still never a
+// call-writing target — that bar is unchanged in every writable list — but since 2026-09-10
+// the unleveraged part of it is VISIBLE, via ETF1X, instead of being absent from every list
+// in the app (see src/lib/watchlists.ts § isUnleveragedEitherDirection).
 const LARGE_ETFS: { ticker: string; name: string; sector: string }[] = [
   ...CASH_ETFS,
   ...LEV_ETFS.map((e) => ({ ticker: e.ticker, name: e.name, sector: LEV_SECTOR })),

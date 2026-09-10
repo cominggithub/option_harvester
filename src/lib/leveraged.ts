@@ -64,6 +64,43 @@ export function isInverseFund(name: string | null | undefined): boolean {
   return INVERSE_RE.test((name ?? "").trim());
 }
 
+/**
+ * Gearing MAGNITUDE, ignoring direction — 3 for "Bear 3X", 2 for "UltraShort … (-2x)",
+ * 1 for "ProShares Short S&P500".
+ *
+ * `leverageFactor` above cannot answer this: it bails on any inverse name before it reads the
+ * multiple, so every short fund comes back null and a caller that treats null as "unleveraged"
+ * sees SOXS (-3x) and SH (-1x) as the same thing. That was safe only while the direction test
+ * ran FIRST and threw both out. The moment a list admits inverse funds — which is what ETF1X
+ * does — the distinction becomes load-bearing: measured on the live universe, all 12 inverse
+ * funds tracked today are geared 2x/3x (SOXS, SQQQ and SPXU are -3x), so a list meant for
+ * unleveraged funds that asked `leverageFactor` would have admitted the entire 3x bear complex.
+ *
+ * Same name grammar as the long parser, minus the direction bail-out: an explicit multiple
+ * wins ("(-2x)" and "Bear 3X" both parse), then ProShares' word form (UltraPro 3, Ultra 2 —
+ * and "UltraShort" contains "ultra", so it reads 2 correctly), then 1 when the name claims no
+ * multiple at all. Returns 1 rather than null for the unleveraged case, because "no multiple
+ * written" IS a multiple of one — the ambiguity that produced this function is not worth
+ * reproducing in it.
+ */
+export function absLeverageFactor(name: string | null | undefined): number {
+  const n = (name ?? "").trim();
+  if (!n) return 1;
+  const m = FACTOR_RE.exec(n);
+  if (m) {
+    const f = Number(m[1]);
+    if (Number.isFinite(f) && f > 1) return f;
+  }
+  if (ULTRA_PRO_RE.test(n)) return 3;
+  // NOT the long parser's `ULTRA_RE` (/\bultra\b/): ProShares writes the short side as one
+  // word — "UltraShort", "UltraProShort" — and a word boundary after "ultra" does not exist
+  // there, so \bultra\b reads "ProShares UltraShort Bloomberg Natural Gas" as unleveraged.
+  // The long parser gets away with it because it bails on inverse names before reaching this
+  // line; a direction-blind parser cannot. Any "ultra" means at least 2x in this house style.
+  if (/ultra/i.test(n)) return 2;
+  return 1;
+}
+
 // Volatility-futures funds: VIX ETPs of any gearing, including 1x (VXX, VIXY). Barred
 // from every sell list by NAME, not by curation, because the shelf cannot list a fund
 // nobody has ingested yet and this is the one category where being late is unrecoverable:

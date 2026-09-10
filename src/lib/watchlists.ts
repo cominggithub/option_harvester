@@ -4,6 +4,7 @@ import { NC_IV_MIN, NC_MIN_WEEKLY_BUCKETS } from "@/lib/securities";
 import { themeOf } from "@/lib/bookrisk";
 import { effIvFloor, NO_PRIOR, type PriorMembership } from "@/lib/hysteresis";
 import {
+  absLeverageFactor,
   isInverseFund,
   isLongLeveragedEtf,
   isVolFuturesFund,
@@ -159,6 +160,37 @@ export function isPlainWritable(x: LevGateInput): boolean {
 }
 
 /**
+ * ETF1X — every UNLEVERAGED fund with premium, long **or inverse**, at the ETFHIV floor.
+ *
+ * This is the one list that does not apply the direction bar, so it is the one list whose
+ * membership is not a sell-a-call suggestion. The bar exists for a good reason and has not
+ * moved: a naked call on a fund that shorts an index is a bullish bet on that index, which is
+ * the opposite of the naked-call book's intent, so ETFHIV / LEVHIV / LEVMIX / ETFMIX still
+ * exclude inverse funds at any gearing. What this list answers is a different question — where
+ * is there unleveraged premium at all, in either direction — which is a put-side and
+ * observation question. The description on /watchlists says so, because the list sits next to
+ * lists that ARE sell candidates.
+ *
+ * Gearing is measured with `absLeverageFactor`, NOT `shelfFactor`: the latter reads
+ * `leverageFactor`, which returns null for every inverse name, so a -3x bear fund would arrive
+ * here as "1x". That is not hypothetical — all 12 inverse funds in the universe today are
+ * geared 2x/3x, so the naive version of this list would have been exactly the 3x bear complex.
+ *
+ * Volatility-futures funds stay barred even at 1x (VXX, VIXY): that bar is about a loss the
+ * strategy cannot size, which does not depend on gearing or direction.
+ */
+export function isUnleveragedEitherDirection(x: LevGateInput): boolean {
+  if ((x.type ?? "").toLowerCase() !== "etf") return false;
+  if (isVolFuturesFund(x.name)) return false;
+  if (levEtf(x.ticker)?.hazard != null) return false;
+  if (absLeverageFactor(x.name) >= LEV_MIN_FACTOR) return false;
+  // A curated shelf entry is authoritative about its own gearing where the name is silent.
+  const curated = levEtf(x.ticker)?.factor;
+  if (curated != null && curated >= LEV_MIN_FACTOR) return false;
+  return (x.ivPct ?? 0) >= effIvFloor(ETF_IV_MIN, x.wasIn) && shelfTradable(x);
+}
+
+/**
  * Exposure family — the de-overlap axis. The curated one for a geared fund; otherwise the
  * correlated theme, which is what makes this work for cash funds: their families are not
  * curated, so without the theme fallback every one of them would be its own family and
@@ -280,6 +312,21 @@ export function computeOhWatchlists(securities: SecurityRow[], prior: PriorMembe
     isPlainWritable({ ticker: s.ticker, name: s.name, type: s.type, ivPct: s.ivPct, weeklyBuckets: s.weeklyBuckets, price: s.price, volume: s.volume, wasIn: prior.has("etfhiv", s.ticker) });
   const etfhiv = securities.filter(etfGate);
   const etfmixRows = pickLevMix(etfhiv.map(shelfRow)).map((r) => r.s);
+  // ETF1X — the same unleveraged premium floor with the DIRECTION bar dropped, so inverse
+  // funds are visible instead of silently absent from every list. Not a sell-a-call list; see
+  // isUnleveragedEitherDirection and the description below.
+  const etf1x = securities.filter((s) =>
+    isUnleveragedEitherDirection({
+      ticker: s.ticker,
+      name: s.name,
+      type: s.type,
+      ivPct: s.ivPct,
+      weeklyBuckets: s.weeklyBuckets,
+      price: s.price,
+      volume: s.volume,
+      wasIn: prior.has("etf1x", s.ticker),
+    }),
+  );
 
   return [
     {
@@ -371,6 +418,15 @@ export function computeOhWatchlists(securities: SecurityRow[], prior: PriorMembe
       name: "ETFMIX",
       desc: "De-overlapped margin-cheap shelf — ETFHIV thinned to the richest-IV name per bet: one per correlated theme, and never two families that move together. Sector spread by construction (the silver miners collapse to one name, oil and gas services to one, the semis pair to one), so it can be written across without spending buying power twice on the same exposure.",
       members: etfmixRows.map(toMember).sort(byTicker),
+    },
+    // APPENDED LAST, and every future list must be too: the OH→IB push numbers these by array
+    // index from OH_ID_BASE (990001), so inserting one above renames every list after it in
+    // the operator's IB account.
+    {
+      key: "etf1x",
+      name: "ETF1X",
+      desc: `Unleveraged premium, either direction — every non-geared ETF with IV ≥ ${ETF_IV_MIN}%, at least $${(SHELF_MIN_DOLLAR_VOL / 1e6).toFixed(0)}M a day traded and ≥${SHELF_MIN_LADDER} expiries inside 42 days, INCLUDING inverse (-1x) funds. This is the only list here that does not apply the direction bar, so it is the only one whose members are not call-writing candidates: a naked call on a fund that shorts an index is a bullish bet on that index, which is the opposite of the naked-call book's intent, and ETFHIV/LEVHIV/LEVMIX/ETFMIX still exclude short funds at any gearing. Read this one as "where is there unleveraged premium at all" — a put-side and observation list. Gearing is measured on the name irrespective of direction, because the long-only parser reports every short fund as unleveraged and would otherwise let the 3x bear complex in. VIX-futures funds stay excluded even at 1x: that bar is about a loss the strategy cannot size, which does not depend on gearing.`,
+      members: etf1x.map(toMember).sort(byTicker),
     },
   ];
 }

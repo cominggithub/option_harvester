@@ -14,6 +14,7 @@ import {
   computeOhWatchlists,
   isLevWritable,
   isPlainWritable,
+  isUnleveragedEitherDirection,
   levFamilyOf,
   pickLevMix,
   ETF_IV_MIN,
@@ -170,6 +171,9 @@ const LIST_META: { key: string; name: string; inList: (r: Snap) => boolean; sele
     inList: (r) => isPlainWritable(r),
     select: (rows) => mixOf(rows.filter((r) => isPlainWritable(r))),
   },
+  // ETF1X — unleveraged either direction. Same IV floor as ETFHIV with the direction bar
+  // dropped, so /wl-log tracks the inverse funds too (they are in no other list).
+  { key: "etf1x", name: "ETF1X", inList: (r) => isUnleveragedEitherDirection(r) },
 ];
 
 /** The set-valued LEVMIX/ETFMIX selection over one day's snapshot rows. */
