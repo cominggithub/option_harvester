@@ -10,6 +10,7 @@ import { getAtmIv } from "../../scripts/iv";
 import { computeTrend } from "./trend";
 import { computeRoic, type RoicInputs } from "./roic";
 import { ivPlausibility } from "./ivsanity";
+import { IV_SRC_LAST, midTrustworthy, shouldKeepStoredIv } from "./ivsource";
 
 const yf = new YahooFinance({ suppressNotices: ["yahooSurvey"] });
 
@@ -213,6 +214,13 @@ export function ivDateFor(nowMs: number): Date {
 /** Rejected IV readings from the last ingest, for the run's own log line. */
 export const ivRejections: { ticker: string; reason: string }[] = [];
 
+/**
+ * Names whose IV this run deliberately did NOT touch because the intraday pass had already
+ * priced them off a live quote. Reported by the ingest so a deferral is a visible decision
+ * rather than a silent no-op — the count IS the measure of how much the sawtooth was moving.
+ */
+export const ivDeferrals: string[] = [];
+
 export async function ingestConstituent(c: Constituent, nowMs: number, ivDate: Date): Promise<void> {
   const e = await enrich(toYahooSymbol(c.ticker), nowMs);
   const isPos = c.source === "position";
@@ -235,23 +243,41 @@ export async function ingestConstituent(c: Constituent, nowMs: number, ivDate: D
     .findMany({ where: { ticker: c.ticker }, orderBy: { date: "desc" }, take: 10, select: { ivPct: true } })
     .catch(() => [] as { ivPct: Prisma.Decimal | null }[]);
   const priorQuote = await prisma.quote
-    .findUnique({ where: { ticker: c.ticker }, select: { ibIv30Pct: true, atmBid: true, atmAsk: true } })
+    .findUnique({ where: { ticker: c.ticker }, select: { ibIv30Pct: true, ivPct: true, ivSrc: true, ivAt: true } })
     .catch(() => null);
   const verdict = ivPlausibility({
     iv: e.ivPct,
     history: prior.map((r) => (r.ivPct != null ? Number(r.ivPct) : null)),
     ibIv: priorQuote?.ibIv30Pct != null ? Number(priorQuote.ibIv30Pct) : null,
-    live: e.atmBid != null && e.atmAsk != null && e.atmBid > 0 && e.atmAsk > 0,
+    // `live` switches the guard's history and IB cross-checks OFF, so it must mean "a market
+    // is quoting both sides at a price a mid can be taken from" — not "the fetch came back
+    // with two numbers in it". Off-session Yahoo hands back leftovers like TECH 0.70/3.20,
+    // and this pass runs off-session by design. Shared with the intraday pass so one
+    // definition governs both (lib/ivsource.ts § midTrustworthy).
+    live: midTrustworthy({ atmBid: e.atmBid, atmAsk: e.atmAsk, atmSpreadPct: e.atmSpreadPct }),
   });
   const ivOk = verdict.ok;
   if (!ivOk) ivRejections.push({ ticker: c.ticker, reason: verdict.reason ?? "implausible" });
+
+  // Does a BETTER reading already sit on the row? This pass inverts from a last trade (the
+  // US market is shut at 06:04), and the intraday spreads pass inverted the same number from
+  // a live two-sided quote 3.5h ago. Overwriting that was making `iv_pct` alternate daily —
+  // WRB above NC's 40% floor every morning and below it every night, on an 18pp swing no
+  // market produced. lib/ivsource.ts carries the rule and why 26h is the trust window.
+  const keepStored = shouldKeepStoredIv(
+    priorQuote ? { ivPct: priorQuote.ivPct != null ? Number(priorQuote.ivPct) : null, ivSrc: priorQuote.ivSrc, ivAt: priorQuote.ivAt } : null,
+    nowMs,
+  );
+  if (keepStored) ivDeferrals.push(c.ticker);
+  // Write our reading only when it is plausible AND not standing on a fresher mid-priced one.
+  const writeIv = ivOk && !keepStored;
 
   const quote = {
     price: e.price,
     marketCap: e.marketCap,
     volume: e.volume,
     changePct: e.changePct,
-    ...(ivOk ? { ivPct: e.ivPct, ivDte: e.ivDte } : {}),
+    ...(writeIv ? { ivPct: e.ivPct, ivDte: e.ivDte, ivSrc: IV_SRC_LAST, ivAt: new Date(nowMs) } : {}),
     weeklyBuckets: e.weeklyBuckets,
     atmStrike: e.atmStrike,
     atmMid: e.atmMid,
@@ -281,7 +307,17 @@ export async function ingestConstituent(c: Constituent, nowMs: number, ivDate: D
   // Append today's IV snapshot to the rolling history (idempotent per day).
   // A rejected reading is kept out of the history too — otherwise tomorrow's median would
   // be poisoned by today's bad print, and the guard would slowly talk itself into it.
-  const ivRow = { ...(ivOk ? { ivPct: e.ivPct, ivDte: e.ivDte } : {}), weeklyBuckets: e.weeklyBuckets, price: e.price };
+  //
+  // The same deference applies here, for a sharper reason than on the quote: this series is
+  // what IV rank, chg5 and offPeak20 are measured on. If the day's row were downgraded from
+  // the mid reading to the last-trade one every morning, the series would carry a daily
+  // zig-zag of up to 30pp on thin names and `falling` would be a coin toss. So a mid-sourced
+  // row stands; only its non-IV columns (ladder, price) are refreshed.
+  const ivRow = {
+    ...(writeIv ? { ivPct: e.ivPct, ivDte: e.ivDte, ivSrc: IV_SRC_LAST } : {}),
+    weeklyBuckets: e.weeklyBuckets,
+    price: e.price,
+  };
   await prisma.ivHistory.upsert({
     where: { ticker_date: { ticker: c.ticker, date: ivDate } },
     create: { ticker: c.ticker, date: ivDate, ...ivRow },

@@ -17,6 +17,7 @@ import {
   OFF_INDEX_SECTOR,
   ingestConstituent,
   ivRejections,
+  ivDeferrals,
   ivDateFor,
   toYahooSymbol,
 } from "../src/lib/enrich";
@@ -304,6 +305,15 @@ async function main() {
       console.log(
         `Rejected ${ivRejections.length} implausible IV${ivRejections.length === 1 ? "" : "s"} (previous value kept): ` +
           ivRejections.map((r) => `${r.ticker} — ${r.reason}`).join(" · "),
+      );
+    }
+    // Not an error: these are the names the intraday pass had already priced off a live
+    // two-sided quote, which this run would otherwise have overwritten with a last-trade
+    // inversion. The count is the size of the daily sawtooth that used to happen silently.
+    if (ivDeferrals.length) {
+      console.log(
+        `Kept ${ivDeferrals.length} mid-priced IV${ivDeferrals.length === 1 ? "" : "s"} from the intraday pass ` +
+          `(this run's last-trade inversion not written).`,
       );
     }
     console.log(`\nDone: ${ok} ok, ${fail} failed.`);

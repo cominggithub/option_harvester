@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import type { SecurityRow } from "@/lib/securities";
 import { NC_IV_MIN, NC_MIN_WEEKLY_BUCKETS } from "@/lib/securities";
 import { themeOf } from "@/lib/bookrisk";
+import { effIvFloor, NO_PRIOR, type PriorMembership } from "@/lib/hysteresis";
 import {
   isInverseFund,
   isLongLeveragedEtf,
@@ -110,6 +111,13 @@ export type LevGateInput = {
   weeklyBuckets: number | null;
   price: number | null;
   volume: number | null;
+  /**
+   * Was this fund in the list at the last snapshot? Only the IV floor moves for a sitting
+   * member (by IV_HYSTERESIS_PP — lib/hysteresis.ts); the categorical bars and the liquidity
+   * and ladder tests are unchanged, because an inverse fund does not stop being inverse and
+   * $10M/day is not a boundary names hover on.
+   */
+  wasIn?: boolean;
 };
 
 /**
@@ -140,14 +148,14 @@ export function shelfFactor(x: Pick<LevGateInput, "ticker" | "name">): number {
 export function isLevWritable(x: LevGateInput): boolean {
   if (!shelfEligible(x)) return false;
   const ivFloor = shelfFactor(x) >= LEV_MIN_FACTOR ? LEV_IV_MIN : LEV_IV_MIN_1X;
-  return (x.ivPct ?? 0) >= ivFloor && shelfTradable(x);
+  return (x.ivPct ?? 0) >= effIvFloor(ivFloor, x.wasIn) && shelfTradable(x);
 }
 
 /** ETFHIV: unleveraged only — the margin-cheap arm. Geared funds belong to LEVHIV. */
 export function isPlainWritable(x: LevGateInput): boolean {
   if (!shelfEligible(x)) return false;
   if (shelfFactor(x) >= LEV_MIN_FACTOR) return false;
-  return (x.ivPct ?? 0) >= ETF_IV_MIN && shelfTradable(x);
+  return (x.ivPct ?? 0) >= effIvFloor(ETF_IV_MIN, x.wasIn) && shelfTradable(x);
 }
 
 /**
@@ -220,7 +228,7 @@ const toMember = (s: SecurityRow): OhMember => ({ ticker: s.ticker, name: s.name
 //  etfhiv— UNLEVERAGED ETFs with IV ≥ 30: same premium programme at a fraction of the
 //          maintenance margin, which is what actually limits how many positions fit.
 //  etfmix— etfhiv thinned to one name per bet — the sector-spread version.
-export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
+export function computeOhWatchlists(securities: SecurityRow[], prior: PriorMembership = NO_PRIOR): OhWatchlist[] {
   const nc = securities.filter((s) => s.nc);
   const nccan = nc.filter((s) => !s.held);
   const hasCall = (s: SecurityRow) => !!s.position && s.position.call !== 0;
@@ -238,8 +246,10 @@ export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
   const red = securities.filter((s) => s.position && (s.position.maxOptAbsDelta ?? 0) > 0.3);
   // HIV — high IV (> HIV_IV_MIN%) AND a tradable 1/2/3/4-week option ladder
   // (weeklyBuckets ≥ NC_MIN_WEEKLY_BUCKETS), so there's near-term premium to sell.
+  // The IV floor is hysteretic: 17 names sit within a point of the 50% line, and without
+  // this they take turns appearing on a list that gets pushed to IB (lib/hysteresis.ts).
   const hiv = securities.filter(
-    (s) => (s.ivPct ?? 0) > HIV_IV_MIN && (s.weeklyBuckets ?? 0) >= NC_MIN_WEEKLY_BUCKETS,
+    (s) => (s.ivPct ?? 0) > effIvFloor(HIV_IV_MIN, prior.has("hiv", s.ticker)) && (s.weeklyBuckets ?? 0) >= NC_MIN_WEEKLY_BUCKETS,
   );
   // HIVS — HIV restricted to a mid price band (strictly between HIVS_PRICE_MIN/MAX).
   const hivs = hiv.filter((s) => s.price != null && s.price > HIVS_PRICE_MIN && s.price < HIVS_PRICE_MAX);
@@ -258,7 +268,7 @@ export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
   // bet, so the list itself is the diversified set rather than a menu the operator has to
   // de-duplicate by eye.
   const levGate = (s: SecurityRow) =>
-    isLevWritable({ ticker: s.ticker, name: s.name, type: s.type, ivPct: s.ivPct, weeklyBuckets: s.weeklyBuckets, price: s.price, volume: s.volume });
+    isLevWritable({ ticker: s.ticker, name: s.name, type: s.type, ivPct: s.ivPct, weeklyBuckets: s.weeklyBuckets, price: s.price, volume: s.volume, wasIn: prior.has("levhiv", s.ticker) });
   const levhiv = securities.filter(levGate);
   const shelfRow = (s: SecurityRow) => ({ ticker: s.ticker, ivPct: s.ivPct, dollarVol: dollarVolume(s), theme: themeOf(s.ticker, s.sector), s });
   const levmixRows = pickLevMix(levhiv.map(shelfRow)).map((r) => r.s);
@@ -267,7 +277,7 @@ export function computeOhWatchlists(securities: SecurityRow[]): OhWatchlist[] {
   // 47.3% of assignment notional vs SOXX 16.4%, measured on this book), and buying power
   // is what caps the number of positions.
   const etfGate = (s: SecurityRow) =>
-    isPlainWritable({ ticker: s.ticker, name: s.name, type: s.type, ivPct: s.ivPct, weeklyBuckets: s.weeklyBuckets, price: s.price, volume: s.volume });
+    isPlainWritable({ ticker: s.ticker, name: s.name, type: s.type, ivPct: s.ivPct, weeklyBuckets: s.weeklyBuckets, price: s.price, volume: s.volume, wasIn: prior.has("etfhiv", s.ticker) });
   const etfhiv = securities.filter(etfGate);
   const etfmixRows = pickLevMix(etfhiv.map(shelfRow)).map((r) => r.s);
 

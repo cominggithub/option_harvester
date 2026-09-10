@@ -203,8 +203,34 @@ async function main() {
       })
       .map((s) => ({
         ticker: s.ticker,
-        detail: `ours ${num(s.quote?.ivPct)!.toFixed(1)}% vs IB ${num(s.quote?.ibIv30Pct)!.toFixed(1)}% (${(num(s.quote?.ivPct)! / num(s.quote?.ibIv30Pct)!).toFixed(2)}×)`,
+        // Provenance is printed because it decides what the disagreement MEANS. A "last"
+        // reading that disagrees with IB is most likely our own after-hours artefact and
+        // tonight's intraday pass may fix it; a "mid" reading that still disagrees was taken
+        // off a live two-sided quote, so the gap is real and belongs to something else —
+        // strike selection, or our single-expiry reading against IB's 30-day constant
+        // maturity. The first is a data defect, the second is a measurement difference, and
+        // only the second bears on whether the screens should switch to IB's number.
+        detail:
+          `ours ${num(s.quote?.ivPct)!.toFixed(1)}% vs IB ${num(s.quote?.ibIv30Pct)!.toFixed(1)}% ` +
+          `(${(num(s.quote?.ivPct)! / num(s.quote?.ibIv30Pct)!).toFixed(2)}×, ours ${s.quote?.ivSrc ?? "unstamped"})`,
       })),
+  );
+
+  // Did the intraday repricing actually reach the universe? This is the one-line answer, and
+  // the reason it is advisory rather than blocking: a name Yahoo will not quote two-sided
+  // (or quotes 90% wide, which is not a quote) can only ever have a last-trade reading, and
+  // that is a fact about its option market rather than a defect in ours. What it does tell
+  // you is whether the 23:30/01:00/02:30 pass ran at all — before 2026-09-10 nothing stamped
+  // provenance, so a universe-wide "unstamped" means the timer has not fired since.
+  add(
+    "iv-not-mid-priced",
+    "IV still inverted from a last trade",
+    "the intraday pass either has not run or could not get a usable two-sided quote; a last-trade IV on a thin chain " +
+      "is the input that produced every name in the class above",
+    false,
+    active
+      .filter((s) => s.quote?.ivPct != null && s.quote?.ivSrc !== "mid")
+      .map((s) => ({ ticker: s.ticker, detail: `src ${s.quote?.ivSrc ?? "unstamped"}` })),
   );
 
   add(

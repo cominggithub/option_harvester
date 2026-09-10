@@ -7,6 +7,8 @@ import { getPnlReport } from "@/lib/transactions";
 import { type TrendWindows, WINDOW_BARS } from "@/lib/trend";
 import type { TrendWindowKey } from "@/lib/view";
 import { isHighRoic } from "@/lib/roic";
+import { effIvFloor, getPriorMembership } from "@/lib/hysteresis";
+import { likeForLike } from "@/lib/ivsource";
 
 const numOrNull = (v: unknown): number | null => (v != null ? Number(v) : null);
 
@@ -122,13 +124,20 @@ export const NC_IV_MIN = 40;
 // the HIV list as the "has 1/2/3/4-week options" floor.
 export const NC_MIN_WEEKLY_BUCKETS = 4;
 
-function isNcTarget(s: {
-  volume: number | null;
-  price: number | null;
-  weeklyBuckets: number | null;
-  ivPct: number | null;
-  trend: TrendWindows | null;
-}): boolean {
+function isNcTarget(
+  s: {
+    volume: number | null;
+    price: number | null;
+    weeklyBuckets: number | null;
+    ivPct: number | null;
+    trend: TrendWindows | null;
+  },
+  // Was this name in NC at the last snapshot? If so its IV only has to hold within
+  // IV_HYSTERESIS_PP of the floor — see lib/hysteresis.ts. Every other criterion is
+  // unchanged: the trend, volume, price and ladder tests are not noisy in the same way
+  // (they are either categorical or an order of magnitude from their thresholds).
+  wasIn?: boolean,
+): boolean {
   const t = s.trend;
   if (!t) return false;
   const notUp = t.m1?.label !== "up" && t.m3?.label !== "up" && t.m6?.label !== "up";
@@ -139,7 +148,7 @@ function isNcTarget(s: {
     s.price > NC_PRICE_MIN &&
     s.price < NC_PRICE_MAX &&
     (s.weeklyBuckets ?? 0) >= NC_MIN_WEEKLY_BUCKETS &&
-    (s.ivPct ?? 0) > NC_IV_MIN
+    (s.ivPct ?? 0) > effIvFloor(NC_IV_MIN, wasIn)
   );
 }
 
@@ -266,18 +275,31 @@ async function getSparklines(): Promise<
 }
 
 // Per-ticker IV series (last ~1Y) for IV rank/percentile. One grouped query.
+// The rolling IV series per ticker, for IV rank / percentile / chg5 / offPeak20.
+//
+// Trimmed to the trailing run of points that share the NEWEST point's source, because these
+// are all DIFFERENCES and the two sources are not the same measurement: our last-trade
+// inversion runs high on thin chains, so the day a name starts being priced off live
+// quotes looks like a 10-30pp IV collapse. That is "IV deflation" — the strongest tilt in
+// the candidates fit — manufactured out of a methodology change, and it would have promoted
+// exactly the names whose IV was wrong. A short series is honest about itself (ivStats
+// reports `n`, and the page prints "· (Nd)" instead of a rank); a long mixed one is not.
 async function getIvHistory(): Promise<Map<string, number[]>> {
-  const raw = await prisma.$queryRaw<{ ticker: string; ivs: unknown[] }[]>`
-    SELECT ticker, array_agg(iv_pct ORDER BY date) AS ivs
+  const raw = await prisma.$queryRaw<{ ticker: string; ivs: unknown[]; srcs: unknown[] }[]>`
+    SELECT ticker,
+           array_agg(iv_pct ORDER BY date) AS ivs,
+           array_agg(COALESCE(iv_src, 'last') ORDER BY date) AS srcs
     FROM option_harvest_iv_history
     WHERE date >= CURRENT_DATE - INTERVAL '370 days' AND iv_pct IS NOT NULL
     GROUP BY ticker
   `;
   const map = new Map<string, number[]>();
   for (const r of raw) {
-    const ivs = (r.ivs as (string | number | null)[])
-      .map((v) => (v == null ? NaN : Number(v)))
-      .filter((v) => Number.isFinite(v));
+    const srcs = (r.srcs as (string | null)[]) ?? [];
+    const points = (r.ivs as (string | number | null)[])
+      .map((v, i) => ({ iv: v == null ? NaN : Number(v), src: srcs[i] ?? null }))
+      .filter((p) => Number.isFinite(p.iv));
+    const ivs = likeForLike(points, (p) => p.src).map((p) => p.iv);
     if (ivs.length) map.set(r.ticker, ivs);
   }
   return map;
@@ -300,7 +322,7 @@ export async function getIvSeries(ticker: string): Promise<IvPoint[]> {
 }
 
 export async function getDashboardData(): Promise<DashboardData> {
-  const [rows, sparkMap, ivHistMap, posMap, pnl] = await Promise.all([
+  const [rows, sparkMap, ivHistMap, posMap, pnl, prior] = await Promise.all([
     prisma.security.findMany({
       where: { isActive: true },
       include: { quote: true, mark: true, trend: true, ccScore: true },
@@ -309,6 +331,9 @@ export async function getDashboardData(): Promise<DashboardData> {
     getIvHistory(),
     getPositionSummaries(),
     getPnlReport(),
+    // What the lists said at the last snapshot — the latch the IV floors hold on to, so a
+    // name a point under the line does not drop out and back in on noise (lib/hysteresis.ts).
+    getPriorMembership(),
   ]);
   const recMap = new Map(pnl.bySymbol.map((s) => [s.symbol.toUpperCase(), s]));
 
@@ -410,7 +435,7 @@ export async function getDashboardData(): Promise<DashboardData> {
   for (const s of securities) {
     s.autoLabels = computeAutoLabels(s);
     s.downtrend = isDowntrend(s.trend);
-    s.nc = isNcTarget(s);
+    s.nc = isNcTarget(s, prior.has("nc", s.ticker));
     if (s.nc) s.autoLabels.push("NC");
     // Value-quality: high ROIC (stocks only — ETFs have no invested capital).
     s.highRoic = s.type === "stock" && isHighRoic(s.roic);

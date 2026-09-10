@@ -53,6 +53,15 @@ model OhScreenSnapshot {
   trendM1        String?  @map("trend_m1") // up|down|sideways
   trendM3        String?  @map("trend_m3")
   trendM6        String?  @map("trend_m6")
+  /// The OH list keys this ticker was ACTUALLY IN when the snapshot ran ("nc", "hiv",
+  /// "levhiv", …). The columns above are the list rules' INPUTS, which is enough to diff
+  /// and explain a change but not enough to make the rules stable: hysteresis needs to know
+  /// what the list said yesterday, and re-deriving that from the inputs would re-derive it
+  /// with today's rule, which is circular. So membership is recorded as a fact.
+  /// Empty on rows written before 2026-09-10 — hysteresis is simply inactive for a name
+  /// with no prior, which is the correct bootstrap (it can only widen an existing member's
+  /// exit, never admit a new one).
+  lists          String[] @default([])
   at             DateTime @updatedAt
 
   @@id([date, ticker])
@@ -136,6 +145,15 @@ model Quote {
   changePct       Decimal?  @map("change_pct")
   ivPct           Decimal?  @map("iv_pct") // front-month ATM implied volatility, %
   ivDte           Int?      @map("iv_dte") // days-to-expiry used for the IV calc
+  /// WHERE `ivPct` came from, and WHEN — because the two passes that write it are not
+  /// equally trustworthy and they run 6.5h apart. "mid" is inverted from a live two-sided
+  /// quote (the intraday spreads pass, US hours); "last" is inverted from the last trade
+  /// (the nightly ingest, US market closed), which on a thin chain is a print hours old and
+  /// far off mid — the source of every name on the audit's `iv-disagrees-with-ib` list.
+  /// Without this the nightly run silently overwrote the better reading every morning and
+  /// `iv_pct` sawtoothed daily. lib/ivsource.ts holds the precedence rule.
+  ivSrc           String?   @map("iv_src") // "mid" | "last"
+  ivAt            DateTime? @map("iv_at") // when the stored ivPct was computed
   weeklyBuckets   Int?      @map("weekly_buckets") // of {0,7,14,21,28,35} DTE expiries available (0-6)
   nextEarnings    DateTime? @map("next_earnings") // next earnings date (gap-risk gate); null for ETFs
   // ATM ~30-DTE option liquidity. strike/mid/expiries refresh nightly (mid from
@@ -312,6 +330,13 @@ model IvHistory {
   date          DateTime @db.Date
   ivPct         Decimal? @map("iv_pct")
   ivDte         Int?     @map("iv_dte")
+  /// Same "mid" | "last" provenance as the quote (see Quote.ivSrc). Carried per DAY because
+  /// the series is what IV rank, chg5 and offPeak20 are measured on, and a change of
+  /// methodology inside the window is indistinguishable from a change in volatility: on the
+  /// 180 names where the two readings differ by more than 2pp, switching source mid-series
+  /// looks exactly like an IV collapse, which is the signal the candidates page REWARDS.
+  /// So lib/securities.ts compares like with like and refuses a cross-source diff.
+  ivSrc         String?  @map("iv_src")
   weeklyBuckets Int?     @map("weekly_buckets")
   price         Decimal?
   createdAt     DateTime @default(now()) @map("created_at")

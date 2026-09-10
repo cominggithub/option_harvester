@@ -1,6 +1,7 @@
 import { getDashboardData } from "@/lib/securities";
 import { formatTimestamp } from "@/lib/format";
 import { computeOhWatchlists, getIbWatchlists } from "@/lib/watchlists";
+import { getPriorMembership } from "@/lib/hysteresis";
 import { WatchlistBrowser, type WatchlistTab } from "@/components/WatchlistBrowser";
 
 export const dynamic = "force-dynamic";
@@ -9,8 +10,12 @@ export const dynamic = "force-dynamic";
 // the Analyzer's table view for each. OH membership is derived live; IB lists
 // come from the extension sync (option_harvest_watchlist).
 export default async function WatchlistsPage() {
-  const [{ securities, asOf }, ibLists] = await Promise.all([getDashboardData(), getIbWatchlists()]);
-  const ohLists = computeOhWatchlists(securities);
+  const [{ securities, asOf }, ibLists, prior] = await Promise.all([
+    getDashboardData(),
+    getIbWatchlists(),
+    getPriorMembership(),
+  ]);
+  const ohLists = computeOhWatchlists(securities, prior);
 
   const tabs: WatchlistTab[] = [
     ...ohLists.map((wl) => ({

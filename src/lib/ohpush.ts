@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { getDashboardData } from "@/lib/securities";
 import { computeOhWatchlists } from "@/lib/watchlists";
+import { getPriorMembership } from "@/lib/hysteresis";
 
 // The OH→IB push payload — the single source of truth for what conids each "OH:*"
 // list is *intended* to carry. Shared by:
@@ -25,7 +26,7 @@ export type OhPushList = {
 };
 
 export async function buildOhPushLists(): Promise<OhPushList[]> {
-  const [{ securities }, conidRows, stockLegs, pins] = await Promise.all([
+  const [{ securities }, conidRows, stockLegs, pins, prior] = await Promise.all([
     getDashboardData(),
     prisma.security.findMany({ where: { NOT: { conid: null } }, select: { ticker: true, conid: true } }),
     // Held stock/ETF legs — their conid is the exact underlying instrument the user
@@ -33,6 +34,10 @@ export async function buildOhPushLists(): Promise<OhPushList[]> {
     prisma.position.findMany({ where: { right: null }, select: { symbol: true, raw: true } }),
     // Sticky correct-conid pins (manual + ib-option-derived) — beat the /trsrv value.
     prisma.securityConid.findMany({ select: { ticker: true, conid: true } }).catch(() => []),
+    // The same latch the pages use, so what IB receives is what /watchlists shows: a list
+    // pushed on the plain floor while the page held a name on hysteresis would show up as a
+    // spurious diff in /api/oh-verify.
+    getPriorMembership(),
   ]);
   const conidOf = new Map(conidRows.map((r) => [r.ticker, r.conid as string]));
   const pinOf = new Map(pins.map((p) => [p.ticker.toUpperCase(), p.conid]));
@@ -42,7 +47,7 @@ export async function buildOhPushLists(): Promise<OhPushList[]> {
     if (c != null && c !== "") heldConidOf.set(p.symbol.toUpperCase(), String(c));
   }
 
-  return computeOhWatchlists(securities).map((wl, i) => {
+  return computeOhWatchlists(securities, prior).map((wl, i) => {
     const rows: { C: number }[] = [];
     const missing: string[] = [];
     for (const m of wl.members) {

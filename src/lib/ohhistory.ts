@@ -11,6 +11,7 @@ import {
   HIV_IV_MIN,
   HIVS_PRICE_MIN,
   HIVS_PRICE_MAX,
+  computeOhWatchlists,
   isLevWritable,
   isPlainWritable,
   levFamilyOf,
@@ -24,6 +25,7 @@ import {
 import { isLongLeveragedEtf, leverageFactor, LEV_MIN_FACTOR } from "@/lib/leveraged";
 import { themeOf } from "@/lib/bookrisk";
 import { HIGH_ROIC_MIN, isHighRoic } from "@/lib/roic";
+import { getPriorMembership } from "@/lib/hysteresis";
 
 // OH-watchlist change log. OH lists (NC/NCcan/Cpos/Ppos/RED) are computed live and
 // never stored, so on their own they have no history — you can't tell what was added
@@ -44,6 +46,19 @@ function localDateOnly(d = new Date()): Date {
 export async function snapshotOhScreen(): Promise<{ date: string; rows: number }> {
   const { securities } = await getDashboardData();
   const date = localDateOnly();
+  // The lists AS SERVED, per ticker. This is what makes the IV floors hysteretic: the rule
+  // needs yesterday's ANSWER, and an answer cannot be re-derived from yesterday's inputs
+  // without re-deriving the day before it (lib/hysteresis.ts). `getDashboardData` has already
+  // applied the latch it read, so recording the result here is what advances it.
+  const prior = await getPriorMembership();
+  const inLists = new Map<string, string[]>();
+  for (const wl of computeOhWatchlists(securities, prior)) {
+    for (const m of wl.members) {
+      const keys = inLists.get(m.ticker) ?? [];
+      keys.push(wl.key);
+      inLists.set(m.ticker, keys);
+    }
+  }
   const rows = securities.map((s) => ({
     date,
     ticker: s.ticker,
@@ -61,6 +76,7 @@ export async function snapshotOhScreen(): Promise<{ date: string; rows: number }
     trendM1: s.trend?.m1?.label ?? null,
     trendM3: s.trend?.m3?.label ?? null,
     trendM6: s.trend?.m6?.label ?? null,
+    lists: inLists.get(s.ticker) ?? [],
   }));
   // Idempotent per day: replace the day's rows wholesale (last run wins).
   await prisma.$transaction([
@@ -97,6 +113,8 @@ type Snap = {
   name: string | null;
   type: string | null;
   theme: string | null;
+  /** The lists this row was recorded as being in ("nc", "hiv", …); empty on pre-2026-09-10 rows. */
+  lists: string[];
 };
 
 export type OhChange = { ticker: string; name: string | null; reason: string };
@@ -404,15 +422,27 @@ export async function getOhChangeLog(limitDates = 30): Promise<OhChangeLog> {
       name: meta.get(r.ticker)?.name ?? null,
       type: meta.get(r.ticker)?.type ?? null,
       theme: meta.get(r.ticker)?.theme ?? null,
+      lists: r.lists ?? [],
     });
   }
 
   const isoDates = dates.map((d) => d.toISOString().slice(0, 10)); // newest first
   const latestDate = isoDates[0];
 
+  // Membership for one day and one list. RECORDED membership wins where it exists: since
+  // 2026-09-10 the snapshot stores the lists as served, and the IV floors are hysteretic, so
+  // re-deriving from the day's inputs would apply the plain floor and could report a name
+  // "removed" that the list still shows. Rows written before that have no `lists`, so those
+  // days fall back to re-derivation — the same answer, since no latch existed then either.
   const members = (dateIso: string, l: (typeof LIST_META)[number]) => {
     const m = byDate.get(dateIso);
     if (!m) return new Set<string>();
+    const recorded = [...m.values()].some((r) => r.lists.length > 0);
+    if (recorded) {
+      const set = new Set<string>();
+      for (const [t, r] of m) if (r.lists.includes(l.key)) set.add(t);
+      return set;
+    }
     if (l.select) return l.select([...m.values()]);
     const set = new Set<string>();
     for (const [t, r] of m) if (l.inList(r)) set.add(t);
