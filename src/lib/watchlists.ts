@@ -160,6 +160,35 @@ export function isPlainWritable(x: LevGateInput): boolean {
 }
 
 /**
+ * INV1X — the unleveraged inverse shelf: every -1x short fund tracked, and nothing else.
+ *
+ * Structural, not screened. It mirrors what LEV does for the geared long side — "here is the
+ * universe of this kind of instrument" — so it carries **no IV floor and no liquidity floor**.
+ * That is the point: ETF1X answers "where is there unleveraged premium, either direction" and
+ * therefore hides SH at 20.7% and PSQ at 22.3%, which are the two most obvious short funds
+ * there are. A fund mirroring a 20%-vol index has no business on a premium list and every
+ * business on a shelf you can look at, and its IV is interesting precisely on the day it stops
+ * being 20%.
+ *
+ * Membership is a fact about the instrument, so it cannot flicker: no threshold means nothing
+ * to be noisy about, and no hysteresis is needed (same reason LEV has none). A name enters when
+ * the universe gains it and leaves when the universe drops it.
+ *
+ * Being here is NOT permission to sell anything. A naked call on a fund that shorts an index is
+ * a bullish bet on that index, so none of these are call-writing candidates and none of them
+ * appear in ETFHIV / LEVHIV / LEVMIX / ETFMIX. Gearing is read with `absLeverageFactor`,
+ * because `leverageFactor` reports every short fund as unleveraged and would drag the entire
+ * 2x/3x bear complex in — SQQQ, SOXS, SPXU, TZA, LABD, DUST, KOLD, SPXS, FAZ, SDS, TMV.
+ */
+export function isUnleveragedInverseEtf(x: Pick<LevGateInput, "ticker" | "name" | "type">): boolean {
+  if ((x.type ?? "").toLowerCase() !== "etf") return false;
+  if (!isInverseFund(x.name)) return false;
+  if (absLeverageFactor(x.name) >= LEV_MIN_FACTOR) return false;
+  const curated = levEtf(x.ticker)?.factor;
+  return !(curated != null && curated >= LEV_MIN_FACTOR);
+}
+
+/**
  * ETF1X — every UNLEVERAGED fund with premium, long **or inverse**, at the ETFHIV floor.
  *
  * This is the one list that does not apply the direction bar, so it is the one list whose
@@ -327,6 +356,9 @@ export function computeOhWatchlists(securities: SecurityRow[], prior: PriorMembe
       wasIn: prior.has("etf1x", s.ticker),
     }),
   );
+  // INV1X — the unleveraged inverse shelf, structural and unscreened (see above): the -1x funds
+  // themselves, so they are visible whatever their IV happens to be doing.
+  const inv1x = securities.filter((s) => isUnleveragedInverseEtf(s));
 
   return [
     {
@@ -427,6 +459,12 @@ export function computeOhWatchlists(securities: SecurityRow[], prior: PriorMembe
       name: "ETF1X",
       desc: `Unleveraged premium, either direction — every non-geared ETF with IV ≥ ${ETF_IV_MIN}%, at least $${(SHELF_MIN_DOLLAR_VOL / 1e6).toFixed(0)}M a day traded and ≥${SHELF_MIN_LADDER} expiries inside 42 days, INCLUDING inverse (-1x) funds. This is the only list here that does not apply the direction bar, so it is the only one whose members are not call-writing candidates: a naked call on a fund that shorts an index is a bullish bet on that index, which is the opposite of the naked-call book's intent, and ETFHIV/LEVHIV/LEVMIX/ETFMIX still exclude short funds at any gearing. Read this one as "where is there unleveraged premium at all" — a put-side and observation list. Gearing is measured on the name irrespective of direction, because the long-only parser reports every short fund as unleveraged and would otherwise let the 3x bear complex in. VIX-futures funds stay excluded even at 1x: that bar is about a loss the strategy cannot size, which does not depend on gearing.`,
       members: etf1x.map(toMember).sort(byTicker),
+    },
+    {
+      key: "inv1x",
+      name: "INV1X",
+      desc: `Unleveraged inverse shelf — every -1x short fund tracked, and only those. Structural, not screened: no IV floor and no liquidity floor, the same way LEV is simply "the geared long universe". That is deliberate, because a premium floor hides the most useful members — SH (-1x S&P 500) sits at 20.7% IV and PSQ (-1x Nasdaq-100) at 22.3%, which is what a fund mirroring a 20%-vol index should read, and their IV becomes interesting on the day it stops reading that. For the premium question use ETF1X, which is this shelf and the long 1x shelf filtered to IV ≥ ${ETF_IV_MIN}%. Membership cannot flicker: it is a fact about the instrument, so a name enters when the universe gains it and leaves when the universe drops it. Nothing here is a call-writing candidate — a naked call on a fund that shorts an index is a bullish bet on that index — which is why none of these appear in ETFHIV, LEVHIV, LEVMIX or ETFMIX. The 2x/3x bear funds (SQQQ, SOXS, SPXU, TZA, LABD, DUST, KOLD, SPXS, FAZ, SDS, TMV) are excluded here by gearing, not by direction; they are geared, and this list is the unleveraged one.`,
+      members: inv1x.map(toMember).sort(byTicker),
     },
   ];
 }

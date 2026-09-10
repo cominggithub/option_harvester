@@ -15,6 +15,7 @@ import {
   isLevWritable,
   isPlainWritable,
   isUnleveragedEitherDirection,
+  isUnleveragedInverseEtf,
   levFamilyOf,
   pickLevMix,
   ETF_IV_MIN,
@@ -174,6 +175,10 @@ const LIST_META: { key: string; name: string; inList: (r: Snap) => boolean; sele
   // ETF1X — unleveraged either direction. Same IV floor as ETFHIV with the direction bar
   // dropped, so /wl-log tracks the inverse funds too (they are in no other list).
   { key: "etf1x", name: "ETF1X", inList: (r) => isUnleveragedEitherDirection(r) },
+  // INV1X — structural, like LEV: an instrument property, not a daily metric, so the only way
+  // a name enters or leaves is the universe gaining or dropping it. Resolved from the current
+  // securities row (name/type), which is what the snapshot does not store.
+  { key: "inv1x", name: "INV1X", inList: (r) => isUnleveragedInverseEtf(r) },
 ];
 
 /** The set-valued LEVMIX/ETFMIX selection over one day's snapshot rows. */
