@@ -20,6 +20,7 @@ const SECTOR_COLORS: Record<string, string> = {
   // Geared funds (2x/3x long + inverse) — high-IV, decay-prone premium targets.
   "Leveraged / Inverse": "#8a4a4a",
   "ETF / Funds": "#3a3f47",
+  "Off-Index": "#6b7280",
 };
 
 // Canonical GICS order, then the ETF-only buckets; "ETF / Funds" pinned last.
@@ -41,6 +42,12 @@ export const SECTOR_ORDER = [
   "Fixed Income",
   "Leveraged / Inverse",
   "ETF / Funds",
+  // Instruments that entered because a POSITION existed (enrich.ts OFF_INDEX_SECTOR):
+  // non-index stocks, foreign listings, crypto trusts. Listed here so they have a defined
+  // rank and colour instead of falling through sectorRank as "unknown" — they are a real
+  // bucket, not a data defect, and scripts/metadata-audit.ts treats an unlisted sector as
+  // one.
+  "Off-Index",
 ];
 
 export function sectorRank(sector: string): number {

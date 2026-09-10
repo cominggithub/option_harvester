@@ -16,10 +16,12 @@ import {
   type Constituent,
   OFF_INDEX_SECTOR,
   ingestConstituent,
+  ivRejections,
   ivDateFor,
   toYahooSymbol,
 } from "../src/lib/enrich";
 import { LEV_ETFS } from "../src/lib/leveraged";
+import { retirementPlan } from "../src/lib/universe";
 
 const WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies";
 const USER_AGENT = "Mozilla/5.0 (option_harvester ingest; contact peter_lin@edge-core.com)";
@@ -182,10 +184,35 @@ async function scrapeConstituents(): Promise<Constituent[]> {
   return out;
 }
 
+// Non-index instruments we track ON PURPOSE, not because a position happens to be open.
+//
+// These arrived as "Off-Index" rows the day a position was opened, and on 2026-09-10 the new
+// retirement rule (src/lib/universe.ts) correctly retired eleven of them when their positions
+// closed — including IBIT, which the ETFMIX shelf was recommending at 39% IV and $3.4B/day.
+// That exposed the real defect: the universe was partly defined by accident. A name worth
+// screening should be listed because we mean to screen it.
+//
+// Deliberately short, every entry justified: the metals complex the operator's own IB "mine"
+// list watches (AEM/PAAS/HL miners, PPLT platinum), the liquid China ADRs (BABA/BIDU/PDD —
+// the cash side of the China theme YINN/CWEB already cover), the crypto pair (IBIT/MSTR), and
+// DOCU. Sector is declared here because none of them is in the index table; `type` matters
+// because ETF-only screens key on it.
+const CURATED_OFF_INDEX: { ticker: string; name: string; sector: string; type: "stock" | "etf" }[] = [
+  { ticker: "AEM", name: "Agnico Eagle Mines Limited", sector: "Materials", type: "stock" },
+  { ticker: "PAAS", name: "Pan American Silver Corp.", sector: "Materials", type: "stock" },
+  { ticker: "HL", name: "Hecla Mining Company", sector: "Materials", type: "stock" },
+  { ticker: "PPLT", name: "abrdn Physical Platinum Shares ETF", sector: "Commodities", type: "etf" },
+  { ticker: "IBIT", name: "iShares Bitcoin Trust ETF", sector: "Commodities", type: "etf" },
+  { ticker: "MSTR", name: "MicroStrategy Incorporated", sector: "Information Technology", type: "stock" },
+  { ticker: "BABA", name: "Alibaba Group Holding Limited", sector: "Consumer Discretionary", type: "stock" },
+  { ticker: "BIDU", name: "Baidu, Inc.", sector: "Communication Services", type: "stock" },
+  { ticker: "PDD", name: "PDD Holdings Inc.", sector: "Consumer Discretionary", type: "stock" },
+  { ticker: "DOCU", name: "DocuSign, Inc.", sector: "Information Technology", type: "stock" },
+];
+
 // Held instruments (from uploaded IB positions) that aren't already in the
 // S&P 500 / ETF universe — so the analyzer covers everything the user trades.
-async function getPositionConstituents(existing: Set<string>): Promise<Constituent[]> {
-  const rows = await prisma.position.findMany({ select: { symbol: true } });
+async function getPositionConstituents(existing: Set<string>): Promise<Constituent[]> {  const rows = await prisma.position.findMany({ select: { symbol: true } });
   const seen = new Set<string>();
   const out: Constituent[] = [];
   for (const r of rows) {
@@ -208,6 +235,7 @@ async function runPool<T>(items: T[], worker: (item: T) => Promise<void>) {
   await Promise.all(runners);
 }
 
+
 async function main() {
   const run = await prisma.ingestRun.create({ data: {} });
   let ok = 0;
@@ -221,14 +249,21 @@ async function main() {
       subIndustry: null,
       type: "etf",
     }));
-    const base = [...stocks, ...etfs];
+    const curated: Constituent[] = CURATED_OFF_INDEX.map((c) => ({
+      ticker: c.ticker,
+      name: c.name,
+      sector: c.sector,
+      subIndustry: null,
+      type: c.type,
+    }));
+    const base = [...stocks, ...etfs, ...curated];
     const existing = new Set(base.map((c) => c.ticker.toUpperCase()));
     const positions = await getPositionConstituents(existing);
     const universe = [...base, ...positions];
     const nowMs = Date.now();
     const ivDate = ivDateFor(nowMs);
     console.log(
-      `Ingesting ${stocks.length} S&P 500 stocks + ${etfs.length} ETFs + ${positions.length} held off-index (incl. IV)...`,
+      `Ingesting ${stocks.length} S&P 500 stocks + ${etfs.length} ETFs + ${curated.length} curated off-index + ${positions.length} held off-index (incl. IV)...`,
     );
 
     await runPool(universe, async (c) => {
@@ -246,6 +281,31 @@ async function main() {
       where: { id: run.id },
       data: { finishedAt: new Date(), status: "success", tickersOk: ok, tickersFail: fail },
     });
+
+    // Retire what this run did not cover (see ghostTickers): index departures and closed
+    // off-index positions. Deactivated, never deleted — and reactivated automatically by
+    // the upsert above the moment a name returns to the universe.
+    const tracked = await prisma.security.findMany({ where: { isActive: true }, select: { ticker: true } });
+    const heldNow = await prisma.position.findMany({ select: { symbol: true } });
+    const plan = retirementPlan({
+      tracked: tracked.map((t) => t.ticker),
+      universe: universe.map((c) => c.ticker),
+      held: heldNow.map((p) => p.symbol),
+    });
+    if (plan.reason) {
+      console.warn(`! ${plan.reason}`);
+      console.warn(`  would have retired: ${plan.refused.join(", ")}`);
+    } else if (plan.retire.length) {
+      await prisma.security.updateMany({ where: { ticker: { in: plan.retire } }, data: { isActive: false } });
+      console.log(`Retired ${plan.retire.length} no longer tracked: ${plan.retire.join(", ")}`);
+    }
+
+    if (ivRejections.length) {
+      console.log(
+        `Rejected ${ivRejections.length} implausible IV${ivRejections.length === 1 ? "" : "s"} (previous value kept): ` +
+          ivRejections.map((r) => `${r.ticker} — ${r.reason}`).join(" · "),
+      );
+    }
     console.log(`\nDone: ${ok} ok, ${fail} failed.`);
   } catch (err) {
     await prisma.ingestRun.update({
