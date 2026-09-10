@@ -65,6 +65,35 @@ export function isInverseFund(name: string | null | undefined): boolean {
 }
 
 /**
+ * Inverse by DIRECTION — the test to use when admitting a fund to a list rather than barring it.
+ *
+ * `isInverseFund` above is deliberately broad because it was only ever used to exclude, where a
+ * false positive costs nothing: a short-duration bond fund wrongly kept off a premium shelf has
+ * no premium worth selling anyway. INVETF1x inverted that trade-off — it ADMITS on this test —
+ * and the first run showed the bill immediately: VCSH, the Vanguard **Short-Term** Corporate
+ * Bond fund at 2.7% IV, appeared on the unleveraged inverse shelf between BITI and SH.
+ *
+ * So the strict test distinguishes direction from duration. "Short" followed by "term" or
+ * "duration" is a statement about a bond's maturity, not about being short an index; if that is
+ * the only inverse signal in the name, the fund is not inverse. Everything else is unchanged —
+ * "Bear", "Inverse", "UltraShort", an explicit -Nx, or "Short" followed by anything that is not
+ * duration language ("ProShares Short S&P500", "Short QQQ", "Short Bitcoin").
+ *
+ * SVXY keeps working through the first clause: "ProShares Short VIX Short-Term Futures ETF" is
+ * short something, and the fact that it is also short-TERM does not undo that.
+ */
+const DURATION_RE = /\bshort[\s-]?(term|duration)\b/gi;
+const DIRECTIONAL_RE = /\b(bear|inverse)\b|ultra\s*short|(?:^|[^\d.])-\s*\d+(?:\.\d+)?\s*x\b/i;
+
+export function isInverseDirection(name: string | null | undefined): boolean {
+  const n = (name ?? "").trim();
+  if (!n) return false;
+  if (DIRECTIONAL_RE.test(n)) return true;
+  // Only "short" left to go on: it counts unless every occurrence is duration language.
+  return /\bshort\b/i.test(n.replace(DURATION_RE, " "));
+}
+
+/**
  * Gearing MAGNITUDE, ignoring direction — 3 for "Bear 3X", 2 for "UltraShort … (-2x)",
  * 1 for "ProShares Short S&P500".
  *

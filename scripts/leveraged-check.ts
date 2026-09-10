@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import {
   absLeverageFactor,
   familiesOverlap,
+  isInverseDirection,
   isInverseFund,
   isLongLeveragedEtf,
   isVolFuturesFund,
@@ -27,6 +28,7 @@ import {
   isLevWritable,
   isPlainWritable,
   isUnleveragedEitherDirection,
+  isUnleveragedEtf,
   isUnleveragedInverseEtf,
   levFamilyOf,
   pickLevMix,
@@ -391,7 +393,7 @@ for (const n of ["Direxion Daily Semiconductor Bear 3X", "ProShares UltraPro Sho
   ok(absLeverageFactor(n) >= 1, "…while the magnitude parser reports a number");
 }
 
-// ── ETF1X: unleveraged either direction ──────────────────────────────────────
+// ── the premium-filtered 1x rule (either direction) ──────────────────────────
 const any1x = (o: Partial<Parameters<typeof isUnleveragedEitherDirection>[0]>) =>
   isUnleveragedEitherDirection({
     ticker: "SH",
@@ -404,7 +406,7 @@ const any1x = (o: Partial<Parameters<typeof isUnleveragedEitherDirection>[0]>) =
     ...o,
   });
 
-ok(any1x({}), "a liquid -1x inverse fund at 35% IV is IN ETF1X — this is the whole point of the list");
+ok(any1x({}), "a liquid -1x inverse fund at 35% IV passes the premium rule");
 ok(any1x({ ticker: "XBI", name: "SPDR S&P Biotech ETF" }), "…and so is an ordinary long 1x fund");
 ok(!any1x({ ivPct: ETF_IV_MIN - 1 }), `below ${ETF_IV_MIN}% it is out`);
 ok(any1x({ ivPct: ETF_IV_MIN - 1, wasIn: true }), "…unless it was in yesterday (the floor is hysteretic here too)");
@@ -417,7 +419,7 @@ for (const [ticker, name] of [
   ["KOLD", "ProShares UltraShort Bloomberg Natural Gas (-2x)"],
   ["DUST", "Direxion Daily Gold Miners Bear 2X"],
 ] as const) {
-  ok(!any1x({ ticker, name, ivPct: 120, volume: 40_000_000 }), `${ticker} is geared, so it is NOT in a 1x list however rich`);
+  ok(!any1x({ ticker, name, ivPct: 120, volume: 40_000_000 }), `${ticker} is geared, so it fails the 1x rule however rich`);
 }
 ok(!any1x({ ticker: "SOXL", name: "Direxion Daily Semiconductor Bull 3X", ivPct: 120 }), "nor is a 3x bull");
 ok(!any1x({ ticker: "VIXY", name: "ProShares VIX Short-Term Futures ETF", ivPct: 80 }), "a 1x VIX fund stays barred — that bar is not about gearing");
@@ -427,26 +429,49 @@ ok(!any1x({ price: 40, volume: 100_000 }), "the $10M/day liquidity floor applies
 ok(!any1x({ weeklyBuckets: 1 }), "…as does the expiry ladder");
 // ETF1X is a superset of ETFHIV by construction: same floors, one fewer bar.
 const longRow = { ticker: "XBI", name: "SPDR S&P Biotech ETF", type: "etf", ivPct: 35, weeklyBuckets: 6, price: 160, volume: 5_000_000 };
-ok(isPlainWritable(longRow) && isUnleveragedEitherDirection(longRow), "anything in ETFHIV is in ETF1X");
+ok(isPlainWritable(longRow) && isUnleveragedEitherDirection(longRow), "anything in ETFHIV passes the either-direction rule");
 const invRow = { ...longRow, ticker: "SH", name: "ProShares Short S&P500" };
 ok(!isPlainWritable(invRow) && isUnleveragedEitherDirection(invRow), "…and the difference is exactly the inverse funds");
 
-// ── INV1X: the unleveraged inverse shelf, structural ─────────────────────────
+// ── INVETF1x / ETF1x: the structural shelves ─────────────────────────────────
+// Both are universe lists, not screens: no IV floor, no liquidity floor, no ladder test. The
+// only bars are facts about the instrument (is it a fund, how geared is it, is it a vol-futures
+// product), which is why membership cannot flicker and neither list takes a hysteresis latch.
 const inv1x = (ticker: string, name: string, type = "etf") => isUnleveragedInverseEtf({ ticker, name, type });
+const any1xStruct = (ticker: string, name: string, type = "etf") => isUnleveragedEtf({ ticker, name, type });
 
-ok(inv1x("SH", "ProShares Short S&P500"), "a -1x short fund is on the shelf");
+ok(any1xStruct("XBI", "SPDR S&P Biotech ETF"), "an ordinary long 1x fund is in ETF1x");
+ok(any1xStruct("SH", "ProShares Short S&P500"), "…and so is a -1x short fund — ETF1x is the whole 1x universe");
+ok(any1xStruct("TLT", "iShares 20+ Year Treasury Bond ETF"), "…and a bond fund, which no premium list would take");
+ok(any1xStruct("VYM", "Vanguard High Dividend Yield Index Fund ETF Shares"), "…and a 9%-IV dividend fund: no floor means no floor");
+ok(!any1xStruct("SOXL", "Direxion Daily Semiconductor Bull 3X"), "a 3x bull is not unleveraged");
+ok(!any1xStruct("SOXS", "Direxion Daily Semiconductor Bear 3X"), "…nor a 3x bear");
+ok(!any1xStruct("NVDA", "NVIDIA Corporation", "stock"), "…and a single stock is not a fund");
+ok(!any1xStruct("VXX", "iPath Series B S&P 500 VIX Short-Term Futures ETN"), "a 1x VIX fund is barred — not about gearing");
+ok(!any1xStruct("SVIX", "-1x Short VIX Futures ETF"), "…including an INVERSE 1x vol fund, which is still a vol fund");
+ok(!any1xStruct("SVXY", "ProShares Short VIX Short-Term Futures ETF"), "…and SVXY, for the same reason");
+
+ok(inv1x("SH", "ProShares Short S&P500"), "a -1x short fund is on the inverse shelf");
 ok(inv1x("PSQ", "ProShares Short QQQ"), "…and so is the Nasdaq one");
 ok(inv1x("SPDN", "Direxion Daily S&P 500 Bear 1X Shares"), "…including one that writes its 1X out explicitly");
 ok(inv1x("BITI", "ProShares Short Bitcoin ETF"), "…and a -1x crypto short");
-// No floors, which is the whole difference from ETF1X: these two are the reason the list exists.
+ok(inv1x("TSLS", "Direxion Daily TSLA Bear 1X Shares"), "…and a -1x single-stock short");
+ok(!inv1x("XBI", "SPDR S&P Biotech ETF"), "a long fund is not on the INVERSE shelf");
+ok(!inv1x("SVIX", "-1x Short VIX Futures ETF"), "…and the vol-futures bar reaches this list too");
+// INVETF1x ⊂ ETF1x, always: it is ETF1x with one extra condition.
+for (const [t, n] of [["SH", "ProShares Short S&P500"], ["RWM", "ProShares Short Russell2000"], ["BITI", "ProShares Short Bitcoin ETF"]] as const) {
+  ok(inv1x(t, n) && any1xStruct(t, n), `${t} is on both shelves — the inverse one is a subset`);
+}
+// No floors, which is the whole difference from the premium lists: these two names are the
+// reason the structural version exists, and both were invisible while a 30% floor applied.
 for (const [t, n, iv] of [["SH", "ProShares Short S&P500", 20.7], ["PSQ", "ProShares Short QQQ", 22.3]] as const) {
-  ok(inv1x(t, n), `${t} is on INV1X at ${iv}% IV — a premium floor would hide the most useful member`);
+  ok(inv1x(t, n), `${t} is on INVETF1x at ${iv}% IV — a premium floor would hide the most useful member`);
   ok(
     !isUnleveragedEitherDirection({ ticker: t, name: n, type: "etf", ivPct: iv, weeklyBuckets: 2, price: 40, volume: 5_000_000 }),
-    `…and is correctly absent from ETF1X, which asks a different question`,
+    `…while the premium rule still excludes it, which is what ETFHIV is for`,
   );
 }
-// Geared shorts are excluded BY GEARING, not by direction — this list's whole subject is direction.
+// Geared shorts are excluded BY GEARING, not by direction — direction is the inverse list's subject.
 for (const [t, n] of [
   ["SQQQ", "ProShares UltraPro Short QQQ (-3x Nasdaq-100)"],
   ["SOXS", "Direxion Daily Semiconductor Bear 3X"],
@@ -461,21 +486,23 @@ for (const [t, n] of [
   ["TMV", "Direxion Daily 20+ Year Treasury Bear 3X"],
 ] as const) {
   ok(!inv1x(t, n), `${t} is geared, so it is not on the unleveraged shelf`);
+  ok(!any1xStruct(t, n), `…and not in ETF1x either`);
 }
-// Long funds are not inverse, however geared or ordinary.
-ok(!inv1x("SOXL", "Direxion Daily Semiconductor Bull 3X"), "a 3x bull is not a short fund");
-ok(!inv1x("XBI", "SPDR S&P Biotech ETF"), "…nor is an ordinary long fund");
-ok(!inv1x("NVDA", "NVIDIA Corporation", "stock"), "…nor a single stock");
-ok(!inv1x("SH", "ProShares Short S&P500", "stock"), "…and type still governs: a stock row is never a fund");
-// INV1X ⊂ ETF1X-eligible-by-structure: everything here is unleveraged and inverse, so the only
-// thing that can keep an INV1X name out of ETF1X is a floor, never a bar.
-for (const [t, n] of [["SH", "ProShares Short S&P500"], ["RWM", "ProShares Short Russell2000"]] as const) {
-  ok(inv1x(t, n), `${t} on INV1X`);
-  ok(
-    isUnleveragedEitherDirection({ ticker: t, name: n, type: "etf", ivPct: 45, weeklyBuckets: 2, price: 40, volume: 5_000_000 }),
-    `…and it reaches ETF1X once its IV clears the floor — no bar stands in the way`,
-  );
-}
+ok(!inv1x("SH", "ProShares Short S&P500", "stock"), "type still governs: a stock row is never a fund");
+
+// Direction is not duration. INVETF1x admits on this test, so a false positive is no longer free.
+ok(!inv1x("VCSH", "Vanguard Short-Term Corporate Bond Index Fund ETF Shares"), "a SHORT-TERM bond fund is not a short fund");
+ok(!inv1x("IGSB", "iShares 1-5 Year Investment Grade Corporate Bond ETF"), "…nor is any ordinary bond fund");
+ok(!isInverseDirection("Vanguard Short-Term Corporate Bond Index Fund ETF Shares"), "duration language alone is not direction");
+ok(!isInverseDirection("SPDR Portfolio Short Term Treasury ETF"), "…including the unhyphenated form");
+ok(!isInverseDirection("iShares Short Duration Bond Active ETF"), "…and short-DURATION too");
+ok(isInverseDirection("ProShares Short S&P500"), "but Short followed by an index IS direction");
+ok(isInverseDirection("ProShares Short QQQ"), "…as is Short QQQ");
+ok(isInverseDirection("ProShares Short Bitcoin ETF"), "…and Short Bitcoin");
+ok(isInverseDirection("Direxion Daily TSLA Bear 1X Shares"), "Bear is direction");
+ok(isInverseDirection("ProShares UltraShort S&P 500 (-2x)"), "UltraShort is direction");
+ok(isInverseDirection("ProShares Short VIX Short-Term Futures ETF"), "short something AND short-term is still short something");
+ok(isInverseFund("Vanguard Short-Term Corporate Bond Index Fund ETF Shares"), "the BROAD test still flags it — false positives stay safe where the rule EXCLUDES");
 
 console.log(
   `leveraged-check: ${pass} assertions passed (LEV_MIN_FACTOR = ${LEV_MIN_FACTOR}x, inverse/short excluded from every ` +
