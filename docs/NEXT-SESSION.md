@@ -1,15 +1,112 @@
 # option_harvester — next-session recap (as of 2026-09-10)
 
-## Session of 2026-09-10 — read this first
+## Session of 2026-09-10, second half — read this first
+
+Everything from both halves of today is **committed and pushed** (`origin/master`, 9 commits),
+**deployed** and verified. Working tree clean.
+
+### The one thing that has still never run
+
+The intraday spreads pass has **not yet executed during US market hours** with the repricing
+code in it. The timer last fired at 02:31 today; the code landed at 14:18. **Tonight at 23:30
+is the first time.** Everything below either prepares for that or measures the state before it.
+
+Tomorrow, in this order:
+
+1. `npm run audit:metadata` — the class **`iv-not-mid-priced`** is the one-line answer to
+   whether the pass ran. It reads **639 of 643** today (the whole universe: nothing had stamped
+   provenance yet). If tonight worked it collapses to the names whose option markets cannot be
+   quoted two-sided.
+2. `npm run iv:compare` — then compare against the baseline below.
+3. Only then the precedence decision, with the correction in § *What the baseline cannot tell
+   you* taken into account.
+
+### Baseline, measured 15:09 today (read-only, prod, pre-repricing)
+
+`iv:compare`: universe 661 · our IV 656 · IB IV 630 · comparable 630. Median gap **−1.0pp**,
+median |gap| **1.2pp**, mean −1.8pp; within 2pp **450/630**, within 5pp 591/630; worst
+**+137.3pp** (MLM). By the expiry ours used: 29 DTE n=318 median −1.2pp, 36 DTE n=301 −0.8pp.
+Verdict flips: **NC 38 · HIV 19 · ETFHIV 4 · LEVHIV 6**.
+
+`audit:metadata`: **exit 0, no blocking defects.** Advisory: `iv-disagrees-with-ib` **13**
+(APA 3.51×, MLM 5.74×, HST 2.47×, MTD 2.03×, AVY 1.89×, UDR 1.88×, WRB 1.79×, UYM 1.79×,
+KVUE 1.57×, BIIB 1.54×, KRE 1.51×, NWS 0.55×, TMV 0.63×), no-IV 4 (BTCU, EVMU, NVR, URAA),
+IV outside 21–45 DTE 1 (UYM at 71).
+
+### What the baseline cannot tell you, and it matters
+
+The previous recap said "if the 13-name disagreement list collapses, our number is sound".
+**It will narrow rather than collapse, and the residue is the interesting part.** Running the
+pass against the test DB reached four names on genuinely tight quotes:
+
+| | our last-trade | our mid-priced | ATM spread | IB |
+| --- | --- | --- | --- | --- |
+| AVY | 50.7% | **50.5%** | 5.6% | 26.9% |
+| MTD | 55.2% | **49.9%** | 9.3% | 27.2% |
+
+AVY barely moved. So its 1.9× disagreement with IB is **not** an after-hours artefact — it
+survives a live two-sided quote, which means it is something else: strike selection, or our
+single-expiry reading against IB's 30-day constant maturity. Maturity alone cannot explain it
+(the 29-DTE and 36-DTE cohorts differ by 0.4pp). **Only the part of the gap that survives
+repricing bears on whether the screens should switch to IB's number** — the rest was our own
+defect and switching would have "fixed" it by accident. These readings came off off-session
+quotes, so treat them as an indication, not a result: tomorrow's numbers are the real ones.
+
+### What shipped in this half
+
+* **`iv_pct` stopped depending on the time of day.** The nightly ingest was overwriting the
+  intraday mid-priced reading 3.5h after it landed, unconditionally, so the value ALTERNATED
+  daily — WRB above NC's 40% floor from 06:04 and below it from 23:30, an 18pp swing no market
+  produced. Now `iv_src` / `iv_at` on the quote, `iv_src` per history row, and
+  **`src/lib/ivsource.ts`**: a live quote beats a last trade, the nightly pass defers while the
+  mid reading is from the current session (`MID_TRUST_HOURS` 26), and the intraday pass writes
+  the day's history row so the series and the screens agree.
+* **A source switch is indistinguishable from IV deflation, which the candidates page
+  rewards.** Our last-trade readings run high on thin chains, so tonight's switch would have
+  read as a 10–30pp collapse on ~180 names at once — promoting exactly the names whose IV was
+  wrong. `getIvHistory` now returns only the trailing run of points sharing the newest point's
+  source, so **a diff never crosses a methodology**. Watch for `ivStats.n` to be small for a
+  few days on repriced names; that is the honest state, not a regression.
+* **"Both sides present" is not "a market is quoting both sides".** Off-session, Yahoo answered
+  for 8 of 653 names and 5 were leftovers: TECH 0.70/3.20 (128% of mid, inverts to 6.3% IV),
+  IEX 2.20/6.00 (93%), UYM 2.60/6.90 (91%), LIT 2.05/5.00 (84%). The same flag was also
+  telling `ivsanity` to skip its history and IB cross-checks, so the guard would have trusted
+  them. `midTrustworthy` (positive, uncrossed, spread ≤ 50% of mid) now gates both passes; the
+  measured split is 4 real quotes at 5.6–19.9% against 4 leftovers at 84–128%, an empty 60pp
+  band between them.
+* **Hysteresis on the IV floors** — the queued item, and it had to wait for the above: a latch
+  over a sawtooth cements whichever phase the snapshot caught. **`src/lib/hysteresis.ts`**:
+  enter at the floor, leave only **2pp** below it. Entry is never widened. Applied to NC, HIV,
+  LEVHIV, ETFHIV and threaded through /watchlists, the OH→IB push and the change log.
+  Membership is now **recorded** in `oh_screen_snapshots.lists`, because the rule needs
+  yesterday's *answer* and re-deriving it from yesterday's inputs would apply today's rule.
+  The latch therefore advances once a day, at the 06:04 snapshot — **within a day a list cannot
+  move at all**.
+* The audit prints provenance on each disagreement row and gained `iv-not-mid-priced`.
+
+**Hysteresis is inert until the first snapshot writes `lists`** (tonight's 06:04 run). Until
+then every name faces the plain floor, which is why the deployed NC count (19) is unchanged.
+That is the designed bootstrap: no prior means no latch, so it can only ever widen an existing
+member's exit, never admit a new name.
+
+### Verification
+
+`npx tsc --noEmit` clean. `npm run check` = **16 scripts, 1665 assertions** — the two new ones
+are `ivsource-check` (50) and `hysteresis-check` (45). `db:push` to prod and test (four
+additive columns: `quotes.iv_src`, `quotes.iv_at`, `iv_history.iv_src`,
+`oh_screen_snapshots.lists`). Built, restarted, and `/`, `/watchlists`, `/wl-log`, `/risk`,
+`/positions`, `/short-call/candidates`, `/sync`, `/roic` all 200 against the running unit;
+`/api/oh-watchlists` serves. `audit:metadata` exits 0.
+
+---
+
+## Session of 2026-09-10, first half
 
 **Operating mode is now CEO mode** (standing): the operator gives goals, the agent plans,
 executes, verifies and deploys. The mode, its obligations and the two standing goals are in
 **CLAUDE.md § How we work**. The goals: correct instrument metadata (`npm run
 audit:metadata` is the executable definition, exits 1 on any blocking class) and up-to-date,
 stable watchlists.
-
-**Everything below is built, deployed to prod and verified. It is NOT committed** — 37 files
-in the working tree. Commit before doing anything destructive.
 
 ### What shipped today
 
@@ -58,7 +155,9 @@ HST 2.47×) is **our** defect, not a disagreement, so the flip counts (38 NC, 19
 Order of operations:
 
 1. **After tonight's spreads pass**, re-run `npm run iv:compare` and `npm run audit:metadata`.
-   If the 13-name disagreement list collapses, our number is sound.
+   ~~If the 13-name disagreement list collapses, our number is sound.~~ **Superseded** — see
+   § *What the baseline cannot tell you* above: it will narrow, not collapse, and only the
+   residue is evidence about IB's number.
 2. Then decide precedence. It must be **IB-first-with-fallback**, never IB-only: 24 names have
    no IB value at all.
 3. Re-check the floors when switching — the flip lists show the thresholds sit near the mode of
@@ -68,9 +167,7 @@ Order of operations:
 
 ### Queued, not started
 
-* **Hysteresis on the IV floors.** 17 names sit within ±1pp of the 50% line, 24 within 1pp of
-  40%, 43 within 1pp of 30%; they enter and leave on noise. Enter at the floor, leave only 2pp
-  below it. Needs yesterday's membership, which `oh_screen_snapshots` can supply.
+* ~~**Hysteresis on the IV floors.**~~ **Shipped** in the second half of the day — see above.
 * **Strike-level IV for the cushion.** The gates size cushion in σ from an **ATM** vol while
   the contract sold is priced off its own strike (IB 7633, now captured for held legs). On
   held legs the difference behaves exactly as skew predicts — SOXL 90P at 135.2% vs ATM
