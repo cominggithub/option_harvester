@@ -1,5 +1,10 @@
 # Agent guide
 
+**Operating mode: CEO mode** (standing, 2026-09-10). The operator gives goals; you plan,
+execute, verify and deploy — no approval round trip. The standing goals (correct instrument
+metadata, up-to-date stable watchlists) and what the mode obliges you to report are in
+**[CLAUDE.md](CLAUDE.md) § How we work**. Read it first.
+
 This repo's operational map, knowledge index, and file map live in **[CLAUDE.md](CLAUDE.md)** —
 read it first. It routes you to the domain spec (`docs/spec.md`), test plan
 (`docs/test-plan.md`), strategy (`docs/strategy.md`), and the CC model

@@ -8,6 +8,34 @@ positions, trades, and P/L.
 This file is the **operational map** — how to run the repo safely. Everything else
 lives in the knowledge map below; read the row that matches your task before diving in.
 
+## How we work — CEO mode (standing, from 2026-09-10)
+
+The operator sets **goals**; the agent **plans, executes, verifies and deploys**. No
+plan-approval round trip, no handing work back that could have been done. What does not
+change: the DB ownership rules (§ Database), *data writes on the test server only*, IBKR
+access only through `ib-agent`, and **you own the deploy** (`npm run build && sudo
+systemctl restart option_harvester`, then verify).
+
+What the agent owes in return, since nobody is checking the steps:
+
+* **Evidence before action.** Measure the defect, then fix it. Every claim in a summary
+  should be traceable to a command that ran in that session.
+* **Say what was not done.** Partial coverage, skipped verification, a hypothesis that
+  failed — reported, not smoothed over. A goal reported as met when it is 80% met costs
+  more than the missing 20%.
+* **Escalate only real decisions** — trade doctrine, destructive operations, a change that
+  would alter what the strategy recommends without evidence to justify it.
+
+### Standing goals
+
+1. **Correct metadata for every tracked stock and ETF** — name, type, sector, sub-industry,
+   conid, and the option-market facts (IV, ladder) that every screen gates on. Audit with
+   **`npm run audit:metadata`** (`scripts/metadata-audit.ts`); it is the definition of
+   "correct" in executable form, and it is expected to exit clean.
+2. **Watchlists that are up to date and stable** — membership derived from fresh inputs, no
+   flicker from noise, and the IB-side copy in step with ours. See docs/watchlists.md
+   (cadence + hysteresis) and `/wl-log` for what changed and why.
+
 ### Knowledge map — where to look first
 
 | I need to… | Read |
@@ -26,7 +54,7 @@ lives in the knowledge map below; read the row that matches your task before div
 | Work on the Δ0.30 naked-call model / `ccscore` / predictions | **`docs/cc-target-strategy.md`** — model, backtest, predict→validate loop |
 | Work on watchlists (OH + IB), conid backfill, IB option fetch, plugin sync | **`docs/watchlists.md`** — sources, `/watchlists` page, IB↔web sync flows |
 | Wonder whether a Δ on screen is real, or touch anything that reads greeks | **`src/lib/greekage.ts`** (the decision + why) + `docs/spec.md § 4.9`; audit it with `npm run audit:greeks` |
-| Understand a past defect (what broke, why it wasn't caught, what changed) | **`docs/defects/`** — one file per incident; start with `2026-08-21-stale-delta.md` (a delta 45h old rendered as live, past the 0.30 roll line) |
+| Understand a past defect (what broke, why it wasn't caught, what changed) | **`docs/defects/`** — one file per incident: `2026-08-21-stale-delta.md` (a delta 45h old rendered as live, past the 0.30 roll line); `2026-09-10-missing-ib-iv.md` (every IV in the app is ours, IB's was never once stored — wrong snapshot field for two months, and what the first comparison showed) |
 | Find where code lives | **File map** (below) |
 
 (Terminology: calls are naked, puts cash-backed; legacy code uses `cc`/`csp`/`ccScore`.)
@@ -79,6 +107,11 @@ Windows reboot → "WSL Autostart" task → systemd (PID 1) → this unit runs
 
 ### Timers (systemd)
 
+- **Metadata audit** — `npm run audit:metadata` (`scripts/metadata-audit.ts`, read-only)
+  is the executable definition of standing goal #1: unenriched rows, stale quotes, unknown
+  sectors, geared funds mistyped, shelf drift, missing conids, held names off the universe,
+  implausible or missing IV, off-index leftovers. Exits 1 on any BLOCKING class, so it can
+  gate a deploy. Advisory classes print without failing.
 - **Daily refresh** — `option_harvester-ingest.timer` runs `scripts/daily.sh` at
   **06:00 local** (`Persistent=true`): `npm run ingest` → `ingest:history` →
   `predict` → `snapshot:oh` (OH-watchlist screen snapshot for the /wl-log change log).
@@ -145,7 +178,7 @@ Pages (all `force-dynamic`):
   with Return on Invested Capital ≥ `HIGH_ROIC_MIN` (15%), sorted by ROIC. ROIC computed
   at ingest (`lib/roic.ts`); see docs/spec.md.
 - `src/app/wl-log/page.tsx` — **WL Log**: OH-watchlist change log. Diffs the daily
-  `option_harvest_oh_screen_snapshots` per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC/LEV/LEVHIV/LEVMIX) and
+  `option_harvest_oh_screen_snapshots` per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC/LEV/LEVHIV/LEVMIX/ETFHIV/ETFMIX) and
   explains each add/remove by the predicate input that flipped (IV crossing a
   threshold, a trend window, a ladder gap, a position open/close, |Δ| past 0.30, a
   target flag toggled). Built by `getOhChangeLog` (`lib/ohhistory.ts`).
@@ -237,7 +270,7 @@ API (`src/app/api/…`, mutations + on-demand data):
   off-index tickers.
 - `ib-capture` — receives positions/orders/trades pushed by the Chrome extension.
 - `sync-log` — POST a sync-run summary from the extension → `option_harvest_sync_runs`
-  (powers the `/sync` run history; `source` = `manual` | `auto` | `login` | `deep`).
+  (powers the `/sync` run history; `source` = `full` | `quick` | `auto` | `login` | `deep` (`manual` on rows written before 0.9.10)).
 - `ext-log` — extension **self-diagnostics** channel: POST `{extId, version, event, level,
   status, state, raw}` → `option_harvest_ext_logs`, GET `?limit=&event=&sinceMin=` reads it
   back. It exists because a failing login sync used to live only in the popup (making the
@@ -257,8 +290,17 @@ API (`src/app/api/…`, mutations + on-demand data):
   `securities.conid`; GET lists pins); `underlying-conids` — GET held-option reps per
   ticker, POST IB-derived `undConid` → `ib-option` pin (fixes naked option-only names
   whose `/trsrv` pick is wrong); pins live in `option_harvest_security_conids`; `options` — GET ticker→conid, POST IB option
-  snapshot into `ib_*`; `greeks` — GET held option conids, POST per-contract greek
-  snapshots (7308/09/10/11) into `option_harvest_option_greeks` (keyed by conid).
+  snapshot into `ib_*`; `underlying-iv` — GET ticker→conid, POST IB's **field 7283**
+  (30-day constant-maturity "Option Implied Vol. %", the IV column on an IB watchlist row)
+  into `quotes.ib_iv_30_pct`; every IV the app screens on is otherwise our own
+  Black–Scholes inversion of a Yahoo chain, so this is the only way the two can be
+  compared — `npm run iv:compare`; `greeks` — GET held option conids, POST per-contract greek
+  snapshots (7308/09/10/11 **and 7633**, this strike's IV) into
+  `option_harvest_option_greeks` (keyed by conid). Two 2026-09-10 fixes explain why 231
+  rows carried a delta and none an IV: the pass asked options for **7283**, which IB serves
+  only on the *underlying* (the per-strike field is **7633**), and the batch poll released a
+  conid the moment delta arrived, discarding anything IB computed a poll later. It now asks
+  for 7633 and waits for delta **and** an IV, under the same 12-poll cap.
   Freshness is stamped **per field**: `at` only moves when a greek actually arrived
   and `deltaAt` records when the *delta* was measured, because a snapshot that comes
   back empty used to re-stamp a days-old delta as current (`|δ| > 1` is rejected;
@@ -330,11 +372,21 @@ the option book by expiry with cumulative P/L/credit + net greeks for P&L Predic
 `trend.ts` (windows incl. `w1`/`w2`; `moveLabel` = net-move tint; `WINDOW_BARS`),
 `view.ts` (sort; per-window `trendW1..trendY1` keys, `TrendWindowKey` w1/w2),
 `labels.ts` (derived stock-label catalog),
-`watchlists.ts` (OH watchlist definitions + IB reader — see docs/watchlists.md),
+`watchlists.ts` (OH watchlist definitions + IB reader — see docs/watchlists.md;
+`isLevWritable`/`isPlainWritable` are the two shelf gates: geared funds need IV ≥ 50 %
+(1x ≥ 40 %) for LEVHIV, while ETFHIV takes **unleveraged only** at ≥ 30 % because a geared
+short call costs multiples of the maintenance margin — SOXL 47.3 % of assignment notional
+vs SOXX 16.4 %, measured on this book — and `pickLevMix` thins either one to one name per
+bet, de-duplicating on family, correlated theme, and the overlap graph),
+`universe.ts` (`ghostTickers`/`retirementPlan` — which tracked names stop being screened:
+absence from index ∪ curated ∪ held, capped at 8% per run so a half-rendered Wikipedia table
+cannot delete the book's coverage; self-check `scripts/universe-check.ts`),
 `leveraged.ts` (`isLongLeveragedEtf`/`leverageFactor`/`LEV_MIN_FACTOR` — name-based
 2x/3x **long** ETF classifier behind the LEV watchlist; inverse/short funds excluded —
-plus `LEV_ETFS`, the **curated geared shelf**: 47 funds with factor / exposure family /
-driver / correlated theme / `hazard`, the family **overlap graph** behind LEVMIX, and
+plus `isInverseFund`/`isVolFuturesFund` (direction and VIX-ETP bars that also work at 1x,
+which LEVHIV needs since it admits unleveraged funds), and `LEV_ETFS`, the **curated
+geared shelf**: 47 funds with factor / exposure family / driver / correlated theme /
+`hazard`, the family **overlap graph** behind LEVMIX, and
 `levThemeMap()`, which `bookrisk.ts` merges so a geared fund never falls back to the
 single "Leveraged / Inverse" sector bucket. One source of truth with the ingest
 universe: `scripts/ingest-sp500.ts` splices `LEV_ETFS` into `LARGE_ETFS`),
@@ -372,16 +424,20 @@ Scripts (`scripts/`):
   **`npm run audit:greeks`** is the read-only delta report: per held leg, IB's stored Δ,
   its measurement age, the mark-implied Δ and the gap (this is what proved the staleness).
 
-Chrome extension (`extension/`): runs in the logged-in IB portal tab. **Sync now**
-(fast, background-safe) pulls positions/orders/trades/watchlists + the daily
-account-balance summary (`/portfolio/{acct}/summary` → `balances`) → the write APIs
-(IB→web, full replace), then pushes OH watchlists → IB (`OH:*`) and **reads them back
-to verify** the pushed conids (`/api/oh-verify`, shown on `/sync`). It's just parallel
-fetches (no per-contract timers), so it finishes in a few seconds and survives
-switching tabs / a backgrounded window. A **manual** Sync now also runs the
-**batched greeks** pass (Δ/Θ/Γ, many conids per snapshot — quick, best-effort) so
-held-option greeks refresh without a separate step; **Auto-sync** and **login sync**
-run the same light pull and take greeks **too, but only while the IB tab is the one on
+Chrome extension (`extension/`): runs in the logged-in IB portal tab. Three sync tiers
+(0.9.10+): **Sync now** (`runAll`) runs **everything** in dependency order — the pull
+(positions/orders/trades/watchlists + the daily account-balance summary
+`/portfolio/{acct}/summary` → `balances`) → batched greeks → IB's 30-day IV for every
+underlying → exact per-position margin (what-if) → underlying + conid re-resolve → OH
+push → read-back verify. 2–5 min, and the IB tab must stay in front (in-page timers get
+throttled in a background tab). **Quick sync** (`runSync`) is the old fast path — the pull
++ greeks + OH push/verify, a few seconds, survives switching tabs. **Deep sync**
+(`runDeep`) is the heavy passes alone, for when positions are already current. Ordering
+inside the full run is load-bearing: the pull first (every heavy pass reads its targets
+from what the backend now knows), the OH push last (conid re-resolution changes what the
+lists should contain), one `/sync` row for the whole run (`deferOh` + `skipLog` on the
+light phase). **Auto-sync** and **login sync**
+run the quick pull and take greeks **only while the IB tab is the one on
 screen** (`tabInForeground` — active tab in a focused window; Chrome throttles the
 in-page 500ms poll loop in a background tab). When it's skipped the run records
 `greeksSkipped` instead of silently leaving an old delta looking fresh. **Sync greeks inside US market hours**
@@ -416,10 +472,26 @@ to the popup log (e.g. `greeks 12/97`, `margin 5/97`, `conids…`, `OH push`). O
 snapshot → `ib_*`), **Get greeks (IB)** (held-contract greek snapshot →
 `option_harvest_option_greeks`; **batched** — many conids per `/iserver/marketdata/snapshot`
 subscribe burst, so it's fast rather than one contract at a time), **Get margin (IB)** (per held-contract what-if close
-order → `option_harvest_position_margin`), **Push OH → IB**, **Verify OH lists (read
+order → `option_harvest_position_margin`), **Get IB IV (30-day, underlyings)** (batched
+field-7283 snapshot for every conid'd ticker → `quotes.ib_iv_30_pct`; ~50 conids per
+subscribe burst with `/iserver/marketdata/unsubscribeall` between chunks, because IB's
+market-data lines are finite and without the release the second chunk comes back empty —
+the ticker box doubles as a filter for spot checks), **Push OH → IB**, **Verify OH lists (read
 back)**, **Fix conids from held options**, and **Send page (dev)** capture →
-`ib-capture`. Every Sync (manual/auto/login/deep) posts its run summary to `sync-log` (the
-`/sync` page, `source` = `manual` | `auto` | `login` | `deep`). Full flows in **docs/watchlists.md**.
+`ib-capture`. Every Sync (full/quick/auto/login/deep) posts its run summary to `sync-log` (the
+`/sync` page, `source` = `full` | `quick` | `auto` | `login` | `deep` (`manual` on rows written before 0.9.10)). Full flows in **docs/watchlists.md**.
+**Version gate (0.9.11+).** The extension sends `X-OH-Ext-Version` on every request and
+`src/middleware.ts` refuses **writes** from anything below `MIN_EXT_VERSION`
+(`src/lib/extversion.ts`) with a 409 the extension understands: it clears its alarms,
+records `staleBlocked`, and refuses to run until its own version is new enough. Reads and
+`/api/ext-log` are exempt — the log is where a stale install says who it is, and silencing
+it would delete the only evidence it exists. A request with **no** version header is
+allowed on purpose (the web app, `npm run` scripts, curl), which is also the limit of the
+mechanism: pre-0.9.11 installs cannot be refused, only named, so `/sync` lists every
+install whose newest report is stale (newest report per `extId`, dated by `clientAt` where
+present). Two copies against one IB tab race for IB's finite market-data lines and leave
+freshness stamps nobody can attribute — that is what this is for.
+
 **Self-reporting (0.9.4+).** The popup's status line used to be the only witness to what
 the worker did — a login sync that failed early never reached the `sync-log` POST inside
 `runSync`, so nothing server-side knew it happened. Every status change and every

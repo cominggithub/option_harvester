@@ -212,7 +212,7 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   — the extension's per-run history (`option_harvest_sync_runs`).
 - **WL Log** (`/wl-log`, `getOhChangeLog`) — OH-watchlist change log. Snapshots each
   day's screen (`option_harvest_oh_screen_snapshots`, written at the end of the daily
-  refresh) and shows, per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC/LEV/LEVHIV/LEVMIX), what was **added** /
+  refresh) and shows, per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC/LEV/LEVHIV/LEVMIX/ETFHIV/ETFMIX), what was **added** /
   **removed** between renews and **why** — the predicate input that flipped (IV crossing
   40/50%, a trend window turning, a weekly-ladder gap, a position open/close, |Δ| past
   0.30). Current membership counts at top; diffs are day-over-day.
@@ -302,7 +302,7 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   off-index ticker into the universe immediately (`addNewHoldings`, via `enrich.ts`).
 - **Wiki** (`/wiki`) — static field-manual page (strategy, screens, formulas).
 - **Watchlists** (`/watchlists`, `WatchlistBrowser.tsx`) — left-nav tabs over two
-  groups: **OH** (computed NC / NCcan / Cpos / Ppos / RED / HIV / HIVS / HIVSC / OTC / ROIC / LEV / LEVHIV / LEVMIX) and
+  groups: **OH** (computed NC / NCcan / Cpos / Ppos / RED / HIV / HIVS / HIVSC / OTC / ROIC / LEV / LEVHIV / LEVMIX / ETFHIV / ETFMIX) and
   **IB** (the user's Interactive Brokers lists, synced by the extension). Each tab
   renders the Analyzer's wide table view (`WideStockList`) for its members. Full spec: **docs/watchlists.md**.
 - **High ROIC** (`/roic`, `RoicScreen.tsx`) — value-investment quality screen. Lists
@@ -403,6 +403,15 @@ caught it for three days — is **`docs/defects/2026-08-21-stale-delta.md`**.
 
 ## 5. Metrics & formulas
 
+**Whose IV is it?** `iv_pct` is computed here, not fetched: a Black-Scholes inversion of a
+Yahoo chain (see below). IB's own number for the same underlying — field 7283, 30-day
+constant maturity, the IV column on an IB watchlist row — is stored separately in
+`ib_iv_30_pct` and compared with `npm run iv:compare`. The two agree to ~1pp in the middle
+and diverge on thin names, where our after-hours **last-trade** fallback inflates σ; 37
+names sit on different sides of a screen floor depending on which is used. Full account,
+including why IB's IV was NULL in `option_harvest_option_greeks` for two months:
+**`docs/defects/2026-09-10-missing-ib-iv.md`**.
+
 - **IV %** (`iv_pct`, `scripts/iv.ts`) — front-month ATM implied vol. Front-month =
   listed expiry **closest to 30 DTE among those ≥ 21 days out**; its DTE is `iv_dte`.
   Yahoo's `impliedVolatility` is unusable (≈0 on stale/closed data), so we **invert
@@ -458,6 +467,18 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   ib_iv_dte, ib_expiry, ib_atm_strike/bid/ask/mid/spread_pct, ib_delta, ib_at — the
   ~30-DTE ATM call snapshot, kept separate from the Yahoo fields for the `/ib`
   comparison (see docs/watchlists.md § endpoints).
+  **ib_iv_30_pct / ib_iv_30_at** — IB's OWN implied vol for the underlying: Client-Portal
+  field **7283** ("Option Implied Vol. %"), the IV column on an IB watchlist row —
+  at-the-market vol interpolated to exactly **30 calendar days** from two consecutive
+  expiration months. A different *measurement* from `iv_pct`, not a better copy of it:
+  ours is one expiry (29 DTE for half the universe, 36 for the other half) inverted from
+  a Yahoo chain with European Black–Scholes, r = 4%, no dividend or borrow; IB's is
+  constant-maturity, priced by its own American model with dividends. Both are stored so
+  the gap is measurable — `npm run iv:compare` reports it and, more usefully, which gate
+  verdicts (NC/HIV/ETFHIV/LEVHIV floors) would flip if the source changed. Written by
+  `POST /api/underlying-iv` from the extension's **Get IB IV** action (or a Deep sync),
+  batched ~50 conids per subscribe burst with the market-data lines released between
+  chunks.
 - **iv_history** — daily IV series, PK `(ticker, date)`: iv_pct, iv_dte,
   weekly_buckets, price. **Appended every `npm run ingest`** (only source of past IV —
   `quotes` keeps only today). Backfill via `npm run ingest:iv-backfill`
@@ -472,7 +493,7 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   symbol. **position_uploads** keeps every raw CSV (re-importable).
 - **option_greeks** — per-contract greeks keyed by **conid** (PK): delta, **delta_at**,
   gamma, theta, vega, iv, at. Synced from the IB Client-Portal market-data snapshot by the
-  extension (fields 7308/7309/7310/7311/7283) and joined to held positions by conid at read
+  extension (fields 7308/7309/7310/7311/7633) and joined to held positions by conid at read
   time. Separate table so greeks survive the full-replace positions re-import; the POST only
   writes fields IB actually returns (won't null out a prior good value).
   **Freshness is per field.** `at` moves only when *some* greek arrived and `delta_at`
@@ -509,7 +530,7 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   extension on every sync; stock-vs-option value computed from positions. Feeds the
   `/sync` balances panel + history chart (`lib/balances.ts`).
 - **sync_runs** — audit log of each IB→web sync (Chrome extension): at, source
-  (manual/auto/login/deep), acct, per-dataset counts (positions/orders/trades/watchlists/greeks/
+  (full/quick/auto/login/deep; `manual` pre-0.9.10), acct, per-dataset counts (positions/orders/trades/watchlists/greeks/
   margin/oh_push), error, raw. Powers the `/sync` run history (`lib/synclog.ts`).
 - **ext_logs** — the extension's own lifecycle log (`/api/ext-log`): at, ext_id, version,
   event (`status` | `login-watch` | `alarm` | `rearm` | …), level, status line, `state`
@@ -532,7 +553,7 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   nc, target, held, posCall, posPut, max_opt_abs_delta + the NC criteria (volume, price,
   weekly_buckets, iv_pct, trend_m1/m3/m6). Written by `scripts/snapshot-oh.ts` at the end
   of the daily refresh; the **WL Log** (`/wl-log`) diffs consecutive days per OH list
-  (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC/LEV/LEVHIV/LEVMIX) and explains each add/remove (`lib/ohhistory.ts`).
+  (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC/LEV/LEVHIV/LEVMIX/ETFHIV/ETFMIX) and explains each add/remove (`lib/ohhistory.ts`).
 
 ### IB parsers
 - **ibparse.ts** (positions): IB Activity Statements are multi-section CSVs;
@@ -737,10 +758,22 @@ Rough but free; a "look here" prompt, not a verdict.
    from `LEV_ETFS` (`lib/leveraged.ts`, one source of truth with the LEV/LEVHIV/LEVMIX
    watchlists and the risk engine's theme map) + the inverse funds. Add a cash or inverse
    fund in the script; add a geared long fund to `LEV_ETFS`.
+   3a. Add **`CURATED_OFF_INDEX`** — non-index names tracked on purpose (the metals complex
+   AEM/PAAS/HL/PPLT, the China ADRs BABA/BIDU/PDD, IBIT/MSTR, DOCU), with declared sector and
+   type. They used to exist only as a side effect of an open position, so closing one removed
+   the name from every screen — on 2026-09-10 that retired IBIT while ETFMIX was recommending
+   it.
    3b. Add the user's **held instruments** not already in the universe
    (`getPositionConstituents()`) under sector **"Off-Index"**; non-US via `YF_ALIAS`
    (e.g. `UBSG → UBSG.SW`).
 4. Upsert into securities + quotes.
+5. **Retire what the run did not cover** (`src/lib/universe.ts`): a tracked name absent from
+   index ∪ curated ∪ held gets `is_active = false` — deactivated, never deleted, and
+   reactivated by the upsert the moment it returns. Held names are never retired. A run may
+   retire at most **8%** of what it tracks; above that it retires nothing and logs why,
+   because the input is a scraped web page. Before this existed, 18 instruments were still
+   being screened on quotes up to 84 days old, including SATS after EchoStar's listing moved
+   to ECHO. Audit with `npm run audit:metadata`.
 
 Wikipedia class-share tickers use a dot (`BRK.B`); Yahoo a dash (`BRK-B`) —
 `toYahooSymbol()`. ~6-way concurrent; ~510 tickers in a couple minutes. The shared

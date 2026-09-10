@@ -23,9 +23,11 @@ Each pure engine ships one `assert`-based `_selfCheck`, run via a tiny script. A
 must print `... self-check OK`:
 
 ```bash
-npm run check                         # the short-call suite + delta freshness (629 assertions, nine scripts)
+npm run check                         # every engine self-check (1527 assertions, thirteen scripts)
 npm run check:sc                      # just the analyzer engines (rules, lifecycle, pages)
 npm run check:greeks                  # delta freshness / model cross-check (also inside `npm run check`)
+npm run audit:metadata                # instrument metadata: exits 1 on any BLOCKING defect (read-only, prod)
+npm run iv:compare                    # our IV vs IB's field 7283, and which screen floors it flips
 npx tsx scripts/pnl-check.ts          # P/L engine
 npx tsx scripts/posanalysis-check.ts  # position action suggestions
 npx tsx scripts/news-check.ts         # news sentiment lexicon

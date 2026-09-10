@@ -1,4 +1,98 @@
-# option_harvester — next-session recap (as of 2026-08-28)
+# option_harvester — next-session recap (as of 2026-09-10)
+
+## Session of 2026-09-10 — read this first
+
+**Operating mode is now CEO mode** (standing): the operator gives goals, the agent plans,
+executes, verifies and deploys. The mode, its obligations and the two standing goals are in
+**CLAUDE.md § How we work**. The goals: correct instrument metadata (`npm run
+audit:metadata` is the executable definition, exits 1 on any blocking class) and up-to-date,
+stable watchlists.
+
+**Everything below is built, deployed to prod and verified. It is NOT committed** — 37 files
+in the working tree. Commit before doing anything destructive.
+
+### What shipped today
+
+* **IB's own IV, for the first time.** Every IV in the app is ours (a Black–Scholes inversion
+  of a Yahoo chain); IB's had never once been stored. New `quotes.ib_iv_30_pct` (field 7283,
+  30-day constant maturity — the IV column on an IB watchlist row), `POST/GET
+  /api/underlying-iv`, an extension pass with narrowing retry rounds, and `npm run iv:compare`.
+  Coverage **630 of 643**; the residual 24 are names IB answers `0` for however long you wait.
+* **Two defects behind an empty column** — `option_harvest_option_greeks.iv` had been NULL for
+  all 231 rows since 2026-07-07: the pass asked option contracts for **7283**, which IB serves
+  only on underlyings (per-strike is **7633**), and the poll loop released a conid the moment
+  delta arrived. Both fixed; 49/49 held contracts now carry an IV. Full account:
+  **`docs/defects/2026-09-10-missing-ib-iv.md`**.
+* **Sync tiers.** **Sync now** = everything in dependency order (pull → greeks → IB IV →
+  margin → conid re-resolve → OH push → verify, 2–5 min, IB tab in front); **Quick sync** =
+  the old fast pull; **Deep sync** = heavy passes only. Auto/login stay on the quick path and
+  top up a bounded slice of the oldest IB IVs (120 names, 48h floor) while the tab is in front.
+* **Version gate.** The extension sends `X-OH-Ext-Version`; `src/middleware.ts` refuses writes
+  below `MIN_EXT_VERSION` (0.9.11) with a 409 the extension obeys by clearing its alarms.
+  Pre-0.9.11 installs send no version, so they can only be *named* — `/sync` lists any install
+  whose newest report is stale. **A 0.9.6 copy was still reporting every 15 minutes**, sharing
+  the good install's `extId` (same folder path in another Chrome profile or machine).
+* **Universe hygiene.** Nothing ever retired a name that left the index: 20 instruments were
+  still being screened on quotes up to 84 days old (AEM 07-05, CPB and POOL 06-18), and SATS
+  was live alongside ECHO after EchoStar's listing moved. `src/lib/universe.ts` now retires
+  anything absent from index ∪ curated ∪ held, capped at **8% per run** so a half-rendered
+  Wikipedia table cannot delete the book's coverage. New `CURATED_OFF_INDEX` (AEM, PAAS, HL,
+  PPLT, IBIT, MSTR, BABA, BIDU, PDD, DOCU) so a name stops depending on an open position —
+  closing one had retired IBIT while ETFMIX was recommending it.
+* **IV sanity guard.** `src/lib/ivsanity.ts` refuses an implausible reading at write time
+  (hard 1–400% band, >3× its own recent median, >2× IB's). MLM had stored **166.2%** against
+  IB's 28.9% and was screening in NC and HIV on it. Rejections are logged by name and kept out
+  of `iv_history`. Deliberately loose so real vol spikes survive; what it lets through is
+  surfaced by the audit's `iv-disagrees-with-ib` class (13 names today).
+* **Our IV gets a better input.** The intraday spreads pass (23:30/01:00/02:30, US hours) now
+  re-prices `iv_pct` from the **live bid/ask** it already fetched, instead of leaving the
+  nightly last-trade inversion in place. **This had not yet run when the session ended.**
+
+### The open decision, and what it waits on
+
+Should the screens gate on IB's IV instead of ours? Not yet decidable. `iv:compare` currently
+shows median gap −1.0pp with 450 of 630 names inside 2pp — but the tail (MLM 5.74×, APA 3.51×,
+HST 2.47×) is **our** defect, not a disagreement, so the flip counts (38 NC, 19 HIV, 4 ETFHIV,
+6 LEVHIV) are inflated by it.
+
+Order of operations:
+
+1. **After tonight's spreads pass**, re-run `npm run iv:compare` and `npm run audit:metadata`.
+   If the 13-name disagreement list collapses, our number is sound.
+2. Then decide precedence. It must be **IB-first-with-fallback**, never IB-only: 24 names have
+   no IB value at all.
+3. Re-check the floors when switching — the flip lists show the thresholds sit near the mode of
+   the distribution, so a systematic 1pp shift moves ~4% of names.
+4. The frozen `cc_scores` stay on our IV regardless; those predictions exist to be validated
+   against the inputs they were fitted on.
+
+### Queued, not started
+
+* **Hysteresis on the IV floors.** 17 names sit within ±1pp of the 50% line, 24 within 1pp of
+  40%, 43 within 1pp of 30%; they enter and leave on noise. Enter at the floor, leave only 2pp
+  below it. Needs yesterday's membership, which `oh_screen_snapshots` can supply.
+* **Strike-level IV for the cushion.** The gates size cushion in σ from an **ATM** vol while
+  the contract sold is priced off its own strike (IB 7633, now captured for held legs). On
+  held legs the difference behaves exactly as skew predicts — SOXL 90P at 135.2% vs ATM
+  117.7%. That is a doctrine question for `docs/short-call-strategy.md`, not a data fix.
+* 262→24 IB IV stragglers: watch whether the count keeps falling with the retry rounds.
+
+### Two process failures worth remembering
+
+* **I wrote to prod twice by accident.** Importing `ghostTickers` from
+  `scripts/ingest-sp500.ts` executed that file's `main()` — a full 3-minute prod ingest. The
+  rule now lives in `src/lib/universe.ts`: a pure rule other code must reason about does not
+  belong in a module with a side effect at load time. Also two synthetic smoke-test rows were
+  written to prod (`ext_logs`, `sync_runs`) and deleted immediately; both should have gone to
+  19211.
+* **A not-an-answer read as an answer, three times in one feature**: 7283 on an option
+  contract, a cold row with no field, and finally `"7283": "0"` — which silently defeated the
+  retry rounds (round 1 reported "643 of 643 filled" while the backend rejected 262). The write
+  guard caught each one, which is why coverage numbers stayed right while the diagnostics lied.
+
+---
+
+# Previous recap (as of 2026-08-28)
 
 **Status:** everything described here is implemented, built, deployed to production
 (`114.33.62.221:19210`, systemd unit `option_harvester`) and pushed to `origin/master`. A WSL
