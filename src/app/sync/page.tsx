@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getExtCondition, getSyncSummary, type ExtCondition, type SyncDataset, type SyncRunRow, type OhVerifyResult } from "@/lib/synclog";
+import { MIN_EXT_VERSION } from "@/lib/extversion";
 import { getBookFreshness, type BookFreshness } from "@/lib/positions";
 import { getBalanceSeries, type BalancePoint } from "@/lib/balances";
 import { BalanceLines } from "@/components/charts";
@@ -250,7 +251,10 @@ function RunsTable({ runs }: { runs: SyncRunRow[] }) {
             <tr key={r.id} className="border-b border-line/50 last:border-0 hover:bg-canvas">
               <td className="py-1.5 pr-3 text-ink" title={formatTimestamp(new Date(r.at))}>{ago(r.at)}</td>
               <td className="py-1.5 pr-2">
-                <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${r.source === "auto" ? "bg-sky-50 text-sky-700" : r.source === "login" ? "bg-emerald-50 text-emerald-700" : "bg-line text-ink-muted"}`}>{r.source}</span>
+                {/* `full` is the run that refreshed everything, so it reads as ink rather
+                    than as one more grey tag — on a page about staleness, which rows are
+                    complete is the first thing worth seeing. */}
+                <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${r.source === "auto" ? "bg-sky-50 text-sky-700" : r.source === "login" ? "bg-emerald-50 text-emerald-700" : r.source === "full" ? "bg-ink text-white" : "bg-line text-ink-muted"}`}>{r.source}</span>
               </td>
               <td className="tnum py-1.5 pr-2 text-[11px] text-ink-faint">{r.acct ?? "—"}</td>
               <td className="tnum py-1.5 pr-2 text-right">{n(r.positions)}</td>
@@ -277,6 +281,44 @@ function RunsTable({ runs }: { runs: SyncRunRow[] }) {
  * when the book is actually stale, since in normal operation it's noise.
  * Diagnostics: `state` is whatever the extension sent, and is not trusted.
  */
+/**
+ * A second, out-of-date copy of the extension is running.
+ *
+ * Shown whatever the book's freshness, because this failure has no symptom on the rest of
+ * the page: both installs write the same shapes, so the datasets look synced while two
+ * copies race for IB's market-data lines and the freshness stamps belong to whichever ran
+ * last. From 0.9.11 the backend refuses stale writes outright — but the installs that made
+ * that necessary send no version at all, so they can only be named. This banner is that
+ * naming, and its disappearance is the confirmation the folder is gone.
+ */
+function StaleInstallsPanel({ ext }: { ext: ExtCondition | null }) {
+  if (!ext?.staleInstalls?.length) return null;
+  return (
+    <div className="mt-6 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-[12px] leading-relaxed text-rose-900">
+      <strong className="text-[12.5px] font-semibold">
+        {ext.staleInstalls.length === 1 ? "An out-of-date extension is still reporting" : `${ext.staleInstalls.length} out-of-date extensions are still reporting`}
+        {" "}— this backend requires {MIN_EXT_VERSION}
+      </strong>
+      <ul className="mt-1.5 space-y-0.5">
+        {ext.staleInstalls.map((s) => (
+          <li key={`${s.version}-${s.extId ?? "?"}`} className="tnum">
+            <span className="font-semibold">{s.version}</span>
+            {s.extId ? <span className="text-rose-700"> · install {s.extId}</span> : null}
+            <span className="text-rose-700">
+              {" "}· {s.reports} report{s.reports === 1 ? "" : "s"} · last {ago(s.lastAt)}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-1.5">
+        Its writes are refused, but it still competes for the IB tab and for IB&rsquo;s finite market-data lines — a
+        greeks batch that should return 49 contracts returns some of 49. Remove it at <code>chrome://extensions</code>
+        {" "}(the old unpacked folder), or update that folder and reload. This banner clears once it stops reporting.
+      </p>
+    </div>
+  );
+}
+
 function ExtConditionPanel({ ext, f }: { ext: ExtCondition | null; f: BookFreshness }) {
   if (!f.stale) return null;
   const flag = (on: boolean | null, label: string) => (
@@ -367,6 +409,7 @@ export default async function SyncPage() {
         <strong className="text-ink">Sync now</strong> / auto-sync). Green = refreshed within 24h, amber = older.
       </p>
 
+      <StaleInstallsPanel ext={ext} />
       <ExtConditionPanel ext={ext} f={freshness} />
 
       {/* Account balances (daily snapshot) */}

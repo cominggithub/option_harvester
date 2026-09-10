@@ -87,16 +87,74 @@ class BackendDown extends Error {
   }
 }
 
+// This install's own version, sent on every request. The backend refuses writes from
+// installs older than its minimum (see src/lib/extversion.ts + src/middleware.ts): two
+// copies of this extension running against one IB tab race for market-data lines and
+// leave freshness stamps nobody can attribute, and the older copy predates the fixes the
+// newer one relies on. A 409 with { staleExtension: true } makes this install stand down.
+const EXT_VERSION_HEADER = "X-OH-Ext-Version";
+const MY_VERSION = (() => {
+  try {
+    return chrome.runtime.getManifest().version || "";
+  } catch {
+    return "";
+  }
+})();
+
+// Set when the backend has refused this install. Nothing runs while it is set, so a stale
+// copy stops competing for the IB tab instead of failing one request at a time. Cleared
+// only when this install's own version reaches the minimum the backend asked for.
+async function blockAsStale(payload) {
+  const min = payload?.minVersion || "?";
+  await chrome.storage.local.set({ staleBlocked: { minVersion: min, at: new Date().toISOString(), version: MY_VERSION } });
+  try {
+    await chrome.alarms.clear(ALARM);
+    await chrome.alarms.clear(LOGIN_ALARM);
+  } catch {}
+  await setStatus(`✕ this install (${MY_VERSION || "unknown"}) is out of date — the backend requires ${min}. Update the folder and reload the extension.`);
+}
+
+/** Has the backend refused this install, and is that refusal still true for this version? */
+async function staleBlocked() {
+  const { staleBlocked: b } = await chrome.storage.local.get(["staleBlocked"]);
+  if (!b?.minVersion) return null;
+  // A reload with a new enough version clears it — no manual reset, and no silent
+  // un-blocking of a version that is still too old.
+  const cmp = (a, c) => {
+    const pa = String(a).split(".").map(Number);
+    const pc = String(c).split(".").map(Number);
+    for (let i = 0; i < Math.max(pa.length, pc.length); i++) {
+      const x = Number.isFinite(pa[i]) ? pa[i] : 0;
+      const y = Number.isFinite(pc[i]) ? pc[i] : 0;
+      if (x !== y) return x < y ? -1 : 1;
+    }
+    return 0;
+  };
+  if (MY_VERSION && cmp(MY_VERSION, b.minVersion) >= 0) {
+    await chrome.storage.local.remove(["staleBlocked"]);
+    return null;
+  }
+  return b;
+}
+
 async function post(url, payload) {
   let r;
   try {
     r = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", [EXT_VERSION_HEADER]: MY_VERSION },
       body: JSON.stringify(payload),
     });
   } catch (e) {
     throw new BackendDown(url, e); // host down / connection refused / DNS — not IB
+  }
+  if (r.status === 409) {
+    const body = await r.json().catch(() => null);
+    if (body?.staleExtension) {
+      await blockAsStale(body);
+      return { error: body.error || "extension out of date", staleExtension: true };
+    }
+    return body ?? { error: `HTTP 409 from ${url}` };
   }
   try {
     return await r.json();
@@ -116,7 +174,7 @@ async function post(url, payload) {
 async function getJson(url) {
   let r;
   try {
-    r = await fetch(url, { cache: "no-store" });
+    r = await fetch(url, { cache: "no-store", headers: { [EXT_VERSION_HEADER]: MY_VERSION } });
   } catch (e) {
     throw new BackendDown(url, e);
   }
@@ -232,7 +290,7 @@ async function postOk(url, payload) {
   try {
     const r = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", [EXT_VERSION_HEADER]: MY_VERSION },
       body: JSON.stringify(payload),
     });
     return r.ok;
@@ -407,9 +465,9 @@ async function tabInForeground(tab) {
 //
 // `withGreeks`: true = always, false = never, "foreground" = only while the IB tab is
 // the one on screen (auto + login use this — see tabInForeground).
-async function runSync(backend, { preferActive, source, withGreeks, tabId } = {}, onProgress) {
+async function runSync(backend, { preferActive, source, withGreeks, tabId, deferOh, skipLog } = {}, onProgress) {
   try {
-    return await runSyncInner(backend, { preferActive, source, withGreeks, tabId }, onProgress);
+    return await runSyncInner(backend, { preferActive, source, withGreeks, tabId, deferOh, skipLog }, onProgress);
   } catch (e) {
     // Our backend never answered. Say so explicitly and flag it, so the login watcher
     // does not mistake a local outage for a gated IB session (see checkIbLogin).
@@ -418,7 +476,7 @@ async function runSync(backend, { preferActive, source, withGreeks, tabId } = {}
   }
 }
 
-async function runSyncInner(backend, { preferActive, source, withGreeks, tabId } = {}, onProgress) {
+async function runSyncInner(backend, { preferActive, source, withGreeks, tabId, deferOh, skipLog } = {}, onProgress) {
   const p = (m) => onProgress?.(m);
   p("reading IB");
   const tab = (await useTab(tabId)) || (await findIbTab(preferActive));
@@ -451,6 +509,12 @@ async function runSyncInner(backend, { preferActive, source, withGreeks, tabId }
     if (allowed) {
       p("greeks");
       out.greeks = await getGreeks(backend, p, tab.id).catch(soft);
+      // Top up the oldest IB IVs while we are already in the foreground. Bounded (120
+      // names, one round, ~15s) because this is a 15-minute timer, not a deliberate act:
+      // 660 instruments against a 48-hour floor converge without anybody clicking, which
+      // is the difference between "two days behind" and "a week behind".
+      p("IB IV top-up");
+      out.undIv = await getUnderlyingIv(backend, p, tab.id, [], { staleHours: 48, limit: 120, rounds: 1 }).catch(soft);
     } else {
       out.greeksSkipped = "IB tab not in front — greeks not re-measured";
     }
@@ -458,14 +522,20 @@ async function runSyncInner(backend, { preferActive, source, withGreeks, tabId }
   // Push OH watchlists back to IB. Positions were just posted above, so the OH
   // lists (Cpos/Ppos/NCcan) reflect the fresh snapshot. Failure here doesn't fail
   // the pull.
-  p("OH push");
-  out.ohPush = await pushOhWatchlists(backend).catch(soft);
-  // Read-back verification: re-fetch the OH:* lists from IB and diff their conids
-  // against the intended payload (surfaced on /sync). Only meaningful if the push
-  // ran; light (a few GETs). Non-fatal.
-  if (out.ohPush && !out.ohPush.error) {
-    p("OH verify");
-    out.ohVerify = await verifyOhWatchlists(backend).catch(soft);
+  //
+  // `deferOh` — set by the full sync (runAll), which runs conid re-resolution AFTER this
+  // point. Pushing here as well would send IB a list built from conids that are about to
+  // be corrected, so the full run pushes once, at the end.
+  if (!deferOh) {
+    p("OH push");
+    out.ohPush = await pushOhWatchlists(backend).catch(soft);
+    // Read-back verification: re-fetch the OH:* lists from IB and diff their conids
+    // against the intended payload (surfaced on /sync). Only meaningful if the push
+    // ran; light (a few GETs). Non-fatal.
+    if (out.ohPush && !out.ohPush.error) {
+      p("OH verify");
+      out.ohVerify = await verifyOhWatchlists(backend).catch(soft);
+    }
   }
   // A step swallowed by `soft` above may have been a backend outage rather than a real
   // per-step failure; surface that at the top level so the caller sees it.
@@ -473,16 +543,73 @@ async function runSyncInner(backend, { preferActive, source, withGreeks, tabId }
     out.backendDown = true;
     out.failedUrl = Object.values(out).find((v) => v && typeof v === "object" && v.failedUrl)?.failedUrl ?? null;
   }
-  // Record this run in the sync-log history (non-fatal).
-  await post(`${backend}/api/sync-log`, { summary: out, source: source || "auto" }).catch(() => {});
+  // Record this run in the sync-log history (non-fatal). `skipLog` — the full sync logs
+  // ONE row for the whole run, so its light phase does not file a second, partial one.
+  if (!skipLog) await post(`${backend}/api/sync-log`, { summary: out, source: source || "auto" }).catch(() => {});
   return out;
 }
 
-// Deep sync: the HEAVY passes that "Sync now" no longer does. Each snapshots/what-ifs
-// every held contract (~1s each) or re-resolves ~600 conids, all paced by in-page
-// setTimeouts — so Chrome throttles them to a crawl if the IB tab is backgrounded.
-// Keep the IB tab in the FOREGROUND for the whole run. Reads its targets (held
-// conids, tickers) from the backend, which needs a prior "Sync now" to have posted
+// Sync now: EVERYTHING, in the order the dependencies require. The light pull posts
+// positions first, because every heavy pass below asks the backend which conids to
+// measure; conid re-resolution runs after those; and the OH push goes LAST, so the lists
+// IB receives are built from conids that have already been corrected in this same run.
+//
+// Why this is the primary button: "Sync now" that leaves half the data stale is a trap —
+// the delta on a page and the margin beside it would come from different runs, and the
+// operator has no way to see which. Quick sync (below) is the escape hatch for when only
+// positions and balances matter.
+//
+// Every pass here is paced by in-page setTimeouts, which Chrome throttles hard in a
+// backgrounded tab, so KEEP THE IB TAB IN FRONT for the whole run (~2–5 min: greeks and
+// margin per held contract, ~14 batched IV requests, ~600 conids).
+async function runAll(backend, { source } = {}, onProgress) {
+  const p = (m) => onProgress?.(m);
+  const tab = await findIbTab(true);
+  if (!tab?.id) return { error: "no IB tab open — log into the IB portal in a tab" };
+  const src = source || "full";
+
+  // 1. The light pull + per-contract greeks. Deferred OH push, single log row at the end.
+  p("pull");
+  const out =
+    (await runSync(
+      backend,
+      { preferActive: true, source: src, withGreeks: true, tabId: tab.id, deferOh: true, skipLog: true },
+      onProgress,
+    )) || {};
+  if (out.error) {
+    await post(`${backend}/api/sync-log`, { summary: out, source: src }).catch(() => {});
+    return out;
+  }
+
+  // 2. The heavy passes, each reading its targets from what step 1 just posted.
+  p("IB IV (underlyings)");
+  out.undIv = await getUnderlyingIv(backend, p, tab.id).catch(soft);
+  p("margin");
+  out.margins = await getMargins(backend, p).catch(soft);
+  p("underlyings");
+  out.underlyings = await resolveUnderlyings(backend).catch(soft);
+  p("conids (re-resolve, ~30s)");
+  out.conids = await resolveConids(backend, { all: true }).catch(soft);
+
+  // 3. OH push/verify last — see above.
+  p("OH push");
+  out.ohPush = await pushOhWatchlists(backend).catch(soft);
+  if (out.ohPush && !out.ohPush.error) {
+    p("OH verify");
+    out.ohVerify = await verifyOhWatchlists(backend).catch(soft);
+  }
+
+  if (Object.values(out).some((v) => v && typeof v === "object" && v.backendDown)) out.backendDown = true;
+  await post(`${backend}/api/sync-log`, { summary: out, source: src }).catch(() => {});
+  return out;
+}
+
+// Deep sync: the HEAVY passes on their own, for when positions are already current and
+// only the measurements need refreshing (Sync now does all of this too, after a pull).
+// Each snapshots/what-ifs every held contract (~1s each) or re-resolves ~600 conids, all
+// paced by in-page setTimeouts — so Chrome throttles them to a crawl if the IB tab is
+// backgrounded. Keep the IB tab in the FOREGROUND for the whole run. Reads its targets
+// (held conids, tickers) from the backend, which needs a prior sync to have posted
 // positions. Non-fatal per step; logged to /sync as source "deep".
 async function runDeep(backend, { source } = {}, onProgress) {
   const tab = await findIbTab(true);
@@ -490,9 +617,14 @@ async function runDeep(backend, { source } = {}, onProgress) {
   const p = (m) => onProgress?.(m);
 
   const out = {};
-  // Per-position greeks (Δ/Θ/Γ) for held options.
+  // Per-position greeks (Δ/Θ/Γ/IV) for held options.
   p("greeks");
   out.greeks = await getGreeks(backend, p, tab.id).catch(soft);
+  // IB's own 30-day IV (field 7283) for every tracked underlying — the value the
+  // operator's IB watchlist column shows, stored beside our Yahoo-derived iv_pct so the
+  // two can be compared rather than assumed equal. ~14 batched requests for 660 names.
+  p("IB IV (underlyings)");
+  out.undIv = await getUnderlyingIv(backend, p, tab.id).catch(soft);
   // Exact per-position maintenance margin via what-if.
   p("margin");
   out.margins = await getMargins(backend, p).catch(soft);
@@ -572,7 +704,8 @@ function startHeartbeat() {
 // Status-line formatters for each op (mirrored to lastStatus so a re-opened popup
 // shows the real outcome + timestamp, whether or not it was open when the op ran).
 const fmt = {
-  sync: (r) => (r.error ? `manual: ${r.error}` : `manual ✓ ${summary(r)}`),
+  sync: (r) => (r.error ? `sync: ${r.error}` : `sync ✓ ${summary(r)}`),
+  quickSync: (r) => (r.error ? `quick: ${r.error}` : `quick ✓ ${summary(r)}`),
   deepSync: (r) => (r.error ? `deep: ${r.error}` : `deep ✓ ${summary(r)}`),
   resolveConids: (r) =>
     r?.error ? `✕ ${r.error}` : `✓ conids +${r?.updated ?? 0} · have ${r?.have ?? "—"} · remaining ${r?.remaining ?? "—"}`,
@@ -586,6 +719,14 @@ const fmt = {
         }${r?.errors?.length ? ` · ${r.errors.length} err` : ""}`,
   getMargins: (r) =>
     r?.error ? `✕ ${r.error}` : `✓ margin updated ${r?.updated ?? 0}/${r?.tried ?? 0}${r?.errors?.length ? ` · ${r.errors.length} err` : ""}`,
+  getUnderlyingIv: (r) =>
+    r?.error
+      ? `✕ ${r.error}`
+      : `✓ IB IV updated ${r?.updated ?? 0}/${r?.tried ?? 0}${
+          Array.isArray(r?.rounds) && r.rounds.length > 1 ? ` (rounds ${r.rounds.map((x) => x.filled).join("+")})` : ""
+        }${r?.noIv ? ` · ${r.noIv} not computed` : ""}${r?.silent ? ` · ${r.silent} no answer` : ""}${
+          r?.errors?.length ? ` · ${r.errors.length} err` : ""
+        }`,
   pushOh: (r) => {
     if (r?.error) return `✕ ${r.error}`;
     const dropped = (r?.results || []).flatMap((x) => (x.dropped || []).map((c) => `${x.name}:${c}`));
@@ -606,6 +747,17 @@ const fmt = {
 // Run a background op with a persisted busy label + persisted final status, so the
 // popup can be closed/re-opened at any point and still show the correct line.
 async function handle(label, fn, formatter, reply) {
+  // A refused install does nothing but say why. Checked here rather than per-op so no
+  // button can quietly start a run the backend will reject halfway through.
+  const blocked = await staleBlocked();
+  if (blocked) {
+    const line = `✕ this install (${MY_VERSION || "unknown"}) is out of date — the backend requires ${blocked.minVersion}. Update the folder and reload the extension.`;
+    await setStatus(line);
+    try {
+      reply?.({ error: line, staleExtension: true });
+    } catch {}
+    return;
+  }
   await setBusy(label);
   const hb = startHeartbeat();
   let r;
@@ -762,11 +914,24 @@ async function getOptions(backend, tickers, onProgress) {
 // conids in ONE subscription burst — IB's /iserver/marketdata/snapshot accepts a
 // comma-separated conid list, so all contracts subscribe together and their greeks
 // compute in parallel server-side. Polls the whole batch, accumulating fields per
-// conid, until every conid has delta (7308) or a ~6s timeout — far faster than one
-// contract at a time. 7308=Δ 7309=Γ 7310=Θ 7311=Vega 7283=IV%. → [{conid, optionRaw}].
+// conid, until every conid has delta (7308) AND implied vol (7633), or a ~6s timeout —
+// far faster than one contract at a time. 7308=Δ 7309=Γ 7310=Θ 7311=Vega 7633=IV% of
+// THIS strike. → [{conid, optionRaw}].
+//
+// Two defects, found together on 2026-09-10, are why `option_harvest_option_greeks` held
+// 231 rows with a delta and ZERO with an IV:
+//   1. **Wrong field.** This asked options for 7283, which IB defines as the vol of the
+//      UNDERLYING (30-day constant maturity, the IV column on a watchlist row). The IV of
+//      a specific strike is 7633. IB answered all 49 held contracts with a delta and no
+//      7283 at all — it does not serve that field on an option conid. Both are requested
+//      now, 7633 first, 7283 kept only as a fallback that costs nothing.
+//   2. **Wrong exit condition.** The loop released a conid the moment 7308 appeared, so
+//      any field IB computes a poll later was requested, returned and dropped. It now
+//      waits for delta AND an IV, under the same 12-poll cap — so a contract IB never
+//      prices for IV still cannot hang the pass, it just costs the full 6s.
 async function fetchGreeksBatchInPage(conids) {
   const base = location.origin + "/portal.proxy/v1/portal";
-  const fields = "31,84,86,7283,7308,7309,7310,7311";
+  const fields = "31,84,86,7283,7633,7308,7309,7310,7311";
   const url = `${base}/iserver/marketdata/snapshot?conids=${conids.join(",")}&fields=${fields}`;
   const j = async (u) => {
     try {
@@ -776,6 +941,7 @@ async function fetchGreeksBatchInPage(conids) {
       return null;
     }
   };
+  const has = (row, f) => row && row[f] != null && row[f] !== "";
   const rows = {}; // conid → accumulated fields across polls
   const need = new Set(conids.map(String));
   for (let i = 0; i < 12 && need.size; i++) {
@@ -784,12 +950,147 @@ async function fetchGreeksBatchInPage(conids) {
       const c = String(r0.conid ?? "");
       if (!c) continue;
       rows[c] = Object.assign(rows[c] || {}, r0);
-      if (rows[c]["7308"] != null && rows[c]["7308"] !== "") need.delete(c);
+      if (has(rows[c], "7308") && (has(rows[c], "7633") || has(rows[c], "7283"))) need.delete(c);
     }
     if (!need.size) break;
     await new Promise((s) => setTimeout(s, 500));
   }
   return conids.map((c) => ({ conid: String(c), optionRaw: rows[String(c)] || {} }));
+}
+
+// Runs IN the IB page: IB's own 30-day implied vol for a batch of UNDERLYING conids —
+// field 7283, "Option Implied Vol. %", the column on an IB watchlist row. One subscribe
+// burst per chunk, polled until every conid has 7283 or the poll budget runs out.
+//
+// Three details that matter:
+//   • Market data lines are finite (a retail account gets ~100 concurrent). Subscribing
+//     600+ underlyings would silently starve the tail of the list, so the caller chunks
+//     and this function releases the lines with /iserver/marketdata/unsubscribeall before
+//     it returns. Without that release the SECOND chunk is the one that comes back empty.
+//   • **7283 is computed on demand, and not always inside one poll budget.** Measured
+//     2026-09-10: a 50-conid burst polled for 5s filled 36–100% depending on the chunk,
+//     with no decay across the run, and two runs filled DIFFERENT ~57% subsets of the same
+//     630 names (union 447). So a miss is not a fact about the instrument — 209 of the 214
+//     unfilled names had option ladders and traded $258M/day median. It is IB not being
+//     ready yet, which is why the caller re-asks for the misses with a longer budget.
+//   • A cold stream answers with the row but no 7283. That is not an error and not a
+//     zero — the row is returned as-is and the backend skips it, so a name keeps its
+//     previous value rather than being overwritten with a blank.
+async function fetchUndIvBatchInPage(conids, polls, gapMs) {
+  const base = location.origin + "/portal.proxy/v1/portal";
+  const fields = "31,7283";
+  const url = `${base}/iserver/marketdata/snapshot?conids=${conids.join(",")}&fields=${fields}`;
+  const j = async (u, opt) => {
+    try {
+      const r = await fetch(u, { credentials: "include", ...(opt || {}) });
+      return r.ok ? await r.json() : null;
+    } catch {
+      return null;
+    }
+  };
+  // A usable IV, not merely a present field. IB answers with `"7283": "0"` for a name whose
+  // analytic it has not computed, and on 2026-09-10 that defeated the entire retry design:
+  // round 1 reported "filled 643 of 643" while the backend rejected 262 of them as
+  // implausible, so rounds 2 and 3 never ran. Zero is not a volatility — it is IB saying
+  // "not yet", in the same field it uses to say 31.6.
+  const hasIv = (row) => {
+    const v = row && row["7283"];
+    if (v == null || v === "") return false;
+    const n = Number(String(v).replace(/[^0-9.\-]/g, ""));
+    return Number.isFinite(n) && n > 0 && n <= 500;
+  };
+  const rows = {};
+  const need = new Set(conids.map(String));
+  const maxPolls = Number(polls) > 0 ? Number(polls) : 10;
+  const gap = Number(gapMs) > 0 ? Number(gapMs) : 500;
+  for (let i = 0; i < maxPolls && need.size; i++) {
+    const d = await j(url);
+    for (const r0 of Array.isArray(d) ? d : []) {
+      const c = String(r0.conid ?? "");
+      if (!c) continue;
+      rows[c] = Object.assign(rows[c] || {}, r0);
+      if (hasIv(rows[c])) need.delete(c);
+    }
+    if (!need.size) break;
+    await new Promise((s) => setTimeout(s, gap));
+  }
+  // Free the market-data lines for the next chunk.
+  await j(`${base}/iserver/marketdata/unsubscribeall`, { method: "GET" });
+  return conids.map((c) => ({ conid: String(c), raw: rows[String(c)] || {} }));
+}
+
+// Fetch IB's 30-day IV for every tracked underlying that has a conid, in batches, and
+// post to /api/underlying-iv. This is the value the operator sees in IB; the app's own
+// iv_pct is a Black–Scholes inversion of a Yahoo chain, and storing both is what lets the
+// two be compared (npm run iv:compare) instead of assumed equal.
+//
+// THREE ROUNDS, narrowing. A single 50-wide sweep left 43% of the universe unfilled
+// (2026-09-10), not because those names have no IV but because IB had not finished
+// computing it. Each round re-asks only the conids still missing, in smaller bursts with a
+// longer poll budget — so the names IB answers instantly cost 5s per 50, and only the
+// stragglers pay for patience. Rounds stop as soon as nothing is missing.
+const UND_IV_ROUNDS = [
+  { chunk: 50, polls: 10, gap: 500 }, // fast sweep: ~5s per 50
+  { chunk: 20, polls: 16, gap: 600 }, // the misses, ~10s per 20
+  { chunk: 20, polls: 16, gap: 750 },
+];
+
+async function getUnderlyingIv(backend, onProgress, tabId, tickers, opts) {
+  // Three callers, three shapes: the popup button (explicit tickers or everything), Sync
+  // now (everything, all rounds), and the unattended top-up (`staleHours`/`limit`, one
+  // round) — so nothing depends on the operator remembering to refresh.
+  const qs = tickers && tickers.length
+    ? `?tickers=${encodeURIComponent(tickers.join(","))}`
+    : opts?.staleHours
+      ? `?staleHours=${opts.staleHours}&limit=${opts.limit || 120}`
+      : "";
+  const targets = await getJson(`${backend}/api/underlying-iv${qs}`);
+  if (!Array.isArray(targets) || !targets.length) return { error: "no tickers with a conid (resolve conids first?)" };
+
+  const tab = (await useTab(tabId)) || (await findIbTab(false));
+  if (!tab?.id) return { error: "no IB tab open — log into the IB portal" };
+
+  const all = targets.map((t) => Number(t.conid)).filter((c) => Number.isFinite(c) && c > 0);
+  const got = new Map(); // conid → row that carries 7283
+  const rounds = [];
+  let pending = all;
+  // The top-up runs ONE round: it is riding along on a 15-minute timer, so it must cost
+  // seconds, not minutes. Names it misses are simply the oldest again next tick.
+  const roundPlan = opts?.rounds ? UND_IV_ROUNDS.slice(0, opts.rounds) : UND_IV_ROUNDS;
+
+  for (let ri = 0; ri < roundPlan.length && pending.length; ri++) {
+    const { chunk: CHUNK, polls, gap } = roundPlan[ri];
+    const before = got.size;
+    for (let i = 0; i < pending.length; i += CHUNK) {
+      const chunk = pending.slice(i, i + CHUNK);
+      onProgress?.(
+        `IB IV round ${ri + 1}/${roundPlan.length} · ${Math.min(i + chunk.length, pending.length)}/${pending.length}${
+          got.size ? ` · have ${got.size}/${all.length}` : ""
+        }`,
+      );
+      const [res] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        args: [chunk, polls, gap],
+        func: fetchUndIvBatchInPage,
+      });
+      for (const row of Array.isArray(res?.result) ? res.result : []) {
+        // Same guard as in-page and as the backend's parser: 0 < iv <= 500. Accepting a
+        // zero here is what made the rounds a no-op.
+        const raw = row?.raw?.["7283"];
+        const n = raw == null || raw === "" ? NaN : Number(String(raw).replace(/[^0-9.\-]/g, ""));
+        if (Number.isFinite(n) && n > 0 && n <= 500) got.set(String(row.conid), row);
+      }
+      await new Promise((s) => setTimeout(s, 250));
+    }
+    rounds.push({ round: ri + 1, asked: pending.length, filled: got.size - before });
+    pending = pending.filter((c) => !got.has(String(c)));
+  }
+
+  // Post the rows that carry an IV, plus the stragglers as-is: the backend skips a row
+  // with no 7283, and reporting them keeps `received` honest about what was attempted.
+  const fetched = [...got.values(), ...pending.map((c) => ({ conid: String(c), raw: {} }))];
+  const out = await post(`${backend}/api/underlying-iv`, { fetched });
+  return { ...out, tried: all.length, rounds, unfilled: pending.length };
 }
 
 // Fetch per-position greeks: ask the backend which held option conids exist,
@@ -1269,6 +1570,10 @@ async function loginSync(tabId) {
   await chrome.storage.local.set({ lastLoginSyncAt: new Date().toISOString() });
   await setBusy("Syncing (IB login)");
   const hb = startHeartbeat();
+  // QUICK, not full: this runs unattended the moment IB reports a session, and the heavy
+  // passes need the IB tab held in the foreground for minutes. Greeks are taken when the
+  // tab happens to be in front ("foreground"), which is the most that can be promised
+  // without hijacking the operator's screen. Sync now is where everything runs.
   const r = await runSync(backend, { preferActive: false, source: "login", withGreeks: "foreground", tabId }, (m) => setProgress(m)).catch((e) => ({
     error: String(e),
   }));
@@ -1317,6 +1622,8 @@ const LOGIN_GIVEUP_RETRY_MS = 30 * 60 * 1000;
 let loginCheckRunning = false;
 async function checkIbLogin() {
   if (loginCheckRunning) return;
+  // Never spend the login edge on a run the backend will refuse.
+  if (await staleBlocked()) return;
   const { loginSyncOn } = await chrome.storage.local.get(["loginSyncOn"]);
   if (loginSyncOn === false) return; // opt-out; default is on
   loginCheckRunning = true;
@@ -1465,6 +1772,9 @@ function scheduleLoginWatch() {
 chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name === LOGIN_ALARM) return void checkIbLogin();
   if (a.name !== ALARM) return;
+  // A refused install has had its alarms cleared, but one already-scheduled tick can
+  // still arrive — it must not run either.
+  if (await staleBlocked()) return;
   const { backend, autoOn } = await chrome.storage.local.get(["backend", "autoOn"]);
   if (!autoOn) {
     // The alarm exists but the toggle is off — worth one report, not one per tick.
@@ -1474,6 +1784,8 @@ chrome.alarms.onAlarm.addListener(async (a) => {
   await report("alarm", { status: "auto-sync alarm fired" });
   await setBusy("Auto-syncing");
   const hb = startHeartbeat();
+  // QUICK, not full, for the same reason as the login sync: a 2–5 minute
+  // foreground-dependent run has no business on a 15-minute timer.
   const r = await runSync(backend || DEFAULT_BACKEND, { preferActive: false, source: "auto", withGreeks: "foreground" }).catch(soft);
   clearInterval(hb);
   try {
@@ -1497,6 +1809,7 @@ function summary(r) {
   if (r.ohVerify) parts.push(r.ohVerify.error ? "verify ✕" : r.ohVerify.ok ? "verify ✓" : `verify ⚠${r.ohVerify.mismatched ?? "?"}`);
   if (r.greeks?.updated != null) parts.push(`greeks ${r.greeks.updated}/${r.greeks.tried ?? "?"}`);
   if (r.margins?.updated != null) parts.push(`margin ${r.margins.updated}/${r.margins.tried ?? "?"}`);
+  if (r.undIv?.updated != null) parts.push(`ibIV ${r.undIv.updated}/${r.undIv.tried ?? "?"}`);
   if (r.conids?.updated != null) parts.push(`conid ${r.conids.updated}`);
   if (r.underlyings?.pinned != null) parts.push(`und ${r.underlyings.pinned}/${r.underlyings.tried ?? "?"}`);
   return parts.join(" · ") || "no changes";
@@ -1545,7 +1858,16 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
     return true;
   }
   if (msg.type === "sync") {
-    handle("Syncing", (report) => runSync(msg.backend, { preferActive: true, source: "manual", withGreeks: true }, report), fmt.sync, reply);
+    handle("Syncing (everything)", (report) => runAll(msg.backend, { source: "full" }, report), fmt.sync, reply);
+    return true;
+  }
+  if (msg.type === "quickSync") {
+    handle(
+      "Quick syncing",
+      (report) => runSync(msg.backend, { preferActive: true, source: "quick", withGreeks: true }, report),
+      fmt.quickSync,
+      reply,
+    );
     return true;
   }
   if (msg.type === "deepSync") {
@@ -1566,6 +1888,15 @@ chrome.runtime.onMessage.addListener((msg, _s, reply) => {
   }
   if (msg.type === "getMargins") {
     handle("Fetching margin", (report) => getMargins(msg.backend, report), fmt.getMargins, reply);
+    return true;
+  }
+  if (msg.type === "getUnderlyingIv") {
+    handle(
+      "Fetching IB IV",
+      (report) => getUnderlyingIv(msg.backend, report, undefined, msg.tickers || []),
+      fmt.getUnderlyingIv,
+      reply,
+    );
     return true;
   }
   if (msg.type === "pushOhWatchlists") {

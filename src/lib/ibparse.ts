@@ -538,10 +538,52 @@ export function parseIbOptionSnapshot(f: IbOptionFetch): MappedIbOption | null {
   };
 }
 
-// ── Per-position greeks mapper (Client Portal snapshot, from the extension) ───
-// The extension snapshots each HELD option contract by conid requesting the greek
+// ── Underlying 30-day IV mapper (Client Portal field 7283) ───────────────────
+// The extension batch-snapshots UNDERLYING conids asking for 7283 ("Option Implied
+// Vol. %"): IB's at-the-market vol interpolated to exactly 30 calendar days from two
+// consecutive expiration months — the value shown in the operator's IB watchlist
+// column, and the one number that can be compared to ours like for like.
+//
+// IB returns these as strings, sometimes percent-suffixed ("31.6%") and sometimes with
+// a letter prefix on stale ticks, so the shared `pnumIb` strips both. A value outside
+// (0, 500] is dropped rather than stored: IB occasionally returns 0 for a name whose
+// stream has not warmed up, and a stored 0 would read as "this fund has no vol" —
+// which every IV gate in the app would treat as a fact.
+export type IbUnderlyingIvFetch = {
+  conid?: unknown;
+  ticker?: unknown;
+  raw?: Record<string, unknown> | null; // snapshot object keyed by field id
+};
+
+export type MappedUnderlyingIv = { conid: string; ticker: string | null; iv30Pct: number; price: number | null };
+
+const IV_MAX_PCT = 500;
+
+export function parseIbUnderlyingIv(f: IbUnderlyingIvFetch): MappedUnderlyingIv | null {
+  if (!f) return null;
+  const conid = f.conid != null && f.conid !== "" ? String(f.conid) : null;
+  if (!conid) return null;
+  const raw = (f.raw ?? {}) as Record<string, unknown>;
+  const iv = pnumIb(raw["7283"]);
+  if (iv == null || iv <= 0 || iv > IV_MAX_PCT) return null;
+  return {
+    conid,
+    ticker: typeof f.ticker === "string" && f.ticker.trim() ? f.ticker.trim().toUpperCase() : null,
+    iv30Pct: iv,
+    price: pnumIb(raw["31"]),
+  };
+}
+
+// ── Per-position greeks mapper (Client Portal snapshot, from the extension) ───// The extension snapshots each HELD option contract by conid requesting the greek
 // fields, and posts one record per conid. 7308=Delta 7309=Gamma 7310=Theta
-// 7311=Vega 7283=Implied Vol %.
+// 7311=Vega 7633=Implied Vol % of THIS strike.
+//
+// 7633, not 7283: IB defines 7283 as the vol of the *underlying* (30-day constant
+// maturity — the IV column on a watchlist row, stored separately as `ib_iv_30_pct`) and
+// 7633 as "the implied volatility for the specific strike of the option". Asking an option
+// conid for 7283 returns nothing, which is precisely what 231 greek rows with a delta and
+// no IV had been recording since this pass was written (49/49 contracts answered, 0 stale,
+// 0 IVs). 7283 is still accepted as a fallback because doing so costs nothing.
 export type IbGreekFetch = {
   conid?: unknown;
   optionRaw?: Record<string, unknown> | null; // snapshot object keyed by field id
@@ -566,7 +608,7 @@ export function parseIbPositionGreeks(f: IbGreekFetch): MappedGreek | null {
     gamma: pnumIb(o["7309"]),
     theta: pnumIb(o["7310"]),
     vega: pnumIb(o["7311"]),
-    iv: pnumIb(o["7283"]),
+    iv: pnumIb(o["7633"]) ?? pnumIb(o["7283"]),
   };
 }
 

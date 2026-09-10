@@ -17,10 +17,14 @@
     <label>Backend URL</label>
     <input type="text" id="backend" placeholder="http://114.33.62.221:19210" />
 
-    <button id="sync">Sync now</button>
+    <button id="sync" title="Everything: positions, orders, trades, watchlists, balances, per-contract greeks, IB's 30-day IV for every tracked underlying, exact margin, conid/underlying re-resolve, then the OH push + read-back. 2–5 min — keep the IB tab in the foreground for the whole run.">Sync now (everything)</button>
+    <button id="quick" style="margin-top: 6px; font-weight: 400; font-size: 11px; background: #eefbf0;"
+            title="Fast pull only: positions, orders, trades, watchlists, balances, greeks + OH push/verify. Seconds, and it survives switching tabs.">
+      Quick sync (positions/balances) →
+    </button>
     <button id="deep" style="margin-top: 6px; font-weight: 400; font-size: 11px; background: #eef7fb;"
-            title="Heavy: greeks + margin + conid/underlying re-resolve. Keep the IB tab in the foreground for the whole run.">
-      Deep sync (greeks/margin/conids) →
+            title="The heavy passes only, without re-pulling: greeks, IB IV, margin, conid/underlying re-resolve. Use when positions are already current. Keep the IB tab in the foreground.">
+      Deep sync (heavy only) →
     </button>
 
     <div class="auto">
@@ -55,6 +59,11 @@
 
     <button id="getmargin" style="margin-top: 6px; font-weight: 400; font-size: 11px; background: #f3eefb;">
       Get margin (IB) — held options →
+    </button>
+
+    <button id="getibiv" style="margin-top: 6px; font-weight: 400; font-size: 11px; background: #eefbf7;"
+            title="IB's own 30-day implied vol (field 7283 — the IV column on an IB watchlist row) for every tracked underlying, stored beside the app's Yahoo-derived IV so the two can be compared. Batched ~50 conids at a time; keep the IB tab in the foreground.">
+      Get IB IV (30-day, underlyings) →
     </button>
 
     <button id="pushoh" style="margin-top: 12px; font-weight: 400; font-size: 11px; background: #fff4e6;">

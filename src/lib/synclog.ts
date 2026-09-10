@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { isStaleExtVersion, MIN_EXT_VERSION } from "@/lib/extversion";
 
 // Powers the /sync page: (1) a snapshot of every IB-synced dataset — how many rows
 // we hold and when they were last refreshed — and (2) the recent sync-run history
@@ -78,6 +79,14 @@ export type ExtCondition = {
   alarms: string[]; // alarm names actually armed
   lastSyncAt: string | null; // its own record of the last login sync
   backendDown: string | null; // it could not reach US — the sync never got to happen
+  /**
+   * Installs seen recently whose version is below `MIN_EXT_VERSION`. From 0.9.11 the
+   * backend refuses their writes outright (src/middleware.ts), but the installs that made
+   * this necessary send no version header at all, so they cannot be refused — only named.
+   * `/api/ext-log` is where they identify themselves, which is why that route is exempt
+   * from the block: silencing them would remove the only evidence they exist.
+   */
+  staleInstalls: { version: string; extId: string | null; lastAt: string; reports: number }[];
 };
 
 export async function getExtCondition(): Promise<ExtCondition | null> {
@@ -98,6 +107,43 @@ export async function getExtCondition(): Promise<ExtCondition | null> {
     );
   if (!rows.length) return null;
   const latest = rows[0];
+  // Which installs are running an out-of-date version RIGHT NOW.
+  //
+  // Per install (chrome.runtime.id), only its NEWEST report counts. Grouping by
+  // (version, extId) instead listed an install's whole history: the copy that reported
+  // 0.9.8 this morning and 0.9.9 at 10:42 showed up as two more stale installs beside the
+  // one that is actually live. What matters is the version each install is on now.
+  //
+  // Recency uses the extension's own clock where it sent one (`clientAt`), because a
+  // report queued through an outage is received long after the fact — the same reason that
+  // column exists. Pre-0.9.7 installs send none, so receipt time is the fallback.
+  const since = new Date(Date.now() - 3 * 86_400_000);
+  const recent = await prisma.extLog
+    .findMany({
+      where: { at: { gte: since }, version: { not: null } },
+      select: { version: true, extId: true, at: true, clientAt: true },
+      orderBy: { at: "desc" },
+      take: 4000,
+    })
+    .catch(() => [] as { version: string | null; extId: string | null; at: Date; clientAt: Date | null }[]);
+  const perInstall = new Map<string, { version: string; extId: string | null; lastAt: Date; reports: number }>();
+  for (const r of recent) {
+    const key = r.extId ?? "unknown";
+    const when = r.clientAt ?? r.at;
+    const cur = perInstall.get(key);
+    if (!cur) perInstall.set(key, { version: r.version as string, extId: r.extId, lastAt: when, reports: 1 });
+    else {
+      cur.reports += 1;
+      if (when > cur.lastAt) {
+        cur.lastAt = when;
+        cur.version = r.version as string;
+      }
+    }
+  }
+  const staleInstalls = [...perInstall.values()]
+    .filter((i) => isStaleExtVersion(i.version))
+    .map((i) => ({ version: i.version, extId: i.extId, lastAt: i.lastAt.toISOString(), reports: i.reports }))
+    .sort((a, b) => b.lastAt.localeCompare(a.lastAt));
   // The newest row carries the state; the newest login-watch row carries the reason.
   const watch = rows.find((r) => r.event === "login-watch");
   // "It couldn't reach us" is a different diagnosis from every other reason and must not
@@ -130,6 +176,7 @@ export async function getExtCondition(): Promise<ExtCondition | null> {
       : [],
     lastSyncAt: str(st.lastLoginSyncAt),
     backendDown: down ? (str(down.status) ?? "the extension could not reach this server") : null,
+    staleInstalls,
   };
 }
 
@@ -137,7 +184,7 @@ export async function getSyncSummary(): Promise<{ datasets: SyncDataset[]; runs:
   // Greeks freshness is judged on the DELTA measurement (`deltaAt`), not on the row:
   // `at` moves when any greek arrives, but delta is the field the strategy gates on,
   // and a snapshot that returned nothing must not look like a refresh.
-  const [pos, posUpload, ord, tx, wlAgg, wlLists, greeks, greekDelta, margin, ibOpts, runsRaw, ohVerifyRaw, conidPins] = await Promise.all([
+  const [pos, posUpload, ord, tx, wlAgg, wlLists, greeks, greekDelta, margin, ibOpts, ibIv30, runsRaw, ohVerifyRaw, conidPins] = await Promise.all([
     prisma.position.aggregate({ _count: { _all: true }, _max: { uploadedAt: true } }),
     prisma.positionUpload.findFirst({ orderBy: { uploadedAt: "desc" }, select: { filename: true, uploadedAt: true } }),
     prisma.order.aggregate({ _count: { _all: true }, _max: { uploadedAt: true } }),
@@ -150,6 +197,9 @@ export async function getSyncSummary(): Promise<{ datasets: SyncDataset[]; runs:
       .catch(() => null),
     prisma.positionMargin.aggregate({ _count: { _all: true }, _max: { at: true } }).catch(() => null),
     prisma.quote.aggregate({ where: { ibAt: { not: null } }, _count: { _all: true }, _max: { ibAt: true } }),
+    prisma.quote
+      .aggregate({ where: { ibIv30Pct: { not: null } }, _count: { _all: true }, _max: { ibIv30At: true }, _min: { ibIv30At: true } })
+      .catch(() => null),
     prisma.syncRun.findMany({ orderBy: { at: "desc" }, take: 30 }).catch(() => []),
     prisma.ohVerify.findFirst({ orderBy: { at: "desc" } }).catch(() => null),
     prisma.securityConid.aggregate({ _count: { _all: true }, _max: { at: true } }).catch(() => null),
@@ -188,6 +238,18 @@ export async function getSyncSummary(): Promise<{ datasets: SyncDataset[]; runs:
     },
     { key: "margin", label: "Position margin", count: margin?._count._all ?? 0, lastAt: iso(margin?._max.at ?? null), detail: "held contracts, what-if", source: "IB sync (Get margin)" },
     { key: "ib-options", label: "IB option quotes", count: ibOpts._count._all, lastAt: iso(ibOpts._max.ibAt), detail: "ATM snapshot in ib_* cols", source: "IB sync (Get options)" },
+    {
+      // IB's own 30-day IV per underlying (field 7283). Listed as its own feed because
+      // every IV the screens gate on is ours, computed from a Yahoo chain — this is the
+      // only column that says what IB thinks, and a stale one silently means the
+      // comparison (npm run iv:compare) is judging today's screen against last week's IB.
+      key: "ib-iv-30",
+      label: "IB 30-day IV",
+      count: ibIv30?._count._all ?? 0,
+      lastAt: iso(ibIv30?._max.ibIv30At ?? null),
+      detail: "underlyings, field 7283 — compare with npm run iv:compare",
+      source: "IB sync (Get IB IV)",
+    },
     { key: "conid-pins", label: "Conid pins", count: conidPins?._count._all ?? 0, lastAt: iso(conidPins?._max.at ?? null), detail: "manual + option-derived overrides", source: "manual / IB sync (Fix conids)" },
   ];
 

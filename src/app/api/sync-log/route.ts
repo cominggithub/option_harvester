@@ -27,10 +27,20 @@ export async function POST(req: Request) {
     return Response.json({ error: "Expected JSON { summary, source }" }, { status: 400 });
   }
   const s = (body.summary ?? {}) as Record<string, unknown>;
-  // "login" = the extension's sync-on-IB-login edge trigger; anything unknown is
-  // recorded as a manual run.
-  const sources = new Set(["auto", "deep", "login", "manual"]);
-  const source = typeof body.source === "string" && sources.has(body.source) ? body.source : "manual";
+  // Which tier of sync produced this run. `full` = Sync now (everything), `quick` = the
+  // fast pull, `deep` = the heavy passes alone, `auto` = the timer, `login` = the
+  // sync-on-IB-login edge. `manual` is history: it is what Sync now was called before
+  // 0.9.10 split the tiers.
+  //
+  // An unfamiliar-but-plausible slug is stored AS-IS rather than coerced. The previous
+  // version silently rewrote anything unknown to "manual", and on 2026-09-10 that turned
+  // the first real full sync — the one that carried greeks, margin, IB IV and a conid
+  // re-resolve — into a row labelled "manual", indistinguishable from a fast pull. A
+  // label we do not recognise is a smaller problem than a wrong label we cannot detect.
+  // Bounded to a short lower-case slug because this endpoint is unauthenticated.
+  const known = new Set(["auto", "deep", "full", "login", "manual", "quick"]);
+  const raw = typeof body.source === "string" ? body.source.trim() : "";
+  const source = known.has(raw) ? raw : /^[a-z][a-z-]{0,11}$/.test(raw) ? raw : "manual";
   const errTop = typeof s.error === "string" ? s.error : null;
 
   try {

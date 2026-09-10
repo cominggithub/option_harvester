@@ -61,14 +61,24 @@ $("backend").addEventListener("change", () => chrome.storage.local.set({ backend
 // Each op sets an immediate optimistic line; the background then persists a busy
 // flag + final status (see background.js `handle`) which drives `render` above —
 // so closing/re-opening the popup at any moment shows the right line.
+// Sync now = EVERYTHING (light pull + greeks + IB IV + margin + conid re-resolve + OH
+// push/verify, in dependency order). Minutes, and paced by in-page timers, so the IB tab
+// must stay in front. A "Sync now" that left half the data stale was the trap this
+// replaced: a page could show a fresh delta beside a days-old margin with no way to tell.
 $("sync").onclick = () => {
-  setLog("Syncing…");
+  setLog("Syncing everything… (keep IB tab in front, 2–5 min)");
   chrome.runtime.sendMessage({ type: "sync", backend: backend() });
 };
 
-// Heavy passes (greeks/margin/conid+underlying re-resolve). These are paced by
-// in-page timers, so Chrome throttles them if the IB tab is backgrounded — keep it
-// foreground. Needs a prior "Sync now" to have posted positions.
+// Quick sync = the fast pull only (positions/orders/trades/watchlists/balances + greeks
+// + OH push). Seconds, and it survives switching tabs.
+$("quick").onclick = () => {
+  setLog("Quick syncing…");
+  chrome.runtime.sendMessage({ type: "quickSync", backend: backend() });
+};
+
+// Heavy passes only (greeks/IB IV/margin/conid+underlying re-resolve), for when positions
+// are already current. Paced by in-page timers, so keep the IB tab foreground.
 $("deep").onclick = () => {
   setLog("Deep syncing… (keep IB tab in front)");
   chrome.runtime.sendMessage({ type: "deepSync", backend: backend() });
@@ -113,6 +123,17 @@ $("getgreeks").onclick = () => {
 $("getmargin").onclick = () => {
   setLog("Fetching margin…");
   chrome.runtime.sendMessage({ type: "getMargins", backend: backend() });
+};
+
+// Fetch IB's own 30-day implied vol (field 7283) for the tracked underlyings. The ticker
+// box above is reused as an optional filter, so a single name can be spot-checked.
+$("getibiv").onclick = () => {
+  const tickers = ($("optticker").value || "")
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
+  setLog(tickers.length ? `Fetching IB IV for ${tickers.join(", ")}…` : "Fetching IB IV (all conid'd names)…");
+  chrome.runtime.sendMessage({ type: "getUnderlyingIv", backend: backend(), tickers });
 };
 
 // Push Option Harvester's OH watchlists (NC/NCcan/Cpos/Ppos) to IB as "OH:*" lists.
