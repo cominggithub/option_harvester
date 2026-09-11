@@ -130,4 +130,49 @@ ok(contractsUntilCushionGone(990, EXCESS) === 29, "…or 29 KO 80P");
 ok(contractsUntilCushionGone(null, EXCESS) == null, "no per-contract cost, no count");
 ok(contractsUntilCushionGone(0, EXCESS) == null, "…and a free contract is not a count, it is a bug");
 
+// ── the formulas exactly as /margin states them ──────────────────────────────
+// The page now prints its own arithmetic, which makes the wording a claim that can go stale. Each
+// line below recomputes a figure from first principles and compares it to what the library
+// returns, so changing a denominator breaks the check instead of quietly making the page lie.
+{
+  const strike = 90;
+  const contracts = 2;
+  const maint = 4557;
+  const excess = 26_500;
+
+  // "Notional  =  strike × 100 × contracts"
+  const notional = strike * 100 * contracts;
+  ok(notional === 18_000, "notional: 90 × 100 × 2 = $18,000");
+
+  // "% notional  =  maintenance ÷ notional"
+  const l = leg("SOXL", "P", strike, contracts, maint, "etf 3x");
+  ok(near(l.rate, maint / notional), "% notional is maintenance ÷ notional, as printed");
+  ok(near(l.notional, notional), "…and the notional it divides by is the printed one");
+
+  // "% cushion  =  maintenance ÷ excess liquidity"
+  ok(near(shareOfExcessLiquidity(maint, excess), maint / excess), "% cushion is maintenance ÷ excess liquidity, as printed");
+
+  // "Put $  =  median rate × price × 100 × 1 contract"
+  const price = 137.5;
+  const est = estimateMaintenance({ price, right: "P", cls: "stock", card });
+  const stockPut = card.rows.find((r) => r.cls === "stock" && r.right === "P")!.median;
+  ok(near(est.dollars, stockPut * price * 100 * 1), "put $ is rate × price × 100 × 1, as printed");
+  ok(near(est.rate, stockPut), "…and the rate it uses is the rate card's median for that class and right");
+
+  // "Put max  =  floor( excess liquidity ÷ put $ )"
+  ok(contractsUntilCushionGone(est.dollars, excess) === Math.floor(excess / (est.dollars ?? 1)), "put max is a floor division, as printed");
+
+  // The ATM assumption, stated as an assertion because it is the page's biggest caveat: the
+  // estimate uses the PRICE as the strike, so it must equal the explicit-strike form at that price.
+  ok(
+    near(est.dollars, estimateMaintenance({ price, strike: price, right: "P", cls: "stock", card }).dollars ?? NaN),
+    "an estimate with no strike is exactly the at-the-money estimate",
+  );
+  // …and a real out-of-the-money strike costs proportionally less on the same rate, which is why
+  // the page says "at most this".
+  const otm = estimateMaintenance({ price, strike: price * 0.8, right: "P", cls: "stock", card });
+  ok((otm.dollars ?? 0) < (est.dollars ?? 0), "a lower strike costs less at the same rate");
+  ok(near(otm.dollars, (est.dollars ?? 0) * 0.8, 1e-9), "…in exact proportion to the strike");
+}
+
 console.log(`marginrate-check: ${pass} assertions passed (call ~${(callStock.median * 100).toFixed(0)}% of notional, 3x put ~${(put3x.median * 100).toFixed(0)}%).`);
