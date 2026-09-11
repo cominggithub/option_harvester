@@ -16,6 +16,7 @@ import {
   formatVolume,
   formatEarningsDate,
 } from "@/lib/format";
+import { formatRatePair } from "@/lib/marginrate";
 
 // Wide-screen stock view — two rows per name (basic + sortable stats) on the left,
 // 1W/2W/1M/3M/6M/1Y charts spanning both rows on the right, highlighted Position column.
@@ -34,7 +35,7 @@ const WIN_SORT: Record<TrendWindowKey, SortKey> = {
 };
 const sign = (v: number | null | undefined) => (v != null && v < 0 ? "text-negative" : v != null && v > 0 ? "text-positive" : "text-ink");
 
-type Col = { key: SortKey; label: string; w: string; render: (s: SecurityRow) => React.ReactNode; cls?: (s: SecurityRow) => string };
+type Col = { key: SortKey; label: string; w: string; render: (s: SecurityRow) => React.ReactNode; cls?: (s: SecurityRow) => string; title?: string };
 const COLS: Col[] = [
   { key: "price", label: "Last", w: "72px", render: (s) => formatPrice(s.price) },
   { key: "changePct", label: "Chg%", w: "62px", render: (s) => formatChangePct(s.changePct), cls: (s) => sign(s.changePct) },
@@ -49,7 +50,28 @@ const COLS: Col[] = [
     cls: (s) => (s.record?.trades ? sign(s.record.realized) : "text-ink-faint"),
   },
 ];
-const STAT_GRID = `${COLS.map((c) => c.w).join(" ")} 88px`; // + POS (highlighted, last)
+// Maintenance margin as a share of assignment notional, short CALL / short PUT — what one
+// contract ties up in buying power per dollar of exposure. Two numbers in five characters because
+// the space is not there for more, and whole percents because the precision is not either: these
+// are medians of this book's own IB what-ifs by instrument class (/margin). The put is what
+// discriminates — call rates sit in an 8–10% band for nearly everything, while a put on a 3x fund
+// costs about 4× the same put on a 1x fund, so the column sorts on the put and colours on it.
+const MGN_TITLE =
+  "Maintenance margin as % of assignment notional — short call / short put. What one contract ties up in buying power, per dollar of exposure. From the /margin rate card: medians of this account's own IB what-ifs, by instrument class. Sorts by the put rate.";
+const MGN_COL: Col = {
+  key: "maintPut",
+  label: "Mgn",
+  w: "52px",
+  render: (s) => formatRatePair(s.maintRate?.call, s.maintRate?.put),
+  cls: (s) => ((s.maintRate?.put ?? 0) >= 0.25 ? "font-semibold text-negative" : "text-ink-muted"),
+  title: MGN_TITLE,
+};
+
+// Opt-in per table rather than global: the column earns its 52px on the watchlists, where the
+// question is "what can the cushion afford", and does not on the Analyzer, where it would push the
+// trend charts over on a narrow viewport.
+const colsFor = (showMargin: boolean): Col[] => (showMargin ? [...COLS, MGN_COL] : COLS);
+const statGrid = (showMargin: boolean) => `${colsFor(showMargin).map((c) => c.w).join(" ")} 88px`; // + POS (highlighted, last)
 // Left track never shrinks below its stats+POS content (min-content), so the
 // highlighted Position column can't be clipped under the charts; charts take the
 // rest. On a narrow viewport the page scrolls horizontally instead of overlapping.
@@ -122,6 +144,8 @@ type Props = {
   showSector?: boolean;
   showPositions?: boolean;
   showRating?: boolean;
+  /** Show the Mgn column (maintenance % of notional, call/put). */
+  showMargin?: boolean;
   ratingCol?: SortKey;
   catalog: string[];
   onSort: (key: SortKey) => void;
@@ -131,9 +155,10 @@ type Props = {
   emptyMessage: string;
 };
 
-function Row({ s, showRating, catalog, onToggle, onRate, onSetLabels }: {
+function Row({ s, showRating, showMargin, catalog, onToggle, onRate, onSetLabels }: {
   s: SecurityRow;
   showRating: boolean;
+  showMargin: boolean;
   catalog: string[];
   onToggle: Props["onToggle"];
   onRate: Props["onRate"];
@@ -167,9 +192,9 @@ function Row({ s, showRating, catalog, onToggle, onRate, onSetLabels }: {
             )}
           </div>
           {/* Row 2 — stats (aligned to header) */}
-          <div className="grid items-center gap-x-2 text-[12px]" style={{ gridTemplateColumns: STAT_GRID }}>
-            {COLS.map((c) => (
-              <span key={c.key} className={`tnum text-right ${c.cls ? c.cls(s) : "text-ink"}`}>{c.render(s)}</span>
+          <div className="grid items-center gap-x-2 text-[12px]" style={{ gridTemplateColumns: statGrid(showMargin) }}>
+            {colsFor(showMargin).map((c) => (
+              <span key={c.key} title={c.title} className={`tnum text-right ${c.cls ? c.cls(s) : "text-ink"}`}>{c.render(s)}</span>
             ))}
             <PosCell s={s} />
           </div>
@@ -203,17 +228,17 @@ function Row({ s, showRating, catalog, onToggle, onRate, onSetLabels }: {
   );
 }
 
-export function WideStockList({ rows, sortKey, sortDir, showRating = false, catalog, onSort, onToggle, onRate, onSetLabels, emptyMessage }: Props) {
+export function WideStockList({ rows, sortKey, sortDir, showRating = false, showMargin = false, catalog, onSort, onToggle, onRate, onSetLabels, emptyMessage }: Props) {
   return (
     <div className="w-full">
       {/* Sortable header — stat columns align with each row's stats line */}
       <div className="sticky top-0 z-10 grid gap-x-4 border-b border-line bg-surface" style={{ gridTemplateColumns: OUTER }}>
         <div className={`flex items-end py-2 ${PAD}`}>
-          <div className="grid w-full items-center gap-x-2" style={{ gridTemplateColumns: STAT_GRID }}>
-            {COLS.map((c) => {
+          <div className="grid w-full items-center gap-x-2" style={{ gridTemplateColumns: statGrid(showMargin) }}>
+            {colsFor(showMargin).map((c) => {
               const active = sortKey === c.key;
               return (
-                <button key={c.key} type="button" onClick={() => onSort(c.key)} className={`flex items-center justify-end gap-0.5 text-right text-[10px] font-semibold uppercase tracking-wider hover:text-ink ${active ? "text-ink" : "text-ink-faint"}`}>
+                <button key={c.key} type="button" onClick={() => onSort(c.key)} title={c.title} className={`flex items-center justify-end gap-0.5 text-right text-[10px] font-semibold uppercase tracking-wider hover:text-ink ${active ? "text-ink" : "text-ink-faint"}`}>
                   {c.label}<SortArrow active={active} dir={sortDir} />
                 </button>
               );
@@ -248,7 +273,7 @@ export function WideStockList({ rows, sortKey, sortDir, showRating = false, cata
       ) : (
         <ul>
           {rows.map((s) => (
-            <Row key={s.ticker} s={s} showRating={showRating} catalog={catalog} onToggle={onToggle} onRate={onRate} onSetLabels={onSetLabels} />
+            <Row key={s.ticker} s={s} showRating={showRating} showMargin={showMargin} catalog={catalog} onToggle={onToggle} onRate={onRate} onSetLabels={onSetLabels} />
           ))}
         </ul>
       )}

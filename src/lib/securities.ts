@@ -9,6 +9,8 @@ import type { TrendWindowKey } from "@/lib/view";
 import { isHighRoic } from "@/lib/roic";
 import { effIvFloor, getPriorMembership } from "@/lib/hysteresis";
 import { likeForLike } from "@/lib/ivsource";
+import { getRateCard } from "@/lib/marginbrief";
+import { marginClassOf } from "@/lib/marginrate";
 
 const numOrNull = (v: unknown): number | null => (v != null ? Number(v) : null);
 
@@ -80,6 +82,13 @@ export type SecurityRow = {
   downtrend: boolean; // sustained bearish (1Y down, or 3M & 6M both down)
   nextEarnings: string | null; // next earnings date (YYYY-MM-DD); null = ETF / unknown
   earningsInDays: number | null; // calendar days until next earnings; <0 = stale/past, null = unknown
+  /**
+   * Maintenance margin as a share of assignment notional, short call and short put — the
+   * buying-power cost of selling one contract, from the /margin rate card (lib/marginrate.ts).
+   * Optional because it is a property of the ACCOUNT's margin regime rather than of the
+   * instrument, so a row built in a check fixture has none and must not be required to invent one.
+   */
+  maintRate?: { call: number | null; put: number | null } | null;
   nc: boolean; // user NC screen: liquid mid-priced high-IV, full ladder, 1M/3M/6M not up
   ccTarget: boolean; // strategy screen: weak liquid ETF for naked calls
   cspEligible: boolean; // strategy screen: quality/index name for panic naked puts
@@ -322,7 +331,7 @@ export async function getIvSeries(ticker: string): Promise<IvPoint[]> {
 }
 
 export async function getDashboardData(): Promise<DashboardData> {
-  const [rows, sparkMap, ivHistMap, posMap, pnl, prior] = await Promise.all([
+  const [rows, sparkMap, ivHistMap, posMap, pnl, prior, card] = await Promise.all([
     prisma.security.findMany({
       where: { isActive: true },
       include: { quote: true, mark: true, trend: true, ccScore: true },
@@ -334,6 +343,9 @@ export async function getDashboardData(): Promise<DashboardData> {
     // What the lists said at the last snapshot — the latch the IV floors hold on to, so a
     // name a point under the line does not drop out and back in on noise (lib/hysteresis.ts).
     getPriorMembership(),
+    // The margin rate card, so every table can show what a contract costs in buying power
+    // without each one loading its own copy and drifting from the others.
+    getRateCard(),
   ]);
   const recMap = new Map(pnl.bySymbol.map((s) => [s.symbol.toUpperCase(), s]));
 
@@ -436,6 +448,14 @@ export async function getDashboardData(): Promise<DashboardData> {
     s.autoLabels = computeAutoLabels(s);
     s.downtrend = isDowntrend(s.trend);
     s.nc = isNcTarget(s, prior.has("nc", s.ticker));
+    // Rate only — the dollar cost needs a strike, which a screen row does not have.
+    const mcls = marginClassOf({ type: s.type, name: s.name });
+    const cRate = card.rate(mcls, "C");
+    const pRate = card.rate(mcls, "P");
+    s.maintRate = {
+      call: cRate.provenance === "none" ? null : cRate.rate,
+      put: pRate.provenance === "none" ? null : pRate.rate,
+    };
     if (s.nc) s.autoLabels.push("NC");
     // Value-quality: high ROIC (stocks only — ETFs have no invested capital).
     s.highRoic = s.type === "stock" && isHighRoic(s.roic);

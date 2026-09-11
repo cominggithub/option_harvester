@@ -13,6 +13,7 @@ import {
   buildRateCard,
   contractsUntilCushionGone,
   estimateMaintenance,
+  formatRatePair,
   marginClassOf,
   shareOfExcessLiquidity,
   type MeasuredLeg,
@@ -210,5 +211,21 @@ ok(contractsUntilCushionGone(0, EXCESS) == null, "…and a free contract is not 
   // left, which is precisely the state a margin-bound account gets into.
   ok((shareOfExcessLiquidity(30_000, EXCESS) ?? 0) > 1, "a ratio over 100% is possible and must not be clamped");
 }
+
+// ── the five-character form used in the watchlist tables ─────────────────────
+// "8/12" is call/put in whole percent. Compact enough for a 52px column, and the pairing is the
+// point: the two sides of the same instrument cost very different amounts of buying power, and a
+// single number would hide which side is being priced.
+ok(formatRatePair(0.085, 0.124) === "9/12", "0.085/0.124 renders as 9/12 — whole percents, call first");
+ok(formatRatePair(0.096, 0.483) === "10/48", "a 3x fund renders as 10/48, and the 48 is the whole story");
+ok(formatRatePair(0.085, 0.125) === "9/13", "rounding is to nearest, not truncation");
+ok(formatRatePair(null, 0.124) === "·/12", "a missing side is a dot, not a zero — zero would read as free");
+ok(formatRatePair(0.085, null) === "9/·", "…on either side");
+ok(formatRatePair(null, null) === "—", "nothing known renders as an em dash, not '·/·'");
+ok(formatRatePair(undefined, undefined) === "—", "…and an absent rate object is the same");
+ok(formatRatePair(NaN, 0.1) === "·/10", "a NaN is not a number and must not print as one");
+// Ordering is call-then-put and must stay that way: the two are read side by side across rows, so
+// a silent swap would invert every comparison on the page.
+ok(formatRatePair(0.01, 0.99).startsWith("1/"), "the first number is always the call");
 
 console.log(`marginrate-check: ${pass} assertions passed (call ~${(callStock.median * 100).toFixed(0)}% of notional, 3x put ~${(put3x.median * 100).toFixed(0)}%).`);

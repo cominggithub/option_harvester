@@ -169,6 +169,7 @@ export function WatchlistBrowser({ securities, asOf, tabs }: Props) {
             showSector
             showPositions
             showRating={false}
+            showMargin
             catalog={catalog}
             onSort={onSort}
             onToggle={onToggle}

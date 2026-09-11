@@ -17,6 +17,7 @@ import {
 import { StarIcon, TargetIcon, SortArrow, SproutIcon } from "@/components/icons";
 import { Sparkline } from "@/components/Sparkline";
 import { moveLabel } from "@/lib/trend";
+import { formatRatePair } from "@/lib/marginrate";
 import { HistoryChart } from "@/components/HistoryChart";
 
 // Row-1 column widths as an inline gridTemplateColumns string (header + every row
@@ -25,13 +26,14 @@ import { HistoryChart } from "@/components/HistoryChart";
 // Optional columns drop in cleanly: a Rating column (Option Targets) after Mark,
 // and the S/C/P Position block at the far right. The description, labels, and price
 // charts live on a full-width SECOND grid row (see Row), not in these columns.
-const gridCols = (showPositions: boolean, showRating: boolean): string =>
+const gridCols = (showPositions: boolean, showRating: boolean, showMargin = false): string =>
   [
     "40px", // Mark (star + bullseye)
     showRating ? "92px" : null, // Rating (NC/NP stars)
     "150px", // Symbol + badges
     "minmax(110px,1fr)", // Company name
     "54px", // IV
+    showMargin ? "56px" : null, // Mgn — maintenance % of notional, short call / short put
     "78px", // Last
     "62px", // Chg %
     "72px", // Mkt Cap
@@ -41,6 +43,15 @@ const gridCols = (showPositions: boolean, showRating: boolean): string =>
   ]
     .filter(Boolean)
     .join(" ");
+// The Mgn column is two numbers in five characters, so the explanation has to live in a tooltip:
+// maintenance margin as a share of assignment notional, short CALL first then short PUT. Rates
+// come from the /margin rate card — medians of this book's own IB what-ifs, by instrument class.
+// Whole percents because the precision is not there: these are medians over single digits of
+// observations, and the point is that 8/12 and 10/48 are different orders of cost, not that either
+// is exact.
+const MGN_TITLE =
+  "Maintenance margin as % of assignment notional — short call / short put. What one contract ties up in buying power, per dollar of exposure. From the /margin rate card (medians of this account's own IB what-ifs, by instrument class). Sorts by the put rate, the one that discriminates: call rates sit in an 8–10% band for almost everything, while a put on a 3x fund costs ~4× the same put on a 1x fund.";
+
 const PAD = "pl-5 pr-5";
 const GRID = "grid gap-x-3"; // shared by header + rows so columns line up exactly
 
@@ -345,6 +356,8 @@ type Props = {
   showSector: boolean;
   showPositions: boolean;
   showRating: boolean;
+  /** Show the Mgn column (maintenance % of notional, short call / short put). */
+  showMargin?: boolean;
   ratingCol?: SortKey; // which sort key the Rating header drives (call vs put view)
   catalog: string[]; // known labels (seeds ∪ in-use) for the per-row editor
   onSort: (key: SortKey) => void;
@@ -361,6 +374,7 @@ function HeadCell({
   sortDir,
   onSort,
   align = "left",
+  title,
 }: {
   label: string;
   col: SortKey;
@@ -368,12 +382,14 @@ function HeadCell({
   sortDir: SortDir;
   onSort: (k: SortKey) => void;
   align?: "left" | "right";
+  title?: string;
 }) {
   const active = sortKey === col;
   return (
     <button
       type="button"
       onClick={() => onSort(col)}
+      title={title}
       className={`flex items-center gap-0.5 text-[11px] font-medium uppercase tracking-wider transition-colors hover:text-ink ${
         active ? "text-ink" : "text-ink-faint"
       } ${align === "right" ? "justify-end" : ""}`}
@@ -392,6 +408,7 @@ export function DataTable({
   showSector,
   showPositions,
   showRating,
+  showMargin = false,
   ratingCol = "rating",
   catalog,
   onSort,
@@ -401,7 +418,7 @@ export function DataTable({
   emptyMessage,
 }: Props) {
   const [openTicker, setOpenTicker] = useState<string | null>(null);
-  const grid = gridCols(showPositions, showRating);
+  const grid = gridCols(showPositions, showRating, showMargin);
   return (
     <div className="w-full">
       <div
@@ -415,6 +432,17 @@ export function DataTable({
         <HeadCell label="Symbol" col="ticker" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
         <HeadCell label="Company" col="name" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
         <HeadCell label="IV" col="ivPct" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
+        {showMargin && (
+          <HeadCell
+            label="Mgn"
+            col="maintPut"
+            sortKey={sortKey}
+            sortDir={sortDir}
+            onSort={onSort}
+            align="right"
+            title={MGN_TITLE}
+          />
+        )}
         <HeadCell label="Last" col="price" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
         <HeadCell label="Chg %" col="changePct" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
         <HeadCell label="Mkt Cap" col="marketCap" sortKey={sortKey} sortDir={sortDir} onSort={onSort} align="right" />
@@ -471,6 +499,7 @@ export function DataTable({
               showSector={showSector}
               showPositions={showPositions}
               showRating={showRating}
+              showMargin={showMargin}
               grid={grid}
               catalog={catalog}
               onToggle={onToggle}
@@ -494,6 +523,7 @@ function Row({
   showSector,
   showPositions,
   showRating,
+  showMargin,
   grid,
   catalog,
   onToggle,
@@ -507,6 +537,7 @@ function Row({
   showSector: boolean;
   showPositions: boolean;
   showRating: boolean;
+  showMargin: boolean;
   grid: string;
   catalog: string[];
   onToggle: (ticker: string, field: "favorite" | "target") => void;
@@ -631,6 +662,14 @@ function Row({
       </div>
 
       <span className="tnum text-right text-[13px] text-ink">{formatIv(s.ivPct)}</span>
+      {showMargin && (
+        <span
+          className={`tnum text-right text-[13px] ${(s.maintRate?.put ?? 0) >= 0.25 ? "font-semibold text-[#b91c1c]" : "text-[#3f454d]"}`}
+          title={MGN_TITLE}
+        >
+          {formatRatePair(s.maintRate?.call, s.maintRate?.put)}
+        </span>
+      )}
       <span className="tnum text-right text-[13px] text-ink">{formatPrice(s.price)}</span>
       <span className={`tnum text-right text-[13px] ${chgTone}`}>{formatChangePct(s.changePct)}</span>
       <span className="tnum text-right text-[13px] text-ink">

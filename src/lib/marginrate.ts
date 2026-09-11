@@ -172,6 +172,20 @@ export function estimateMaintenance(args: {
 }
 
 /**
+ * The pair of rates as one short token — "8/12", call then put.
+ *
+ * For the watchlist tables, where a column is worth about five characters. Whole percents with the
+ * sign dropped: the precision is not there anyway (these are medians over single digits of
+ * observations), and a reader comparing 8/12 against 10/48 does not need a decimal to see which one
+ * will empty the cushion. Call first because it is the naked-call book's default side.
+ */
+export function formatRatePair(call: number | null | undefined, put: number | null | undefined): string {
+  const one = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? "·" : `${Math.round(v * 100)}`);
+  if (call == null && put == null) return "—";
+  return `${one(call)}/${one(put)}`;
+}
+
+/**
  * A maintenance figure as a share of EXCESS LIQUIDITY — the number asked for, because excess
  * liquidity is what runs out. Deliberately not a share of NLV: the §6.2 limit is about
  * maintenance ÷ NLV, but "can I open this today" is answered by the cushion, and on this account

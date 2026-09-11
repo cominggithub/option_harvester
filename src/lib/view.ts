@@ -28,7 +28,8 @@ export type SortKey =
   | "record"
   | "rating"
   | "ratingCall"
-  | "ratingPut";
+  | "ratingPut"
+  | "maintPut";
 
 export type SortDir = "asc" | "desc";
 
@@ -55,6 +56,7 @@ export const SORT_LABELS: Record<SortKey, string> = {
   harvesterScore: "Harvester",
   ccScore: "Call Edge",
   ivPct: "IV",
+  maintPut: "Mgn",
   ivRank: "IV Rank",
   roic: "ROIC",
   price: "Last",
@@ -111,6 +113,8 @@ function sortValue(
   if (key === "ratingPut") return r.rating < 0 ? -r.rating : null; // put view: only NP ratings rank
   if (key === "final") return r.final?.score ?? null;
   if (key === "ivRank") return r.ivStats?.rank ?? null;
+  // The put rate is the one that discriminates — call rates sit in an 8–10% band for everything.
+  if (key === "maintPut") return r.maintRate?.put ?? null;
   // Remaining keys are direct numeric SecurityRow fields (trend/slope/rating/… handled above).
   return r[key as keyof SecurityRow] as number | string | null;
 }

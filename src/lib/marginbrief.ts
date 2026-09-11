@@ -49,19 +49,21 @@ export type MarginBrief = {
   measuredTotal: number;
 };
 
-export async function getMarginBrief(
-  universe: { ticker: string; name: string; type: string | null; price: number | null; ivPct: number | null; lists: string[] }[],
-): Promise<MarginBrief> {
-  const [positions, margins, balance] = await Promise.all([
+/**
+ * The measured short legs, with IB's what-if attached. Split out from getMarginBrief so the
+ * dashboard can build a rate card without loading the whole page's worth of data — every table
+ * that shows a margin rate must show the SAME rate, and that means one loader, not two.
+ */
+export async function loadMeasuredLegs(): Promise<(MeasuredLeg & { shareOfCushion: number | null })[]> {
+  const [positions, margins, balance, secRows] = await Promise.all([
     prisma.position.findMany({ where: { right: { not: null } } }),
     prisma.positionMargin.findMany(),
     prisma.accountBalance.findFirst({ orderBy: { date: "desc" } }).catch(() => null),
+    prisma.security.findMany({ select: { ticker: true, name: true, type: true } }),
   ]);
   const mg = new Map(margins.map((m) => [m.conid, m]));
-  const secs = new Map(
-    (await prisma.security.findMany({ select: { ticker: true, name: true, type: true } })).map((s) => [s.ticker.toUpperCase(), s]),
-  );
-
+  const secs = new Map(secRows.map((s) => [s.ticker.toUpperCase(), s]));
+  const excess = balance?.excessLiquidity != null ? Number(balance.excessLiquidity) : null;
   const now = Date.now();
   const legs: (MeasuredLeg & { shareOfCushion: number | null })[] = [];
   for (const p of positions) {
@@ -78,7 +80,6 @@ export async function getMarginBrief(
     const contracts = Math.abs(qty);
     const notional = contracts * strike * 100;
     const sec = secs.get(p.symbol.toUpperCase());
-    const excess = balance?.excessLiquidity != null ? Number(balance.excessLiquidity) : null;
     legs.push({
       symbol: p.symbol.toUpperCase(),
       right: (p.right === "P" ? "P" : "C") as Right,
@@ -94,7 +95,21 @@ export async function getMarginBrief(
     });
   }
   legs.sort((a, b) => b.maintMargin - a.maintMargin);
+  return legs;
+}
 
+/** The rate card alone — what a row in any table needs to show a % of notional. */
+export async function getRateCard(): Promise<RateCard> {
+  return buildRateCard(await loadMeasuredLegs());
+}
+
+export async function getMarginBrief(
+  universe: { ticker: string; name: string; type: string | null; price: number | null; ivPct: number | null; lists: string[] }[],
+): Promise<MarginBrief> {
+  const [legs, balance] = await Promise.all([
+    loadMeasuredLegs(),
+    prisma.accountBalance.findFirst({ orderBy: { date: "desc" } }).catch(() => null),
+  ]);
   const card = buildRateCard(legs);
   const excess = balance?.excessLiquidity != null ? Number(balance.excessLiquidity) : null;
 
