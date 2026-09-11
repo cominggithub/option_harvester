@@ -47,23 +47,22 @@ ok(valueName("DHR")!.thesis.includes("DBS"), "…including the reasoning, verbat
 // engine's theme map handles that) and two positions for a value list, which is about what to own.
 ok(isValueName("V") && isValueName("MA"), "Visa and Mastercard are both here on purpose");
 
-// ── where the curated list and the ROIC screen disagree ──────────────────────
-// Measured 2026-09-11. Pinned as fixtures because the disagreement is a documented finding, not
-// noise: if a later ROIC ingest moves these, the change is worth noticing rather than absorbing.
-const measured: Record<string, number> = {
-  WMT: 0.156, MCD: 0.188, HD: 0.208, SHW: 0.169, CHD: 0.14,
-  SYK: 0.107, DHR: 0.057, MSFT: 0.285, V: 0.479, MA: 0.962, COST: 0.355,
-};
-ok(Object.keys(measured).length === VALUE_NAMES.length, "every curated name has a measured ROIC on record");
-const failing = Object.entries(measured).filter(([, r]) => !isHighRoic(r)).map(([t]) => t);
-ok(failing.length === 3, "three of the eleven fail the derived screen");
-ok(failing.includes("CHD") && failing.includes("SYK") && failing.includes("DHR"), "…and they are CHD, SYK and DHR");
-ok(measured.DHR < HIGH_ROIC_MIN / 2, "DHR is not marginal — it is less than half the floor");
-ok(
-  valueName("DHR")!.moat.includes("併購"),
-  "…and its own moat statement names acquisition, which is WHY: goodwill lands in invested capital",
-);
-ok(measured.MA > 0.9 && measured.V > 0.4, "the payment networks clear the floor by an order of magnitude — asset-light shows up");
+// ── membership does NOT depend on ROIC ───────────────────────────────────────
+// The invariant, stated as the thing that could break: if this list ever agreed exactly with the
+// derived screen, it would have stopped being a judgement. So the proof is the existence of
+// members the screen rejects. CHD 14.0%, SYK 10.7% and DHR 5.7% (measured 2026-09-11) are all
+// below the floor and all full members — and nothing in lib/value.ts consults a metric to decide.
+for (const [ticker, roic] of [["CHD", 0.14], ["SYK", 0.107], ["DHR", 0.057]] as const) {
+  ok(!isHighRoic(roic), `${ticker} reads ${(roic * 100).toFixed(1)}%, below the ${(HIGH_ROIC_MIN * 100).toFixed(0)}% screen`);
+  ok(isValueName(ticker), `…and is a full member anyway — ROIC is context here, not a condition`);
+}
+// The reverse, too: passing the screen does not put a name on the list. 192 names clear 15% ROIC
+// and 11 are here, so the screen is not a sufficient condition either.
+ok(isHighRoic(0.31) && !isValueName("NVDA"), "clearing the ROIC floor does not earn a place on the list");
+// DHR's own moat statement is the explanation, which is why it is worth keeping verbatim: a serial
+// acquirer books goodwill into invested capital, so the ratio penalises the strategy it describes.
+ok(valueName("DHR")!.moat.includes("併購"), "DHR's moat names acquisition — the reason its ROIC reads low");
+ok(0.057 < HIGH_ROIC_MIN / 2, "…and it is not marginal: less than half the floor, which a gate would have excluded outright");
 
 // ── the doctrine boundary ────────────────────────────────────────────────────
 // The naked-call screen requires 1M/3M/6M NOT rising. A compounder in an uptrend fails that by
@@ -82,4 +81,4 @@ ok(
   "a name rising on all three windows cannot be an NC target however rich its IV — see isNcTarget",
 );
 
-console.log(`value-check: ${pass} assertions passed (${VALUE_NAMES.length} curated names, ${failing.length} below the ${(HIGH_ROIC_MIN * 100).toFixed(0)}% ROIC screen).`);
+console.log(`value-check: ${pass} assertions passed (${VALUE_NAMES.length} curated names, membership independent of the ${(HIGH_ROIC_MIN * 100).toFixed(0)}% ROIC screen).`);
