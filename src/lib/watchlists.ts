@@ -3,6 +3,7 @@ import type { SecurityRow } from "@/lib/securities";
 import { NC_IV_MIN, NC_MIN_WEEKLY_BUCKETS } from "@/lib/securities";
 import { themeOf } from "@/lib/bookrisk";
 import { effIvFloor, NO_PRIOR, type PriorMembership } from "@/lib/hysteresis";
+import { isValueName, VALUE_NAMES } from "@/lib/value";
 import {
   absLeverageFactor,
   isInverseDirection,
@@ -371,6 +372,10 @@ export function computeOhWatchlists(securities: SecurityRow[], prior: PriorMembe
   // there is nothing for noise to cross.
   const etf1x = securities.filter((s) => isUnleveragedEtf(s));
   const inv1x = securities.filter((s) => isUnleveragedInverseEtf(s));
+  // VALUE — curated, not screened: the operator's own moat list (lib/value.ts). Sorted and
+  // filtered against the universe rather than emitted from the table directly, so a name that
+  // leaves the index (or is mistyped) shows up as an absence here instead of a broken IB push.
+  const value = securities.filter((s) => isValueName(s.ticker));
 
   return [
     {
@@ -477,6 +482,12 @@ export function computeOhWatchlists(securities: SecurityRow[], prior: PriorMembe
       name: "INVETF1x",
       desc: `The unleveraged INVERSE universe — every -1x short fund tracked, and only those. Same structural basis as ETF1x (no IV floor, no liquidity floor): a premium floor would hide the most obvious members, since SH (-1x S&P 500) reads 20.7% IV and PSQ (-1x Nasdaq-100) 22.3% — which is what a fund mirroring a 20%-vol index should read, and the point is to be watching on the day it stops reading that. Membership cannot flicker: it is a fact about the instrument, so a name enters when the universe gains it and leaves when the universe drops it. The 2x/3x bear funds (SQQQ, SOXS, SPXU, TZA, LABD, DUST, KOLD, SPXS, FAZ, SDS, TMV) are excluded here by GEARING, not by direction — direction is this list's whole subject. Nothing here is a call-writing candidate, which is why none of these appear in ETFHIV, LEVHIV, LEVMIX or ETFMIX.`,
       members: inv1x.map(toMember).sort(byTicker),
+    },
+    {
+      key: "value",
+      name: "VALUE",
+      desc: `Curated value / moat list — ${VALUE_NAMES.length} names the operator picked by hand, each recorded with its moat, its growth and cash-flow grade, and the reason it is worth studying (src/lib/value.ts). Not a screen: no IV floor, no liquidity floor, no ROIC test. That is the difference from OH:ROIC, which is DERIVED — every name measuring above 15% ROIC, 192 of them and counting. A filter finds candidates nobody thought of; a list remembers judgements a filter cannot express. They disagree on three names, and the disagreement is the point: CHD (14.0% ROIC), SYK (10.7%) and DHR (5.7%) all fail the screen. DHR is the instructive one — its moat IS acquisition plus the DBS operating system, and buying companies books goodwill into invested capital, so ROIC penalises a serial acquirer exactly in proportion to how much of its business it acquired. That 5.7% is the thesis measured with a ruler that does not fit it. These are quality compounders, which makes them the WRONG names for the naked-call book: the NC screen requires 1M/3M/6M not rising, so a strong compounder fails it by construction and writing a call on one is a bet against the thesis that put it here. Their place is the put side — cash-backed puts on names worth owning (docs/strategy.md § 三) and docs/acquisition-puts.md, where assignment is the goal rather than the failure state.`,
+      members: value.map(toMember).sort(byTicker),
     },
   ];
 }

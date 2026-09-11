@@ -28,6 +28,7 @@ import { isLongLeveragedEtf, leverageFactor, LEV_MIN_FACTOR } from "@/lib/levera
 import { themeOf } from "@/lib/bookrisk";
 import { HIGH_ROIC_MIN, isHighRoic } from "@/lib/roic";
 import { getPriorMembership } from "@/lib/hysteresis";
+import { isValueName } from "@/lib/value";
 
 // OH-watchlist change log. OH lists (NC/NCcan/Cpos/Ppos/RED) are computed live and
 // never stored, so on their own they have no history — you can't tell what was added
@@ -178,6 +179,9 @@ const LIST_META: { key: string; name: string; inList: (r: Snap) => boolean; sele
   // only way a name enters or leaves is the universe gaining or dropping it.
   { key: "etf1x", name: "ETF1x", inList: (r) => isUnleveragedEtf(r) },
   { key: "invetf1x", name: "INVETF1x", inList: (r) => isUnleveragedInverseEtf(r) },
+  // VALUE — curated. Membership changes when the operator edits lib/value.ts, never on a metric,
+  // so /wl-log showing an add or a remove here means a decision was made.
+  { key: "value", name: "VALUE", inList: (r) => isValueName(r.ticker) },
 ];
 
 /** The set-valued LEVMIX/ETFMIX selection over one day's snapshot rows. */
