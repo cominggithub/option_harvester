@@ -15,6 +15,7 @@ const LINKS = [
   { href: "/upload", label: "IB Upload" },
   { href: "/positions", label: "Positions" },
   { href: "/risk", label: "Risk" },
+  { href: "/margin", label: "Margin" },
   { href: "/short-call", label: "Short Calls" },
   { href: "/pnl-predict", label: "P&L Predict" },
   { href: "/orders", label: "Orders" },
