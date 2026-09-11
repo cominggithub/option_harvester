@@ -86,11 +86,12 @@ export function LegsTable({ legs }: { legs: Leg[] }) {
     },
     {
       key: "cushion",
-      header: "% cushion",
+      header: "Frees % of cushion",
       align: "right",
       value: (l) => l.shareOfCushion,
       cell: (l) => pct(l.shareOfCushion),
-      title: "maintenance ÷ excess liquidity",
+      title:
+        "maintenance ÷ excess liquidity. This leg's margin is ALREADY deducted from excess liquidity, so read it as what CLOSING the leg would release, as a share of the cushion you have now — not as what it is currently consuming. Can exceed 100% for a large leg against a small cushion.",
     },
     {
       key: "age",
@@ -138,7 +139,7 @@ export function EstimatesTable({ rows }: { rows: MarginEstimateRow[] }) {
       align: "right",
       value: (e) => e.put.shareOfCushion,
       cell: (e) => pct(e.put.shareOfCushion),
-      title: "put $ ÷ excess liquidity",
+      title: "put $ ÷ excess liquidity — what OPENING one contract would consume of the cushion you have now. Nothing is held here, so unlike the held-legs table this margin is not yet deducted.",
     },
     {
       key: "putMax",
@@ -170,7 +171,7 @@ export function EstimatesTable({ rows }: { rows: MarginEstimateRow[] }) {
       align: "right",
       value: (e) => e.call.shareOfCushion,
       cell: (e) => pct(e.call.shareOfCushion),
-      title: "call $ ÷ excess liquidity",
+      title: "call $ ÷ excess liquidity — what OPENING one contract would consume of the cushion you have now.",
     },
     {
       key: "n",

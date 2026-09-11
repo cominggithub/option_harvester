@@ -38,6 +38,8 @@ export type MarginBrief = {
     netLiquidation: number | null;
     maintMargin: number | null;
     excessLiquidity: number | null;
+    /** Printed so the excess-liquidity identity can be shown rather than asserted. */
+    equityWithLoan: number | null;
     cushion: number | null;
   };
   card: RateCard;
@@ -117,6 +119,7 @@ export async function getMarginBrief(
       netLiquidation: balance?.netLiquidation != null ? Number(balance.netLiquidation) : null,
       maintMargin: balance?.maintMargin != null ? Number(balance.maintMargin) : null,
       excessLiquidity: excess,
+      equityWithLoan: balance?.equityWithLoan != null ? Number(balance.equityWithLoan) : null,
       cushion: balance?.cushion != null ? Number(balance.cushion) : null,
     },
     card,

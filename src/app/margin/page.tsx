@@ -109,9 +109,19 @@ export default async function MarginPage() {
             reads="Buying power consumed per dollar of exposure taken. This is the figure that compares instruments: it is unaffected by price level, so a $420 fund and a $90 fund can be read side by side."
           />
           <Formula
-            name="% cushion"
+            name="Excess liquidity"
+            expr="equity with loan value − maintenance margin"
+            reads={`IB's figure, and the identity holds exactly on today's numbers: ${usd(balance.equityWithLoan)} − ${usd(balance.maintMargin)} = ${usd(balance.excessLiquidity)}. The important consequence: the margin of every position you ALREADY hold has been subtracted from it.`}
+          />
+          <Formula
+            name="% cushion (candidate names)"
             expr="maintenance ÷ excess liquidity"
-            reads={`Share of the account's remaining cushion that this one position consumes. Excess liquidity is ${usd(balance.excessLiquidity)} today, so a $2,650 requirement is 10% of everything left.`}
+            reads={`What OPENING one contract would consume of the cushion you have now — ${usd(balance.excessLiquidity)}. Nothing is held in these names, so this margin is not yet deducted anywhere.`}
+          />
+          <Formula
+            name="Frees % of cushion (held legs)"
+            expr="maintenance ÷ excess liquidity"
+            reads="Same division, opposite meaning, because a held leg's margin is already inside the subtraction above. It is what CLOSING the leg would RELEASE, as a share of the cushion you have now — not what it is currently consuming. It can exceed 100%: a $4,827 leg against a small cushion frees more than the cushion currently holds."
           />
           <Formula
             name="Median rate"
@@ -161,6 +171,12 @@ export default async function MarginPage() {
       {/* Measured legs */}
       <section className="mt-8">
         <h2 className="font-semibold">Held short legs — IB&apos;s own figures ({legs.length})</h2>
+        <p className="mt-1 max-w-4xl text-muted">
+          <span className="font-medium">Frees % of cushion</span> divides each leg&apos;s maintenance by excess
+          liquidity, {usd(balance.excessLiquidity)} — one account-level figure, the same for every row, shown in
+          &ldquo;The cushion&rdquo; above. These legs are already inside that number, so the column is what closing the
+          leg would RELEASE, not what it is consuming. Sort by it to rank the harvest list by margin freed.
+        </p>
         <div className="mt-3">
           <LegsTable legs={legs} />
         </div>
@@ -172,7 +188,9 @@ export default async function MarginPage() {
         <p className="mt-1 max-w-4xl text-muted">
           Every name on a list that could be sold into, costed at the money. Sort by <span className="font-medium">Put
           % cushion</span> to see what the account cannot afford, or by <span className="font-medium">Put rate</span> to
-          see which instruments are structurally expensive rather than merely large.
+          see which instruments are structurally expensive rather than merely large. The cushion columns divide by the
+          same {usd(balance.excessLiquidity)} of excess liquidity, but here nothing is held — so they are what OPENING
+          one contract would consume.
         </p>
         <div className="mt-3">
           <EstimatesTable rows={estimates} />

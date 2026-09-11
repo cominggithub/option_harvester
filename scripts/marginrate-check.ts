@@ -175,4 +175,40 @@ ok(contractsUntilCushionGone(0, EXCESS) == null, "…and a free contract is not 
   ok(near(otm.dollars, (est.dollars ?? 0) * 0.8, 1e-9), "…in exact proportion to the strike");
 }
 
+// ── excess liquidity already nets out held margin ────────────────────────────
+// The identity IB uses, on the 2026-09-11 balances: excess liquidity is equity with loan value
+// MINUS the maintenance requirement, so every held leg's margin is inside it already. That makes
+// one division mean two different things, which is exactly the confusion the page had to fix:
+//
+//   candidate name  maintenance ÷ excess liquidity  =  what OPENING it would consume
+//   held leg        maintenance ÷ excess liquidity  =  what CLOSING it would RELEASE
+//
+// Pinned because the arithmetic cannot distinguish them — only the label can, and a label is the
+// kind of thing that drifts.
+{
+  const EWL = 120_095.81;
+  const MAINT = 93_595.91;
+  const EXCESS = 26_499.9;
+  ok(Math.abs(EWL - MAINT - EXCESS) < 0.01, "excess liquidity = equity with loan value − maintenance margin");
+
+  // A held leg: closing it releases its maintenance, so the cushion afterwards is larger.
+  const held = 4_827;
+  const freed = shareOfExcessLiquidity(held, EXCESS)!;
+  ok(near(freed, held / EXCESS), "a held leg's ratio is its maintenance over the CURRENT cushion");
+  ok(freed > 0.18, "…and one SOXL 90P is over 18% of it");
+  ok(EXCESS + held > EXCESS, "closing it can only increase the cushion — it was already deducted");
+
+  // The same division on a candidate reduces the cushion instead, and the two must not be summed:
+  // a page that added a held leg's ratio to a candidate's would be double-counting the held one.
+  const candidate = 12_859; // LABU ATM put, measured 2026-09-11
+  const consumed = shareOfExcessLiquidity(candidate, EXCESS)!;
+  ok(near(consumed, candidate / EXCESS), "a candidate's ratio is its estimated maintenance over the same cushion");
+  ok(EXCESS - candidate < EXCESS, "opening it reduces the cushion — this margin is not deducted yet");
+  ok(consumed > 0.45, "…and one LABU put would take nearly half of what is left");
+
+  // A ratio above 100% is legitimate, not a bug: a leg can hold more margin than the cushion has
+  // left, which is precisely the state a margin-bound account gets into.
+  ok((shareOfExcessLiquidity(30_000, EXCESS) ?? 0) > 1, "a ratio over 100% is possible and must not be clamped");
+}
+
 console.log(`marginrate-check: ${pass} assertions passed (call ~${(callStock.median * 100).toFixed(0)}% of notional, 3x put ~${(put3x.median * 100).toFixed(0)}%).`);
