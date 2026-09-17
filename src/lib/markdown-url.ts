@@ -8,6 +8,9 @@ const STATIC_PAGE_PATHS = new Set([
   "/pnl-predict",
   "/positions",
   "/risk",
+  // The recorded-analysis index. Individual analyses are matched by RISK_ANALYSIS_PATH below
+  // rather than enumerated, since their addresses are data (a sequence number or a date).
+  "/risk/history",
   "/roic",
   "/margin",
   "/short-call",
@@ -30,6 +33,11 @@ const STATIC_PAGE_PATHS = new Set([
 ]);
 
 const STOCK_PATH = /^\/stock\/[A-Za-z0-9._-]+$/;
+// One recorded risk analysis, addressed by sequence number, ISO date, or `latest`. A pattern
+// rather than a list because these addresses are rows in a table, and the shape is narrow
+// enough to enumerate exactly: digits, YYYY-MM-DD, or the literal `latest`. Anything else
+// (a traversal attempt, an arbitrary slug) does not match and is not mirrored.
+const RISK_ANALYSIS_PATH = /^\/risk\/history\/(?:\d+|\d{4}-\d{2}-\d{2}|latest)$/;
 
 export function normalizePagePath(pathname: string): string {
   if (!pathname) return "/";
@@ -39,7 +47,7 @@ export function normalizePagePath(pathname: string): string {
 
 export function isShareablePagePath(pathname: string): boolean {
   const path = normalizePagePath(pathname);
-  return STATIC_PAGE_PATHS.has(path) || STOCK_PATH.test(path);
+  return STATIC_PAGE_PATHS.has(path) || STOCK_PATH.test(path) || RISK_ANALYSIS_PATH.test(path);
 }
 
 export function markdownPathForPage(pathname: string): string | null {

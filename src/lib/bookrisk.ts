@@ -19,7 +19,7 @@ import { getPositionGroups } from "@/lib/positions";
 import { getDashboardData, type SecurityRow } from "@/lib/securities";
 import { getLatestBalance, type Balance } from "@/lib/balances";
 import { buildAcquisitionBook, isAcquisitionPut, LIKELY_FILL_DELTA, THIN_FILL_DELTA, type AcquisitionBook } from "@/lib/acqputs";
-import { levThemeMap } from "@/lib/leveraged";
+import { isInverseFund, isLongLeveragedEtf, levThemeMap } from "@/lib/leveraged";
 
 // ── doctrine constants (one source of truth; never inline these numbers) ──────
 export const BOOK_HORIZON_DAYS = 365; // "< 1y": the book this page analyses
@@ -184,6 +184,13 @@ export type BookLeg = LegSuggestion & {
   sector: string;
   theme: string; // correlated cluster (semis / metals / crypto …) — sector when none
   instrumentType: string | null; // "etf" | "stock" | … — an ETF has no earnings print
+  /**
+   * The gap-risk class the v1.3 universe rule (`SC-S8`) gates on, evaluated against the leg
+   * already held rather than against a candidate. Exists so a position that the doctrine would
+   * no longer open is visible as a breach instead of only being absent from future lists —
+   * `SC-S7` banned inverse funds from v1.0 and TZA C55 was open on 2026-09-17 regardless.
+   */
+  gapClass: "etf1x" | "geared" | "inverse" | "stock" | null;
   /**
    * Why the position exists. `acquisition` = a declared short put on a name the operator
    * wants to own (docs/acquisition-puts.md), where assignment is the goal; everything else
@@ -623,6 +630,16 @@ export function buildBookRisk(
         sector: sec?.sector ?? "Unclassified",
         theme: themeOf(base.symbol, sec?.sector ?? "Unclassified"),
         instrumentType: sec?.type ?? null,
+        gapClass:
+          sec == null
+            ? null
+            : isInverseFund(sec.name)
+              ? "inverse"
+              : isLongLeveragedEtf(sec)
+                ? "geared"
+                : (sec.type ?? "").toLowerCase() === "etf"
+                  ? "etf1x"
+                  : "stock",
         intent,
         ivPct,
         ivRank: sec?.ivStats?.rank ?? null,

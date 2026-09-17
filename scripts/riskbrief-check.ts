@@ -66,7 +66,12 @@ function cleanBook(bal: unknown = balance({})): BookRisk {
       legs: [leg({ contract: `N${i} 16OCT26 320 C`, strike: 320, conid: String(i) })],
     }),
   );
-  const secs = SECTORS.map((s, i) => sec({ ticker: `N${i}`, sector: s }));
+  // v1.3: the admitted call universe is unleveraged, non-inverse ETFs (`SC-S8`), so a
+  // *compliant* book is now made of them. This fixture was 25 single stocks and correctly
+  // began raising `R-UNIVERSE` the moment the rule landed — the definition of compliant moved,
+  // and the fixture is where that definition lives. The names are deliberately plain: a name
+  // matching 2x/3x/bull/bear would classify as geared or inverse and fail on purpose.
+  const secs = SECTORS.map((s, i) => sec({ ticker: `N${i}`, sector: s, type: "etf", name: `Fund ${i}` }));
   return buildBookRisk(groups, secs, bal as never, asOf);
 }
 
@@ -86,9 +91,41 @@ function cleanBook(bal: unknown = balance({})): BookRisk {
     asOf,
   });
   ok(brief.level === "normal" || brief.level === "elevated", `a compliant book is not called critical (got ${brief.level})`);
+  ok(risks.every((r) => r.id !== "R-UNIVERSE" && r.id !== "R-INVERSE"), "an unleveraged-ETF book raises no universe finding");
   ok(brief.headline.includes("short leg") || brief.risks.length > 0, "with no findings the headline states the book is inside its limits");
   ok(brief.failures.length === 0, "no closed chains → no failure diagnosis, rather than invented ones");
   ok(brief.targets.length === 0, "no candidates → no picks");
+}
+
+// ── v1.3: a position the doctrine would no longer open is a BREACH, not an absence ──
+{
+  const stockCall = buildRisks(
+    buildBookRisk([group({ symbol: "AAA", legs: [leg({})] })], [sec({ ticker: "AAA", type: "common", name: "A Company Inc" })], balance({}) as never, asOf),
+    asOf,
+  );
+  const uni = stockCall.find((r) => r.id === "R-UNIVERSE");
+  ok(uni != null, "a short call on a single stock raises R-UNIVERSE");
+  ok(uni!.rules.includes("SC-S8"), "…and cites the rule that bans it");
+  ok(/single stock/.test(uni!.evidence.join(" ")), "…naming the class, not just the count");
+  ok(/cannot be managed, only avoided/.test(uni!.mechanism), "…and the mechanism is the gap, not the volatility");
+
+  const invCall = buildRisks(
+    buildBookRisk(
+      [group({ symbol: "TZA", price: 44.9, legs: [leg({ contract: "TZA 16OCT26 55 C", strike: 55, quantity: -3 })] })],
+      [sec({ ticker: "TZA", type: "etf", name: "Direxion Daily Small Cap Bear 3X" })],
+      balance({}) as never,
+      asOf,
+    ),
+    asOf,
+  );
+  const inv = invCall.find((r) => r.id === "R-INVERSE");
+  ok(inv != null, "a short call on an inverse fund raises R-INVERSE");
+  ok(inv!.severity === "critical", "…at critical, because it is the one leg that loses in a crash");
+  ok(inv!.rules.includes("SC-S7"), "…citing SC-S7, which has banned it since v1.0");
+  ok(invCall.findIndex((r) => r.id === "R-INVERSE") < invCall.findIndex((r) => r.id === "R-UNIVERSE") || invCall.every((r) => r.id !== "R-UNIVERSE"),
+    "the inverse finding outranks the general universe finding");
+  ok(/GAINS in the same move/.test(inv!.evidence.join(" ")), "…and says explicitly that every other call gains in that scenario");
+  ok(!/roll/.test(inv!.action) || /not rollable/.test(inv!.action), "the action must not offer a roll — no strike on an inverse fund is admissible");
 }
 
 // ── margin + cushion: the finding that must outrank everything ───────────────

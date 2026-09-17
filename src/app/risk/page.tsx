@@ -31,6 +31,10 @@ import { buildLossReport } from "@/lib/sc-loss";
 import { buildCandidates, PROFILE } from "@/lib/sc-candidates";
 import { buildGates, openingBlocked } from "@/lib/sc-actions";
 import { buildRiskBrief, type Finding, type Severity } from "@/lib/riskbrief";
+import { getRiskHistory } from "@/lib/riskhistory";
+import { AnalysisRows, DiffBlock, StrategyRows } from "@/components/RiskSnapView";
+import { SectionNav } from "@/components/SectionNav";
+import { RISK_NAV } from "@/lib/risk-nav";
 import { MAX_MARGIN_PCT_NLV, MAX_NAME_CREDIT_SHARE, MAX_THEME_CREDIT_SHARE, MIN_EFFECTIVE_THEMES } from "@/lib/sc-rules";
 import { buildCushionLadder, cushionBarFrac, CUSHION_SCALE_MAX, rungPhrase, type CushionLadder } from "@/lib/cushion";
 import { buildPie, nameBreaches, PIE_VIEWS, PIE_WEIGHTS, type PieAxis, type PieData, type PieView, type PieWeight } from "@/lib/concentration";
@@ -482,11 +486,12 @@ export default async function RiskPage({ searchParams }: { searchParams?: Promis
   const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
   const pieView: PieView = (PIE_VIEWS as string[]).includes(one(sp.pie) ?? "") ? (one(sp.pie) as PieView) : "merged";
   const pieWeight: PieWeight = (PIE_WEIGHTS as string[]).includes(one(sp.w) ?? "") ? (one(sp.w) as PieWeight) : "credit";
-  const [r, a, dash, freshness] = await Promise.all([
+  const [r, a, dash, freshness, history] = await Promise.all([
     getBookRisk(),
     getScAnalyzer(),
     getDashboardData(),
     getBookFreshness(),
+    getRiskHistory(),
   ]);
   const t = r.totals;
   const c = r.concentration;
@@ -569,6 +574,12 @@ export default async function RiskPage({ searchParams }: { searchParams?: Promis
     { id: "name", label: "By name", count: t.symbols },
     { id: "act", label: "Act", group: true },
     { id: "actions", label: "What to do now", count: actionable, tone: actionable ? "warn" : "ok" },
+    {
+      id: "history",
+      label: "Analysis history",
+      count: history.total ? `#${history.analyses[0]?.seq ?? 0}` : "none",
+      tone: history.total ? "ok" : "warn",
+    },
     { id: "excluded", label: "Outside this analysis", count: r.excluded.longLegs + r.excluded.stockLegs + r.excluded.beyondHorizon },
   ];
 
@@ -593,6 +604,13 @@ export default async function RiskPage({ searchParams }: { searchParams?: Promis
         </div>
         <span className="tnum text-small text-ink-muted">{formatTimestamp(new Date(r.asOf))}</span>
       </div>
+
+      <SectionNav
+        items={[
+          RISK_NAV[0],
+          { ...RISK_NAV[1], count: history.total ? `${history.total}` : null },
+        ]}
+      />
 
       <p className="mt-2 max-w-4xl text-body leading-relaxed text-ink">
         The doctrine being measured (docs/strategy.md § 五): sell <strong className="text-ink">{TARGET_DTE_MIN}–{TARGET_DTE_MAX} DTE</strong> at{" "}
@@ -624,6 +642,19 @@ export default async function RiskPage({ searchParams }: { searchParams?: Promis
         <p className={`mt-2 border-l-2 ${SEV_STYLE[brief.level === "critical" ? "critical" : brief.level === "high" ? "high" : brief.level === "elevated" ? "medium" : "info"].edge} bg-surface px-4 py-3 text-lede leading-relaxed text-ink`}>
           {brief.headline}
         </p>
+        {history.diff && (
+          <p className="mt-1 text-small leading-snug text-ink-muted">
+            {history.analyses[0] ? (
+              <>
+                Recorded as <strong className="text-ink">analysis #{history.analyses[0].seq}</strong> ({formatTimestamp(new Date(history.analyses[0].at))}).{" "}
+              </>
+            ) : null}
+            {history.diff.summary}{" "}
+            <Link href="#history" className="underline">
+              full diff and history
+            </Link>
+          </p>
+        )}
         <div className="mt-2 space-y-2">
           {brief.risks.map((f) => (
             <FindingCard key={f.id} f={f} />
@@ -1250,6 +1281,84 @@ export default async function RiskPage({ searchParams }: { searchParams?: Promis
           <LegTable legs={v.legs} />
         </div>
       ))}
+      {/* ── the analysis history: what this page said before, and how it differs ── */}
+      <H2
+        id="history"
+        note={
+          history.total
+            ? `${history.total} recorded · ${history.strategies.length} strategy record(s) · newest #${history.analyses[0]?.seq ?? 0}`
+            : "nothing recorded yet"
+        }
+      >
+        Analysis history
+      </H2>
+      <p className="mt-2 max-w-4xl text-body leading-relaxed text-ink">
+        Everything above is re-derived on every load, which is what makes it current and is also why it used to have no
+        memory: the page could say <em>12 legs are inside 1σ</em> without being able to say whether that was five last week.
+        Each recorded analysis is <strong className="text-ink">numbered and dated, and has its own page</strong> —{" "}
+        <Link href="/risk/history" className="underline">
+          browse them by date
+        </Link>
+        , or go straight to one: <code>/risk/history/7</code> for an analysis, <code>/risk/history/2026-09-14</code> for a day
+        (which resolves to that day&rsquo;s newest and lists the rest). Each is split in two because the page mixes two
+        different clocks (<code>lib/risksnap.ts</code>):
+      </p>
+      <ul className="mt-2 max-w-4xl space-y-1 text-body leading-relaxed text-ink">
+        <li>
+          · <strong className="text-ink">The position record — one per analysis.</strong> Everything derived from the synced
+          book and the balances: the brief&rsquo;s findings, the KPIs, doctrine conformance, the risk flags, earnings
+          exposure, the shock table, the cushion ladder, every distribution, the per-leg verdicts, the acquisition book and
+          the §6.2 opening gates. This is what a diff is about.
+        </li>
+        <li>
+          · <strong className="text-ink">The strategy record — one per change.</strong> Everything derived from the{" "}
+          <em>closed</em> record and the rule registry: <Link href="#why" className="underline">why the strategy fails</Link>,
+          chain totals, the terminal-state split, the per-version cohorts, roll quality, the loss attribution and the exit
+          audit. It moves when a chain closes or the rules are revised — days apart — so it is stored once per change and
+          referenced by every analysis taken against it, rather than copied into each.
+        </li>
+        <li>
+          · <strong className="text-ink">Not recorded:</strong>{" "}
+          <Link href="#targets" className="underline">what to sell next</Link> and the vol regime. Those are screens over the
+          whole universe rather than measurements of this book, they move with the daily ingest, and{" "}
+          <Link href="/wl-log" className="underline">WL Log</Link> already tracks membership changes with reasons. Rendered
+          prose is not stored either — only the facts that produced it, so a wording change never looks like a data change.
+        </li>
+      </ul>
+      <p className="mt-2 max-w-4xl text-small leading-relaxed text-ink-muted">
+        An analysis is identified by its <strong>inputs</strong> — the freshness stamps of positions, balances, margin,
+        greeks and the price/IV ingest, plus the structural book and the findings. So a mark ticking a few dollars is the same
+        analysis, while a Sync, a leg opened or closed, or a verdict flipping is a new one; re-running{" "}
+        <code>npm run snapshot:risk</code> against unchanged data records nothing.
+      </p>
+      {history.diff && <DiffBlock d={history.diff} />}
+      {history.analyses.length === 0 ? (
+        <div className="mt-3 bg-surface px-4 py-3 text-body leading-relaxed text-ink">
+          No analysis has been recorded yet. The daily refresh takes one after the ingest; to record the current reading now,
+          run <code>npm run snapshot:risk</code>.
+        </div>
+      ) : (
+        <>
+          <div className="mt-3">
+            <AnalysisRows analyses={history.analyses.slice(0, 8)} />
+          </div>
+          <p className="mt-1 text-small text-ink-muted">
+            {history.total > 8 ? `The newest 8 of ${history.total}. ` : ""}
+            <Link href="/risk/history" className="underline">
+              Full history by date →
+            </Link>
+          </p>
+          <div className="mt-5">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+              <h3 className="text-h3 font-semibold tracking-tight text-ink">Strategy records</h3>
+              <span className="text-micro text-ink-muted">one row per change, not per analysis</span>
+            </div>
+            <div className="mt-2">
+              <StrategyRows strategies={history.strategies.slice(0, 5)} />
+            </div>
+          </div>
+        </>
+      )}
 
       {/* ── what was excluded ────────────────────────────────────────────── */}
       <H2 id="excluded">Outside this analysis</H2>

@@ -38,6 +38,7 @@ import {
   MAX_THEME_CREDIT_SHARE,
   MIN_EFFECTIVE_THEMES,
   MAX_NAME_CREDIT_SHARE,
+  SC_RULES,
 } from "@/lib/sc-rules";
 import { ACCEPTABLE_LOSS_MULTIPLE, PANIC_EXIT_DAYS, type LossReport } from "@/lib/sc-loss";
 import type { ChainTotals, ScChain } from "@/lib/sc-lifecycle";
@@ -314,6 +315,60 @@ export function buildRisks(book: BookRisk, asOf: Date): Finding[] {
       action: "Close these rather than rolling them — §4.5 forbids rolling a name that fails the trend filter today.",
       rules: ["SC-S1", "SC-M5"],
     });
+  }
+  // v1.3 made the call universe unleveraged ETFs only (`SC-S8`) and inverse funds a hard veto
+  // (`SC-S7`). A rule only governs what is opened next, so a position the doctrine would no
+  // longer take has to be reported as a breach — otherwise the change is invisible on the book
+  // it was written for. Inverse funds are separated out and ranked first because they are the
+  // only leg that loses in a crash, which is the scenario the universe change exists to survive.
+  {
+    const calls = book.legs.filter((l) => l.right === "C");
+    const inverse = calls.filter((l) => l.gapClass === "inverse");
+    const offUniverse = calls.filter((l) => l.gapClass === "stock" || l.gapClass === "geared");
+    if (inverse.length) {
+      const notional = inverse.reduce((a, l) => a + (l.notional ?? 0), 0);
+      out.push({
+        id: "R-INVERSE",
+        severity: "critical",
+        title: `${plural(inverse.length, "short call")} ${be(inverse.length)} on an inverse fund — the only ${
+          inverse.length === 1 ? "leg" : "legs"
+        } in the book that ${inverse.length === 1 ? "loses" : "lose"} money in a market crash.`,
+        evidence: [
+          inverse.map((l) => `${l.symbol} ${l.strike}C × ${l.qty}${l.spot != null ? ` (spot ${usd(l.spot)})` : ""}`).join(", "),
+          `${usd(inverse.reduce((a, l) => a + (l.credit ?? 0), 0))} of credit against ${usd(notional)} of assignment notional`,
+          "an inverse fund rises when the market falls, and a geared one rises by its factor: a −20% index move is roughly +60% on a −3x fund",
+          "every other short call in the book GAINS in the same move — this is the one that is correlated the wrong way",
+        ],
+        mechanism:
+          "The program's worst case is a broad drop: it hits every short put at once and raises the margin requirement while it does so. A short call on an inverse fund is the one position that adds to that loss instead of offsetting it, and leverage multiplies it. SC-S7 has banned these since v1.0; a position that exists anyway is a breach of the doctrine, not a position the doctrine covers.",
+        action: "Close it. SC-S7 is a veto in v1.3 — not overridable, and not rollable into a better strike, because no strike on an inverse fund is admissible.",
+        rules: ["SC-S7"],
+      });
+    }
+    if (offUniverse.length) {
+      const stocks = offUniverse.filter((l) => l.gapClass === "stock");
+      const geared = offUniverse.filter((l) => l.gapClass === "geared");
+      out.push({
+        id: "R-UNIVERSE",
+        severity: stocks.length >= 5 ? "high" : "medium",
+        title: `${plural(offUniverse.length, "short call")} ${be(offUniverse.length)} on ${
+          stocks.length && geared.length ? "single stocks and geared funds" : stocks.length ? "single stocks" : "geared funds"
+        }, which v1.3 no longer admits.`,
+        evidence: [
+          stocks.length ? `single stocks (${stocks.length}): ${stocks.map((l) => `${l.symbol} ${l.strike}C`).join(", ")}` : "",
+          geared.length ? `geared funds (${geared.length}): ${geared.map((l) => `${l.symbol} ${l.strike}C`).join(", ")}` : "",
+          `${usd(offUniverse.reduce((a, l) => a + (l.notional ?? 0), 0))} of assignment notional against ${usd(
+            offUniverse.reduce((a, l) => a + (l.credit ?? 0), 0),
+          )} of credit`,
+          "worst un-escapable overnight gap in our own bars: single stock 81.8%, geared 35.6% (and 12× more often than a 1x fund), unleveraged ETF 16.6%",
+        ].filter(Boolean),
+        mechanism:
+          "A gap cannot be managed, only avoided: between one close and the next open there is no price at which any stop, roll or close can fill. MRNA went from 26% OTM to deep ITM overnight and cost 14.9× its credit; a 2.5×-credit stop would have filled at 10.2×. These legs carry that exposure until they are gone.",
+        action:
+          "Run them off rather than force-closing: take the ones the harvest ladder already wants, close any that also fail the trend filter, and let the rest expire. Open nothing new outside the admitted universe.",
+        rules: ["SC-S8"],
+      });
+    }
   }
   if (b.earnings.length) {
     const soon = book.earnings.groups.find((g) => g.key === "This week");
@@ -645,7 +700,16 @@ export function buildTargets(candidates: Candidate[], book: BookRisk, limit = 20
   for (const s of book.byTheme) openThemes.set(s.key, s.creditShare);
   const heldCallNames = new Set(book.legs.filter((l) => l.right === "C").map((l) => l.symbol));
 
-  const eligible = candidates.filter((c) => c.proposal != null && c.profileFailed.length === 0);
+  // A **veto** gate removes the trade, it does not demote it. Failing one gate normally lands
+  // a candidate in tier 2 — "permitted if you override that rule deliberately" — which is the
+  // right treatment for a theme cap and the wrong one for an instrument ban. SC-S7 (inverse
+  // funds) has existed since v1.0 and a short call on a −3x fund was opened anyway, because
+  // the page offered the override. So universe rules are filtered out here, before tiering,
+  // and cannot reach the list in any tier (spec §2.7, registry `veto`).
+  const vetoIds = new Set(SC_RULES.filter((r) => r.veto).map((r) => r.id));
+  const eligible = candidates.filter(
+    (c) => c.proposal != null && c.profileFailed.length === 0 && !c.gates.some((g) => g.pass === false && vetoIds.has(g.id)),
+  );
   const tier1 = eligible.filter((c) => c.failed.length === 0);
   const tier2 = eligible.filter((c) => c.failed.length === 1);
   const picked = [...tier1, ...tier2].slice(0, limit);
@@ -748,9 +812,9 @@ export function buildRiskBrief(args: {
   if (book.balance == null) gaps.push("No account balance snapshot: margin and cushion are unknown, so the first section is blind to the constraint that matters most.");
   if (book.totals.marginCoverage < 1)
     gaps.push(`Only ${pc(book.totals.marginCoverage)} of legs have a synced IB what-if, so the per-leg margin attribution is a floor (the account-level figure is not).`);
-  if (args.deltaStaleLegs) gaps.push(`${plural(args.deltaStaleLegs, "leg")} is priced off a stale IB delta measurement; those Δ-derived findings inherit that staleness.`);
+  if (args.deltaStaleLegs) gaps.push(`${plural(args.deltaStaleLegs, "leg")} ${be(args.deltaStaleLegs)} priced off a stale IB delta measurement; those Δ-derived findings inherit that staleness.`);
   if (book.earnings.unknownLegs) gaps.push(`${plural(book.earnings.unknownLegs, "single-stock leg")} has no earnings date on file — absence of a flag is not absence of a print.`);
-  if (args.totals.uncertainLinks) gaps.push(`${plural(args.totals.uncertainLinks, "chain")} rests on a guessed roll link, so its story is inference.`);
+  if (args.totals.uncertainLinks) gaps.push(`${plural(args.totals.uncertainLinks, "chain")} ${args.totals.uncertainLinks === 1 ? "rests" : "rest"} on a guessed roll link, so ${args.totals.uncertainLinks === 1 ? "its" : "their"} story is inference.`);
 
   return {
     asOf: asOf.toISOString(),

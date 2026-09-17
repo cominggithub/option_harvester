@@ -18,6 +18,22 @@ assert.equal(pagePathFromMarkdownSegments(["stock", "NVDA.md"]), "/stock/NVDA");
 assert.equal(pagePathFromMarkdownSegments(["api", "orders.md"]), null);
 assert.equal(pagePathFromMarkdownSegments(["watchlists"]), null);
 
+// Recorded risk analyses are addressed by data (a sequence number or an ISO date), so the
+// mirror matches a narrow pattern instead of a list — and must still refuse anything else
+// under the same prefix.
+assert.equal(markdownPathForPage("/risk/history"), "/md/risk/history.md");
+assert.equal(markdownPathForPage("/risk/history/7"), "/md/risk/history/7.md");
+assert.equal(markdownPathForPage("/risk/history/2026-09-14"), "/md/risk/history/2026-09-14.md");
+assert.equal(markdownPathForPage("/risk/history/latest"), "/md/risk/history/latest.md");
+assert.equal(isShareablePagePath("/risk/history/7"), true);
+assert.equal(isShareablePagePath("/risk/history/2026-9-1"), false);
+assert.equal(isShareablePagePath("/risk/history/all"), false);
+assert.equal(isShareablePagePath("/risk/history/7/edit"), false);
+assert.equal(pagePathFromMarkdownSegments(["risk", "history.md"]), "/risk/history");
+assert.equal(pagePathFromMarkdownSegments(["risk", "history", "7.md"]), "/risk/history/7");
+assert.equal(pagePathFromMarkdownSegments(["risk", "history", "2026-09-14.md"]), "/risk/history/2026-09-14");
+assert.equal(pagePathFromMarkdownSegments(["risk", "history", "anything.md"]), null);
+
 const html = `<!doctype html>
 <html><head><title>Example — Option Harvester</title></head><body>
 <header>Global navigation must not appear</header>
