@@ -355,6 +355,9 @@ export function buildCandidates(
           nameVerdict: rec?.verdict ?? null,
           earningsInLife,
           inverseEtf: inverse,
+          // SC-S8's input. `klass` already distinguishes the three gap classes; inverse funds
+          // are geared by construction and are separately vetoed by SC-S7.
+          instrumentClass: klass === "single stock" ? "stock" : klass === "leveraged ETF" ? "geared" : inverse ? "geared" : "etf1x",
         }),
         ...evaluateRules("entry", {
           absDelta: proposal?.delta != null ? Math.abs(proposal.delta) : null,

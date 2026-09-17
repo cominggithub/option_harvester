@@ -76,6 +76,18 @@ export type ScRuleCtx = {
   nameVerdict?: "keep" | "size_down" | "avoid" | "watch" | null;
   earningsInLife?: boolean | null;
   inverseEtf?: boolean | null;
+  /**
+   * Which gap-risk class the underlying is in — the input `SC-S8` gates on.
+   *
+   *   `etf1x`  unleveraged, non-inverse fund — worst un-escapable up-gap 16.6% in 66,174 bars
+   *   `geared` 2x/3x long fund — worst 35.6%, and a >15% gap 12× more often per bar
+   *   `stock`  single company — worst genuine gap 81.8% (MRNA), 7× more often than `etf1x`
+   *
+   * Deliberately not a boolean: "is it an ETF" is the question that admitted geared funds,
+   * and they are the worst class on gap frequency. Measured in
+   * `docs/proposals/2026-09-17-etf-only-call-universe.md` § 2.
+   */
+  instrumentClass?: "etf1x" | "geared" | "stock" | null;
   // entry (§3)
   absDelta?: number | null;
   dte?: number | null;
@@ -120,6 +132,14 @@ export type ScRule = {
   until?: string; // last version it applied to (absent = still current)
   /** The thresholds, shown verbatim on the Strategy page. */
   params: Record<string, number | string>;
+  /**
+   * A **universe** rule, not a preference: failing it removes the trade from consideration
+   * entirely rather than making it "one gate short". The candidates list normally shows a
+   * single failure as an overridable tier-2 pick, which is right for a theme cap and wrong
+   * for an instrument ban — `SC-S7` existed from v1.0 and a short call on a −3x fund was
+   * opened anyway (TZA C55, live on 2026-09-17), because the page offered the override.
+   */
+  veto?: true;
   evaluate: (c: ScRuleCtx) => RuleEval;
 };
 
@@ -226,9 +246,40 @@ export const SC_RULES: ScRule[] = [
     spec: "§2 note",
     scope: "selection",
     since: "1.0",
-    params: { reason: "selling calls on a −3x fund is a bullish index bet" },
+    veto: true,
+    params: {
+      reason: "a market DROP sends an inverse fund up, so a short call there is the one leg that loses in a crash",
+      measured: "TZA (−3x small cap) at spot 44.90, short 3× 55C for $133: a −20% index move ≈ +60% fund → −$5,052 (38× credit); −30% ≈ −$9,093 (68× credit)",
+    },
     evaluate: (c) =>
-      c.inverseEtf == null ? unknown("instrument unknown") : { pass: !c.inverseEtf, margin: null, marginLabel: c.inverseEtf ? "inverse ETF" : "not inverse" },
+      c.inverseEtf == null ? unknown("instrument unknown") : { pass: !c.inverseEtf, margin: null, marginLabel: c.inverseEtf ? "inverse ETF — never" : "not inverse" },
+  },
+  {
+    id: "SC-S8",
+    title: "Unleveraged ETFs only",
+    spec: "§2.7",
+    scope: "selection",
+    since: "1.3",
+    veto: true,
+    params: {
+      admitted: "unleveraged, non-inverse ETF",
+      excluded: "single stocks, 2x/3x funds",
+      why: "a gap cannot be managed, only avoided — no exit rule reaches it",
+      measured: "worst un-escapable up-gap: ETF 1x 16.6% (66,174 bars) · single stock 81.8% · geared 35.6% but 12x more often",
+    },
+    evaluate: (c) => {
+      if (c.instrumentClass == null) return unknown("instrument class unknown");
+      const pass = c.instrumentClass === "etf1x";
+      return {
+        pass,
+        margin: null,
+        marginLabel: pass
+          ? "unleveraged ETF"
+          : c.instrumentClass === "geared"
+            ? "geared fund — gaps 12x more often than a 1x ETF"
+            : "single stock — un-escapable gap risk (MRNA +81.8% overnight)",
+      };
+    },
   },
 
   // ── §3 entry ───────────────────────────────────────────────────────────────
@@ -543,10 +594,46 @@ export const SC_VERSIONS: ScVersion[] = [
       },
     ],
   },
+  {
+    version: "1.3",
+    date: "2026-09-17",
+    effectiveFrom: "2026-09-17",
+    summary:
+      "Universe: short calls are written on UNLEVERAGED, NON-INVERSE ETFs only. Single stocks and geared funds are excluded, and both instrument rules become hard vetoes rather than overridable near-misses. A gap cannot be managed, only avoided: no exit rule reaches it, which the MRNA chain proved by jumping from 26% OTM to deep ITM with no tradeable price in between.",
+    source: "docs/short-call-strategy.md changelog 1.3",
+    changes: [
+      {
+        ruleId: "SC-S8",
+        change: "the call universe is unleveraged, non-inverse ETFs; single stocks and 2x/3x funds are excluded",
+        why: "Un-escapable up-gap (day low ÷ prior close) measured over 269,352 of our own bars: ETF 1x worst 16.6% and 0.0030% of bars past 15%; single stock worst genuine 81.8% (MRNA) at 0.0206%; geared worst 35.6% but 0.0368% — the geared class gaps 12x more often than a 1x fund. In 66,174 unleveraged-ETF bars no un-escapable gap ever exceeded 16.6%, so a strike ≥20% OTM has never been jumped through. Restores strategy.md §一.2, which excluded single stocks for exactly this reason before §五 re-admitted them behind an earnings gate that addresses a scheduled event and not this one.",
+        test: "un-escapable up-gap distribution by instrument class, re-run quarterly; and the ETF cohort's +11% credit kept holding out of sample",
+        minTrades: 30,
+      },
+      {
+        ruleId: "SC-S7",
+        change: "inverse / short funds become a hard veto — never sellable, not overridable",
+        why: "The rule existed from v1.0 and TZA C55 x-3 was opened anyway, because a single failed gate renders as an overridable tier-2 pick. It is also the one leg in the book that LOSES in the scenario the program most fears: TZA is -3x small caps, so a -20% index move is roughly +60% on the fund — -$5,052 against $133 of credit (38x), and -$9,093 (68x) at -30%, while every other short call gains in the same move.",
+        test: "no inverse-fund call ever appears on the candidates list, in any tier",
+        minTrades: 1,
+      },
+      {
+        change: "instrument rules are marked `veto` and removed from the candidate list entirely",
+        why: "A theme cap is a preference that can be overridden with a reason; an instrument ban is not. Rendering them identically is what let the override happen.",
+        test: "a vetoed candidate is absent, not tier 2",
+        minTrades: 1,
+      },
+      {
+        ruleId: "SC-M4",
+        change: "re-scoped: a stop cannot cap a gap, so the give-up line is not a loss cap and must not be described as one",
+        why: "A 2.5x-credit stop on the MRNA chain trips at $1,695; at the 2026-08-19 low the position was already worth $6,892 (10.2x credit) before any tick printed. The only arithmetic caps are a long wing or smaller size. Removing the exposure (SC-S8) is what this version does instead.",
+        test: "any future gap loss on an admitted underlying exceeding 2x credit",
+        minTrades: 1,
+      },
+    ],
+  },
 ];
 
 export const CURRENT_VERSION = SC_VERSIONS[SC_VERSIONS.length - 1].version;
-
 /** Compare dotted versions numerically ("1.10" > "1.9"). */
 export function cmpVersion(a: string, b: string): number {
   const pa = a.split(".").map(Number);

@@ -1,10 +1,13 @@
 # Short-call strategy (naked calls, all-cash) — formal spec
 
-**Version 1.2 · 2026-08-23 · status: active.** This is the authoritative, evolvable
+**Version 1.3 · 2026-09-17 · status: active.** This is the authoritative, evolvable
 specification of the **short-call program**: what to sell, when, how big, how to manage
 it, and how success is judged. The Chinese原文 of the wider doctrine (including the
 panic-put pivot) is **[strategy.md](strategy.md)**; § 五 there is the same rule set in
 summary form. Where the two disagree, **this file wins for short calls**.
+
+**v1.3 in one line: the call universe is unleveraged, non-inverse ETFs** (§ 2.7). A gap
+cannot be managed, only avoided.
 
 **Scope.** This file governs **short calls only**. The account runs three books and they
 do not share rules — see [acquisition-puts.md](acquisition-puts.md) §1 for the table.
@@ -75,12 +78,65 @@ A candidate must satisfy **all** of:
 | 2.4 | **Tradable price band** — roughly $20–180 so a 1-contract position is a sane size | NC screen |
 | 2.5 | **Own record is not negative** — a name the record says to avoid (§ 6.3) is out until it is re-earned | `/short-call` per-target verdict |
 | 2.6 | **No earnings inside the option's life** for single stocks, unless deliberately sized down | `/risk` earnings flag |
+| 2.7 | **Unleveraged, non-inverse ETFs only** — single stocks and 2x/3x funds are excluded from the call universe | `SC-S8` (veto), candidates gate stack |
 
 Preferred, not required: **IV that has started to deflate** (IV rank high but falling) —
-short vega then works with theta instead of against it. Leveraged long ETFs (`LEV`
-list) carry the richest premium and the fastest decay of the underlying, and are
-acceptable targets; **inverse/short ETFs are not** (selling calls on a −3x fund is a
-bullish index bet).
+short vega then works with theta instead of against it.
+
+### 2.7 The universe is unleveraged ETFs (v1.3)
+
+Rules 2.1–2.6 all assume the position can be *managed*: a trend that turns, a delta that
+drifts, a print on a known date. **A gap defeats all of them, and no exit rule reaches it.**
+
+On 2026-08-19 MRNA closed the previous session at 62.96 and the day's **low was 114.46** —
+price never existed in between. The short 80C had been sold 36% OTM, rolled on 08-14
+credit-positive, out and up, fully compliant. It cost **$10,086 on $678 of credit (14.9×)**.
+A 2.5×-credit stop trips at $1,695; the position was already worth $6,892 (10.2× credit)
+before the first tick printed. **The stop is not a cap, it is an escape, and there was no
+path to escape along.**
+
+Only three things bound the loss on a naked short call: a **long wing** above it, smaller
+**size**, or **not selling that underlying**. §2.7 is the third.
+
+Un-escapable up-gap (`day low ÷ prior close − 1`) measured over **269,352 of our own daily
+bars**:
+
+| class | bars | worst un-escapable up-gap | bars with a >15% gap |
+| --- | --- | --- | --- |
+| single stock | 184,171 | **81.8%** (MRNA; the larger raw figures are split/listing artifacts) | 0.0206% |
+| geared ETF (2x/3x) | 19,007 | **35.6%** (KOLD) | **0.0368%** |
+| **unleveraged ETF** | 66,174 | **16.6%** | **0.0030%** |
+
+**In 66,174 unleveraged-ETF bars no un-escapable gap ever exceeded 16.6%**, so a strike
+≥20% OTM has never once been jumped through. MRNA's was 26% OTM.
+
+This **restores `strategy.md` §一.2**, which excluded single stocks for exactly this reason
+before §五 re-admitted them behind an earnings gate. The gate was the wrong instrument: an
+earnings date is scheduled and avoidable; this was neither.
+
+It also **supersedes the geared-ETF permission** this section previously granted. Geared
+funds carry the richest premium and our own record's worst instrument P/L (3x: −$137 over
+15 legs, kept −3%), and on the measurement that matters they gap **12× more often than a 1x
+fund** — leverage multiplies the discontinuity, not merely the volatility. See
+`docs/proposals/2026-09-17-etf-only-call-universe.md`.
+
+**Inverse/short ETFs are never sellable (`SC-S7`, hard veto).** This is not a preference and
+not overridable. A short call on an inverse fund is the **only leg in the book that loses in
+a market crash**, which is the scenario the program most fears — every other short call
+gains. Measured on the live position that motivated the veto: TZA (−3x small caps) at spot
+44.90, short 3× 55C for $133 of credit. A −20% index move is roughly +60% on the fund →
+**−$5,052 (38× credit)**; −30% → **−$9,093 (68× credit)**. `SC-S7` existed from v1.0 and the
+position was opened anyway, because a single failed gate rendered as an overridable
+"one gate short" pick. Universe rules are now marked `veto` in the registry and are removed
+from the candidate list entirely, in every tier.
+
+**What this gives up.** Premium. ETF IV is structurally lower, and the ETF cohort earns +$20
+per closed leg against single stocks' +$47 excluding MRNA. The trade is **expectancy for
+survivability**, deliberately.
+
+**What it does not fix.** It exchanges *idiosyncratic* tail risk for *correlated* tail risk:
+a single-name gap hits one leg, an index gap hits every leg at once. `SC-B1` (theme
+concentration) and `SC-B3` (share inside 1σ) therefore become more load-bearing, not less.
 
 ## 3. Entry
 
@@ -250,3 +306,4 @@ Hence the refined entry envelope (§ 3):
 | 1.0 | 2026-08-19 | First formal spec. Codifies live practice (35–45 DTE, Δ0.15, roll-inside-1-year, harvest at 70%) and adds the cushion-in-σ rule, the per-target verdict loop, and the § 6.4 evidence that the edge lives at Δ ≤ 0.20. Supersedes the Δ0.30 + hard-stop rules in strategy.md § 二 for short calls. |
 | 1.1 | 2026-08-19 | Added the **expiry × delta zone map** (§ 6.5) and tightened § 3: Δ ≤ 0.20 may be sold 21–90 DTE, Δ0.20–0.30 only 21–34 DTE, nothing beyond 90 days. Same delta band is the best and worst cell in the grid depending on expiry. |
 | 1.2 | 2026-08-23 | **Scope and the all-cash premise.** Declares this file short-calls-only and names the three books; amends § 1, which claimed the account never holds the underlying — the new acquisition book (GDX, SOXX) intends to take delivery, so cash is no longer all free and a call on an assigned name is covered, not naked. `SC-B4`'s inversion test now counts **premium** puts only, since a declared acquisition put is meant to be long. No entry, management or success criterion for short calls changed. |
+| 1.3 | 2026-09-17 | **The universe becomes unleveraged, non-inverse ETFs** (§ 2.7, new `SC-S8`). Single stocks and 2x/3x funds are excluded; `SC-S7` (inverse funds) becomes a hard **veto** rather than an overridable near-miss, and both instrument rules are removed from the candidate list in every tier. Rationale: a gap cannot be managed, only avoided — MRNA went from 26% OTM to deep ITM with no tradeable price in between, costing 14.9× its credit, and a 2.5× stop would have filled at 10.2×. Measured over 269,352 of our own bars, the worst un-escapable up-gap is 16.6% for unleveraged ETFs against 81.8% for single stocks, while geared funds gap >15% **12× more often** than a 1x fund. Restores `strategy.md` §一.2 and supersedes §五's earnings-gate relaxation. `SC-M4` is re-scoped: the give-up line is a trigger, not a loss cap, and must not be described as one — only a long wing or smaller size caps a gap arithmetically. No entry, management or success criterion changed for admitted underlyings. |

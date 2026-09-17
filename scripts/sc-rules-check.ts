@@ -48,7 +48,15 @@ for (const scope of ["selection", "entry", "management", "book"] as const) ok(SC
 ok(cmpVersion("1.10", "1.9") > 0 && cmpVersion("1.0", "1.1") < 0 && cmpVersion("1.1", "1.1") === 0, "versions compare numerically, not as strings");
 ok(versionAt("2026-06-01") === "0.1", "a June trade is judged by the pre-spec doctrine");
 ok(versionAt("2026-08-19") === "1.1", "same-day revisions resolve to the later version");
-ok(versionAt("2026-09-01") === CURRENT_VERSION, "later dates get the current version");
+ok(versionAt("2026-09-01") === "1.2", "a trade opened before a revision keeps the doctrine it was opened under — a new version is never retroactive");
+ok(versionAt("2099-01-01") === CURRENT_VERSION, "later dates get the current version");
+// Deliberately not a fixed date: this assertion used to read `versionAt("2026-09-01")` and
+// broke the moment v1.3 landed with a later `effectiveFrom`, which is the correct behaviour
+// being asserted wrongly. The intent is "after the newest revision", so derive it.
+ok(
+  versionAt(SC_VERSIONS[SC_VERSIONS.length - 1].effectiveFrom) === CURRENT_VERSION,
+  "the newest revision is in force from its own effective date",
+);
 ok(versionAt(null) === "0.1", "no open date falls back to the earliest version");
 ok(SC_VERSIONS.every((v, i) => i === 0 || v.effectiveFrom >= SC_VERSIONS[i - 1].effectiveFrom), "versions are ordered by effectiveFrom");
 ok(SC_VERSIONS.every((v) => v.changes.length > 0 && v.changes.every((c) => c.why.length > 10)), "every revision records why it happened");
@@ -95,7 +103,32 @@ ok(breachedRules("selection", { price: 400 }).includes("SC-S4"), "a $400 name is
 ok(breachedRules("selection", { nameVerdict: "avoid" }).includes("SC-S5"), "a stop-selling name is excluded");
 ok(breachedRules("selection", { earningsInLife: true }).includes("SC-S6"), "earnings inside the life breaches");
 ok(breachedRules("selection", { inverseEtf: true }).includes("SC-S7"), "inverse ETFs are excluded");
-ok(breachedRules("selection", { trend: "flat", weeklyBuckets: 5, ivPct: 55, price: 60, nameVerdict: "keep", earningsInLife: false, inverseEtf: false }).length === 0, "a clean candidate passes every selection gate");
+
+// ── v1.3: the universe rule, and what makes it different from a preference ────
+ok(breachedRules("selection", { instrumentClass: "stock" }).includes("SC-S8"), "a single stock fails SC-S8");
+ok(breachedRules("selection", { instrumentClass: "geared" }).includes("SC-S8"), "a 2x/3x fund fails SC-S8 — 'is it an ETF' is not the question");
+ok(!breachedRules("selection", { instrumentClass: "etf1x" }).includes("SC-S8"), "an unleveraged ETF passes SC-S8");
+ok(
+  evaluateRules("selection", { instrumentClass: null }).find((r) => r.id === "SC-S8")?.pass === null,
+  "an unknown instrument class is UNKNOWN, not a pass — absence of a classification is not admission",
+);
+{
+  const vetoes = SC_RULES.filter((r) => r.veto).map((r) => r.id);
+  ok(vetoes.includes("SC-S7") && vetoes.includes("SC-S8"), "both instrument rules are vetoes, not preferences");
+  ok(
+    SC_RULES.filter((r) => r.veto).every((r) => r.scope === "selection"),
+    "only selection rules may veto — a management or book rule describes a position that already exists",
+  );
+  ok(!vetoes.includes("SC-B1"), "a theme cap is NOT a veto: it is overridable with a reason, which is the distinction v1.3 draws");
+  const s8 = SC_RULES.find((r) => r.id === "SC-S8")!;
+  ok(s8.since === "1.3" && s8.spec === "§2.7", "SC-S8 is stamped with the version and section that introduced it");
+}
+ok(
+  rulesAt("1.2", "selection").every((r) => r.id !== "SC-S8"),
+  "SC-S8 did not exist at v1.2 — the 191 closed chains are not judged by a rule written after them",
+);
+ok(rulesAt(CURRENT_VERSION, "selection").some((r) => r.id === "SC-S8"), "…and it is in force at the current version");
+ok(breachedRules("selection", { trend: "flat", weeklyBuckets: 5, ivPct: 55, price: 60, nameVerdict: "keep", earningsInLife: false, inverseEtf: false, instrumentClass: "etf1x" }).length === 0, "a clean candidate passes every selection gate");
 
 // Management
 ok(breachedRules("management", { capturedPct: 0.85, dte: 30 }).includes("SC-M1"), "85% captured means it should have been harvested");
