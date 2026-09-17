@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { parseIbPositionGreeks, type IbGreekFetch } from "@/lib/ibparse";
+import { recordSyncAttempt, sourceFromRequest } from "@/lib/datasource";
 
 // Per-position option greeks, fetched by the Chrome extension in the logged-in IB
 // page (market-data snapshot with greek fields) and stored in option_harvest_option_greeks,
@@ -32,7 +33,7 @@ export async function GET() {
 // only moves when some greek actually arrived, and `deltaAt` records when the delta
 // itself was measured. A contract that answered nothing is counted as `stale`.
 export async function POST(req: Request) {
-  let body: { fetched?: unknown };
+  let body: { fetched?: unknown; source?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -41,6 +42,10 @@ export async function POST(req: Request) {
   if (!Array.isArray(body.fetched))
     return Response.json({ error: "Expected { fetched: [...] }" }, { status: 400 });
 
+  // Which channel measured these greeks. The two do not measure the same way — the portal
+  // path polls for a field to appear, ib_agent's `modelGreeks` returns the set at once — so
+  // the delta's provenance is part of reading it (lib/greekage.ts).
+  const channel = sourceFromRequest(req, body.source, "ext");
   const now = new Date();
   let updated = 0;
   let stale = 0;
@@ -85,11 +90,24 @@ export async function POST(req: Request) {
     data.at = now; // some greek did arrive
     await prisma.optionGreek.upsert({
       where: { conid: g.conid },
-      update: data,
-      create: { conid: g.conid, ...data },
+      update: { ...data, source: channel },
+      create: { conid: g.conid, ...data, source: channel },
     });
     if (delta != null) updated += 1; // count only contracts that returned a delta
   }
+
+  // A pass that asked for contracts and got no greek back is NOT a success: it is the
+  // failure mode this route was already careful not to disguise in the data (`at` stays
+  // put), and /sync needs it as a channel state too — otherwise "greeks last updated 3h
+  // ago" is indistinguishable from "the last three passes measured nothing".
+  await recordSyncAttempt({
+    dataset: "greeks",
+    source: channel,
+    ok: updated > 0 || body.fetched.length === 0,
+    rows: updated,
+    error: updated === 0 && body.fetched.length > 0 ? `no delta arrived for any of ${body.fetched.length} contracts` : null,
+    detail: { received: body.fetched.length, updated, stale, rejected },
+  });
 
   return Response.json({ received: body.fetched.length, updated, stale, rejected, errors });
 }

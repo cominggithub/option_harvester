@@ -224,7 +224,7 @@ premium comes from `/risk` or `/positions`.
 
 | Book | Assignment is | Judged by | Spec |
 | --- | --- | --- | --- |
-| Naked calls | the failure state | credit kept (§6) | `docs/short-call-strategy.md` **v1.2** |
+| Naked calls | the failure state | credit kept (§6) | `docs/short-call-strategy.md` **v1.3** — universe is **unleveraged, non-inverse ETFs only** (§2.7, `SC-S8`) since 2026-09-17 |
 | Panic puts (income) | the failure state | credit kept | `docs/strategy.md` § 三 |
 | **Acquisition puts** — GDX, SOXX | **the goal** | effective basis, and whether cash funds delivery | `docs/acquisition-puts.md` **v1.1** |
 

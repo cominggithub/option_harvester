@@ -1,6 +1,15 @@
 import Link from "next/link";
 import { getExtCondition, getSyncSummary, type ExtCondition, type SyncDataset, type SyncRunRow, type OhVerifyResult } from "@/lib/synclog";
 import { MIN_EXT_VERSION } from "@/lib/extversion";
+import {
+  getDatasetOwners,
+  getSourceHealth,
+  SOURCE_DESC,
+  SOURCE_LABEL,
+  type DataSource,
+  type DatasetOwner,
+  type SourceHealthRow,
+} from "@/lib/datasource";
 import { getBookFreshness, type BookFreshness } from "@/lib/positions";
 import { getBalanceSeries, type BalancePoint } from "@/lib/balances";
 import { BalanceLines } from "@/components/charts";
@@ -234,6 +243,7 @@ function RunsTable({ runs }: { runs: SyncRunRow[] }) {
         <thead className="text-left text-[9.5px] uppercase tracking-wider text-ink-faint">
           <tr className="border-b border-line">
             <th className="py-1.5 pr-3 font-medium">When</th>
+            <th className="py-1.5 pr-2 font-medium">Channel</th>
             <th className="py-1.5 pr-2 font-medium">Source</th>
             <th className="py-1.5 pr-2 font-medium">Acct</th>
             <th className="py-1.5 pr-2 text-right font-medium">Pos</th>
@@ -250,6 +260,18 @@ function RunsTable({ runs }: { runs: SyncRunRow[] }) {
           {runs.map((r) => (
             <tr key={r.id} className="border-b border-line/50 last:border-0 hover:bg-canvas">
               <td className="py-1.5 pr-3 text-ink" title={formatTimestamp(new Date(r.at))}>{ago(r.at)}</td>
+              <td className="py-1.5 pr-2">
+                {/* Which channel ran, kept separate from the tier below: once two channels
+                    post into one history, "when did the extension last run?" is otherwise
+                    unanswerable. */}
+                <span
+                  className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                    r.channel === "ib-agent" ? "bg-violet-50 text-violet-700" : "bg-sky-50 text-sky-700"
+                  }`}
+                >
+                  {r.channel === "ib-agent" ? "ib_agent" : "extension"}
+                </span>
+              </td>
               <td className="py-1.5 pr-2">
                 {/* `full` is the run that refreshed everything, so it reads as ink rather
                     than as one more grey tag — on a page about staleness, which rows are
@@ -380,12 +402,181 @@ function ExtConditionPanel({ ext, f }: { ext: ExtCondition | null; f: BookFreshn
   );
 }
 
+/**
+ * Which channel gave us what — and is each one still alive?
+ *
+ * Two channels can write the same datasets (the Chrome extension via the Client Portal, and
+ * the read-only `ib-agent` CLI), and they fail independently: the extension needs a
+ * logged-in foreground tab, ib_agent needs a Gateway session IBKR can revoke or hang. Every
+ * card above answers "how fresh is this data"; none of them answered "whose data is it, and
+ * has the other channel been failing since Tuesday?" — which is the question that decides
+ * whether a stale delta is a nuisance or the reason a roll was missed.
+ *
+ * Three columns, deliberately: what we HOLD (row-level `source`, so it survives the
+ * channel's own claims), what each channel last managed, and the refusals — a write the
+ * guard turned away because it was empty, truncated, or older than what the other channel
+ * already had. A refusal is the system working, and the only place the user can see that
+ * their book was NOT overwritten.
+ */
+function DataSourcePanel({ owners, health }: { owners: DatasetOwner[]; health: SourceHealthRow[] }) {
+  const byDataset = new Map<string, SourceHealthRow[]>();
+  for (const h of health) {
+    const list = byDataset.get(h.dataset) ?? [];
+    list.push(h);
+    byDataset.set(h.dataset, list);
+  }
+  // Every dataset either channel has touched, plus every dataset we hold rows for. The
+  // `channel` probe row is not a dataset and is summarised in the header instead.
+  const keys = [...new Set([...owners.filter((o) => o.total > 0).map((o) => o.dataset), ...byDataset.keys()])]
+    .filter((k) => k !== "channel")
+    .sort();
+  const channelState = (source: string) => {
+    // `channel` is not a dataset — it is the reachability probe (`ib-agent status`). Counting
+    // it as a write would let "the Gateway answered" masquerade as "the book was refreshed",
+    // which is the exact conflation this page exists to prevent.
+    const rows = health.filter((h) => h.source === source && h.dataset !== "channel");
+    const probe = health.find((h) => h.source === source && h.dataset === "channel") ?? null;
+    if (!rows.length && !probe) return null;
+    const okAt = rows.map((r) => r.lastOkAt).filter(Boolean).sort() as string[];
+    const failing = rows.filter((r) => !r.ok);
+    return { lastOkAt: okAt.length ? okAt[okAt.length - 1] : null, failing, datasets: rows.length, probe };
+  };
+  const ext = channelState("ext");
+  const agent = channelState("ib-agent");
+  const sourceTag = (s: string) => {
+    const cls =
+      s === "ext"
+        ? "bg-sky-50 text-sky-700"
+        : s === "ib-agent"
+          ? "bg-violet-50 text-violet-700"
+          : s === "csv"
+            ? "bg-line text-ink-muted"
+            : "bg-amber-50 text-amber-700";
+    return (
+      <span key={s} className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${cls}`} title={SOURCE_DESC[s as DataSource] ?? "written before provenance was recorded"}>
+        {SOURCE_LABEL[s as DataSource] ?? s}
+      </span>
+    );
+  };
+  const cell = (h: SourceHealthRow | undefined) => {
+    if (!h) return <span className="text-ink-faint">—</span>;
+    if (h.ok)
+      return (
+        <span className={freshCls(h.lastOkAt)} title={h.lastOkAt ? formatTimestamp(new Date(h.lastOkAt)) : undefined}>
+          ✓ {ago(h.lastOkAt)}
+          {h.lastRows != null ? <span className="text-ink-faint"> · {h.lastRows.toLocaleString("en-US")}</span> : null}
+        </span>
+      );
+    return (
+      <span className="text-rose-700" title={h.lastError ?? undefined}>
+        ✕ {h.failures > 1 ? `${h.failures}× ` : ""}
+        {ago(h.lastAttemptAt)}
+        {h.lastOkAt ? <span className="text-ink-faint"> · last ok {ago(h.lastOkAt)}</span> : <span className="text-ink-faint"> · never ok</span>}
+      </span>
+    );
+  };
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-line bg-surface px-4 py-3">
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[11px]">
+        <span className="text-ink-muted">
+          <strong className="text-ink">Extension</strong> ·{" "}
+          {ext
+            ? `${ext.datasets} dataset${ext.datasets === 1 ? "" : "s"} · last write ${ago(ext.lastOkAt)}${ext.failing.length ? ` · ${ext.failing.length} failing` : ""}`
+            : "no attempts recorded"}
+        </span>
+        <span className="text-ink-muted">
+          <strong className="text-ink">ib_agent</strong> ·{" "}
+          {agent ? (
+            <>
+              {agent.probe ? (
+                agent.probe.ok ? (
+                  <span className="text-emerald-700">gateway reachable {ago(agent.probe.lastOkAt)}</span>
+                ) : (
+                  <span className="text-rose-700" title={agent.probe.lastError ?? undefined}>
+                    gateway unusable ({(agent.probe.lastError ?? "").slice(0, 60)})
+                  </span>
+                )
+              ) : null}
+              {` · ${agent.datasets} dataset${agent.datasets === 1 ? "" : "s"} · last write ${ago(agent.lastOkAt)}`}
+              {agent.failing.length ? ` · ${agent.failing.length} failing` : ""}
+            </>
+          ) : (
+            "never run (npm run sync:ib)"
+          )}
+        </span>
+      </div>
+      <table className="mt-2 w-full text-[12.5px]">
+        <thead className="text-left text-[9.5px] uppercase tracking-wider text-ink-faint">
+          <tr className="border-b border-line">
+            <th className="py-1.5 pr-3 font-medium">Dataset</th>
+            <th className="py-1.5 pr-3 font-medium">Rows held · whose</th>
+            <th className="py-1.5 pr-3 font-medium">Extension</th>
+            <th className="py-1.5 pr-3 font-medium">ib_agent</th>
+            <th className="py-1.5 font-medium">Last refusal</th>
+          </tr>
+        </thead>
+        <tbody className="text-ink-muted">
+          {keys.map((k) => {
+            const own = owners.find((o) => o.dataset === k);
+            const rows = byDataset.get(k) ?? [];
+            const refused = rows
+              .filter((r) => r.refusedAt)
+              .sort((a, b) => (b.refusedAt ?? "").localeCompare(a.refusedAt ?? ""))[0];
+            return (
+              <tr key={k} className="border-b border-line/50 last:border-0 align-top hover:bg-canvas">
+                <td className="py-1.5 pr-3 font-medium text-ink">{k}</td>
+                <td className="py-1.5 pr-3">
+                  {own && own.total > 0 ? (
+                    <span className="flex flex-wrap items-center gap-1">
+                      <span className="tnum text-ink">{own.total.toLocaleString("en-US")}</span>
+                      {own.bySource.map((s) => (
+                        <span key={s.source} className="flex items-center gap-1">
+                          {sourceTag(s.source)}
+                          {own.bySource.length > 1 ? <span className="tnum text-[10px] text-ink-faint">{s.count}</span> : null}
+                        </span>
+                      ))}
+                    </span>
+                  ) : (
+                    <span className="text-ink-faint">—</span>
+                  )}
+                </td>
+                <td className="py-1.5 pr-3">{cell(rows.find((r) => r.source === "ext"))}</td>
+                <td className="py-1.5 pr-3">{cell(rows.find((r) => r.source === "ib-agent"))}</td>
+                <td className="py-1.5 text-[11px]">
+                  {refused ? (
+                    <span className="text-amber-700" title={refused.refusedReason ?? undefined}>
+                      ⛔ {ago(refused.refusedAt)} — {(refused.refusedReason ?? "").slice(0, 90)}
+                    </span>
+                  ) : (
+                    <span className="text-ink-faint">none</span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="mt-2 text-[10.5px] leading-relaxed text-ink-faint">
+        <strong>Whose</strong> is read off each row&rsquo;s own <code>source</code> column, not from a channel&rsquo;s claim —{" "}
+        <span className="text-amber-700">Manual/unknown</span> means the row predates provenance. A{" "}
+        <span className="text-amber-700">refusal</span> is the guard doing its job: an empty, truncated, or
+        out-of-order payload was rejected and the previous data kept (<code>src/lib/datasource.ts</code>). ib_agent
+        runs from <code>npm run sync:ib</code> (shadow) / <code>--write</code>; it can fail at any moment without
+        touching what the extension already wrote.
+      </p>
+    </div>
+  );
+}
+
 export default async function SyncPage() {
-  const [{ datasets, runs, ohVerify }, series, ext, freshness] = await Promise.all([
+  const [{ datasets, runs, ohVerify }, series, ext, freshness, owners, health] = await Promise.all([
     getSyncSummary(),
     getBalanceSeries(),
     getExtCondition(),
     getBookFreshness(),
+    getDatasetOwners(),
+    getSourceHealth(),
   ]);
   const balance = series.latest;
   const lastRun = runs[0] ?? null;
@@ -404,9 +595,11 @@ export default async function SyncPage() {
       </div>
 
       <p className="mt-2 max-w-3xl text-[13.5px] leading-relaxed text-ink-muted">
-        What the Chrome extension has pulled from your logged-in IB portal. The cards show each dataset&rsquo;s
-        current row count and freshness; the log below is the per-run history (reported by the extension on every{" "}
-        <strong className="text-ink">Sync now</strong> / auto-sync). Green = refreshed within 24h, amber = older.
+        What has been pulled out of Interactive Brokers, and by <strong className="text-ink">which channel</strong> —
+        the Chrome extension (your logged-in portal session) or the read-only <code>ib-agent</code> CLI. The cards show
+        each dataset&rsquo;s row count and freshness, <strong className="text-ink">Data sources</strong> shows whose rows
+        they are and whether either channel is failing, and the log below is the per-run history. Green = refreshed
+        within 24h, amber = older.
       </p>
 
       <StaleInstallsPanel ext={ext} />
@@ -467,8 +660,7 @@ export default async function SyncPage() {
       )}
 
       {/* Current synced-data summary */}
-      <h2 className="mt-8 mb-3 text-[13px] font-semibold uppercase tracking-wider text-ink-faint">Synced data · now</h2>
-      {anySynced ? (
+      <h2 className="mt-8 mb-3 text-[13px] font-semibold uppercase tracking-wider text-ink-faint">Synced data · now</h2>      {anySynced ? (
         <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
           {datasets.map((d) => (
             <DatasetCard key={d.key} d={d} />
@@ -480,6 +672,10 @@ export default async function SyncPage() {
           <Link href="/upload" className="text-accent hover:underline">upload an IB CSV</Link>.
         </p>
       )}
+
+      {/* Where the data came from (both channels, per dataset) */}
+      <h2 className="mt-8 mb-3 text-[13px] font-semibold uppercase tracking-wider text-ink-faint">Data sources · channels</h2>
+      <DataSourcePanel owners={owners} health={health} />
 
       {/* OH→IB push verification (read-back) */}
       {ohVerify && (

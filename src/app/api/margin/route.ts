@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { parseIbPositionMargin, type IbMarginFetch } from "@/lib/ibparse";
+import { recordSyncAttempt, sourceFromRequest } from "@/lib/datasource";
 
 // Exact per-position margin, computed by the Chrome extension in the logged-in IB
 // page via the Client-Portal what-if order endpoint, and stored in
@@ -39,8 +40,13 @@ export async function GET() {
 }
 
 // POST { fetched: IbMarginFetch[] } — one what-if per held conid. Upserts margin.
+//
+// This dataset stays on the extension by design: a what-if travels as an order message, and
+// ib_agent's Gateway runs ReadOnlyApi=yes, which rejects it (docs/ib-agent-integration.md
+// § 5). The `source` stamp records that rather than leaving it as folklore — if a row here
+// ever says "ib-agent", something opened a gate that was deliberately shut.
 export async function POST(req: Request) {
-  let body: { fetched?: unknown };
+  let body: { fetched?: unknown; source?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -49,6 +55,7 @@ export async function POST(req: Request) {
   if (!Array.isArray(body.fetched))
     return Response.json({ error: "Expected { fetched: [...] }" }, { status: 400 });
 
+  const channel = sourceFromRequest(req, body.source, "ext");
   const now = new Date();
   let updated = 0;
   const errors: { conid?: string; error: string }[] = [];
@@ -71,11 +78,20 @@ export async function POST(req: Request) {
     if (m.currency != null) data.currency = m.currency;
     await prisma.positionMargin.upsert({
       where: { conid: m.conid },
-      update: data,
-      create: { conid: m.conid, ...data },
+      update: { ...data, source: channel },
+      create: { conid: m.conid, ...data, source: channel },
     });
     if (m.maintMargin != null) updated += 1; // count only contracts that returned margin
   }
+
+  await recordSyncAttempt({
+    dataset: "margin",
+    source: channel,
+    ok: updated > 0 || body.fetched.length === 0,
+    rows: updated,
+    error: updated === 0 && body.fetched.length > 0 ? `no margin returned for any of ${body.fetched.length} what-ifs` : null,
+    detail: { received: body.fetched.length, updated },
+  });
 
   return Response.json({ received: body.fetched.length, updated, errors });
 }

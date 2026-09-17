@@ -50,7 +50,9 @@ What the agent owes in return, since nobody is checking the steps:
 | Know what the instrument cannot yet tell you (and why a number may be wrong) | **`docs/system-gaps.md`** — the standing list of system insufficiencies, decision-impact ordered |
 | Resume or save the adviser's working memory | **`docs/sessions/`** — `latest.md` is always in that agent's context; `README.md` is the save/resume protocol |
 | Audit the strategy against its own record / propose a revision | **`docs/adviser-playbook.md`** + the `option-adviser` role (`.kiro/agents/option-adviser.json`) — evidence rules, `n` thresholds, proposals go to `docs/` only |
+| Know **what data** the IB Gateway channel must deliver to stand in for the extension (fields, freshness, what stays extension-only) | **`docs/ib-gateway-requirements.md`** — the requirement statement for the second source; both channels stay supported |
 | Need IBKR data (positions, expiries, quotes) from code or by hand | **`docs/ib-agent-integration.md`** — route everything through the read-only `ib-agent` CLI; **never** call the IB Client Portal / TWS API from this repo |
+| Wonder which channel a number came from, or why a sync wrote nothing | **`docs/data-sources.md`** — the two sync channels (extension vs `ib-agent`), per-row provenance, the full-replace guard (empty / shrink / backwards) and per-(dataset, source) health on `/sync`; audit it with `npm run check:sources` |
 | Work on the Δ0.30 naked-call model / `ccscore` / predictions | **`docs/cc-target-strategy.md`** — model, backtest, predict→validate loop |
 | Work on watchlists (OH + IB), conid backfill, IB option fetch, plugin sync | **`docs/watchlists.md`** — sources, `/watchlists` page, IB↔web sync flows |
 | Wonder whether a Δ on screen is real, or touch anything that reads greeks | **`src/lib/greekage.ts`** (the decision + why) + `docs/spec.md § 4.9`; audit it with `npm run audit:greeks` |
@@ -114,7 +116,9 @@ Windows reboot → "WSL Autostart" task → systemd (PID 1) → this unit runs
   gate a deploy. Advisory classes print without failing.
 - **Daily refresh** — `option_harvester-ingest.timer` runs `scripts/daily.sh` at
   **06:00 local** (`Persistent=true`): `npm run ingest` → `ingest:history` →
-  `predict` → `snapshot:oh` (OH-watchlist screen snapshot for the /wl-log change log).
+  `predict` → `snapshot:oh` (OH-watchlist screen snapshot for the /wl-log change log) →
+  `snapshot:risk` (one recorded `/risk` analysis for the page's own history; idempotent, so it
+  writes nothing on a day the book did not move).
   Logs → `log/daily.log`.
 - **Intraday spreads** — `option_harvester-spreads.timer` runs `scripts/spreads.sh`
   (`npm run ingest:spreads`) at **23:30 / 01:00 / 02:30 GMT+8** (US market hours, when
@@ -165,7 +169,8 @@ Behavior/why is in **docs/spec.md**; this is where code lives.
 
 Pages (all `force-dynamic`):
 - `src/app/md/[[...path]]/route.ts` — read-only Markdown mirrors for every UI page:
-  `/md/index.md`, `/md/watchlists.md`, `/md/stock/NVDA.md`, etc. The global TopNav
+  `/md/index.md`, `/md/watchlists.md`, `/md/stock/NVDA.md`, `/md/risk/history/7.md`, etc. The
+  global TopNav
   **MD / Copy** control builds the corresponding public URL and preserves query params.
   Conversion is restricted to approved UI paths, extracts only `#page-content`, emits
   `text/markdown` with `no-store` + `noindex`, and never proxies arbitrary hosts/APIs.
@@ -226,6 +231,33 @@ Pages (all `force-dynamic`):
   separate from a missing-date data gap), a ±20% parallel shock table,
   distributions by theme/sector/DTE/Δ/trend/side/name, and a per-leg
   close/roll/defend/let-expire/hold action board. Built by `getBookRisk` (`lib/bookrisk.ts`).
+  It also keeps a **numbered, dated history of its own analyses** (§ *Analysis history*), split
+  in two because the page mixes two clocks: the **position** record (findings, KPIs,
+  conformance, flags, earnings, shock, cushion, distributions, verdicts, acquisition, §6.2
+  gates) is recorded **once per analysis**, while the **strategy** record (why it fails, chain
+  totals, terminal split, version cohorts, roll quality, loss attribution, exit audit) is
+  recorded **once per change** and referenced by every analysis taken against it. The candidate
+  list and the vol regime are deliberately not recorded (universe screens, not measurements of
+  this book). An analysis is identified by its *inputs*, so re-running records nothing — engine
+  `lib/risksnap.ts` (pure) + `lib/riskhistory.ts` (the only write path), taken by
+  `npm run snapshot:risk` (last step of `daily.sh`), documented in docs/spec.md § 6.
+- `src/app/risk/history/page.tsx` — **Analysis history**: every recorded analysis grouped by the
+  day it belongs to, with day-over-day Δ on maintenance and cushion, plus the strategy-record
+  timeline showing how many analyses ran against each. The index; the series lives here rather
+  than on `/risk`, which shows only the current reading and the newest movement.
+- `src/app/risk/history/[ref]/page.tsx` — **one recorded analysis**, rendered entirely from its
+  stored payload (no engine runs, so the numbers are the ones the decision was made on,
+  including any since superseded). `ref` is a **sequence number** (`/risk/history/7` — what a
+  note cites), an **ISO date** (`/risk/history/2026-09-14` → that day's newest, with the day's
+  others listed) or `latest`; `?vs=N` re-points the diff at any other analysis. Shapes outside
+  those three are refused, since the segment becomes a DB filter (`parseRiskRef` in
+  `lib/risksnap.ts`, pinned by `risksnap-check`). Shared rendering:
+  `components/RiskSnapView.tsx`. **Navigation:** one "Risk" entry in TopNav plus a sub-nav
+  inside the section (`components/SectionNav.tsx`, map in `lib/risk-nav.ts`) — *Live reading* /
+  *Analysis history*, the latter carrying the recorded count and staying highlighted on a
+  child analysis (`match: "prefix"`). It shipped without that and was reachable only from a
+  link inside the last section of a fourteen-section page: a stored history nobody can find is
+  worse than none, because it invites the assumption the page has no memory.
 - `src/app/short-call/page.tsx` — **Short call analyzer**: the closed-trade record of the
   naked-call program. Each trade is reconstructed from the IB fills — sold-at price, and
   the **IV/Δ implied by that fill** (Black-Scholes inverted against the underlying's bar,
@@ -258,10 +290,14 @@ Pages (all `force-dynamic`):
   Plan and rationale: **docs/short-call-analyzer-plan.md**. Checks: `npm run check`.
 - `src/app/sync/page.tsx` — **Sync** status: latest IB account balances (cash / NLV /
   RegT / init+maint margin / stock+option value), per-dataset synced-row counts + freshness
-  (positions/orders/transactions/watchlists/greeks/margin/IB-options) and the extension's
-  per-run history (`option_harvest_sync_runs`), plus an **OH → IB push verification**
+  (positions/orders/transactions/watchlists/greeks/margin/IB-options), a **Data sources ·
+  channels** panel (per dataset: rows held and *whose* from the row-level `source`, each
+  channel's last success/failure out of `option_harvest_sync_state`, and the last guard
+  refusal — the only place "your book was NOT overwritten" is visible), the per-run history
+  (`option_harvest_sync_runs`, now tagged with its `channel`),
+  plus an **OH → IB push verification**
   panel (`option_harvest_oh_verify`) diffing IB's read-back against the intended push. Built by `getSyncSummary` (`lib/synclog.ts`)
-  + `getLatestBalance` (`lib/balances.ts`).
+  + `getLatestBalance` (`lib/balances.ts`) + `getDatasetOwners`/`getSourceHealth` (`lib/datasource.ts`).
 
 API (`src/app/api/…`, mutations + on-demand data):
 - `marks`, `upload`, `history/[ticker]`.
@@ -397,7 +433,33 @@ push route + the `oh-verify` read-back diff),
 `securities.conid`; used by `security-conids` + `underlying-conids`),
 `ohhistory.ts` (`snapshotOhScreen` — daily per-ticker screen snapshot; `getOhChangeLog`
 — per-OH-list day-over-day add/remove diff with reasons, for /wl-log),
+**`risksnap.ts`** (the `/risk` analysis history, pure half: the **split** — a POSITION record
+per analysis (live book) vs a STRATEGY record per change (closed record + rule version) — the
+metric registry that drives every diff (`POSITION_METRICS`/`STRATEGY_METRICS`, each with a
+declared *direction* so better/worse is a judgement the registry makes, not the sign of a
+delta), `buildPositionSnapshot`/`buildStrategySnapshot`, `strategyCohorts`, the FNV
+fingerprints that make an analysis identified by its **inputs** rather than by the clock, and
+`diffMetrics`/`diffFindings`/`diffLegs`/`diffSnapshots`. Exists because a force-dynamic page
+has no memory: `/risk` could report 12 legs inside 1σ without being able to say whether that
+was five last week),
+**`riskhistory.ts`** (the DB half and the ONLY write path — `takeRiskSnapshot` (idempotent by
+fingerprint), `snapshotInputs`, `getRiskHistory`, `getRiskSnapshot`. Pages never write: a GET
+must not mutate, and a page that recorded on every load would make the sequence numbers
+meaningless),
 `synclog.ts` (`getSyncSummary` — /sync dataset freshness + run history; `getExtCondition` — the extension's own last word out of `option_harvest_ext_logs` (auto/login toggles, IB session, tabs seen, armed alarms, the watcher's reason) so "why hasn't it synced?" is answered on the page, not by hand),
+**`datasource.ts`** (the two-channel model: the `DataSource` vocabulary (`ext`|`ib-agent`|`csv`|`manual`),
+`sourceFromRequest` (the extension is identified by the version header it already sends),
+`checkReplace` — the full-replace guard that refuses an **empty**, **truncated** (>50% shrink)
+or **backwards** (older than the other channel's data) payload, `recordSyncAttempt`/
+`getSourceHealth` → `option_harvest_sync_state` per (dataset, source), and `getDatasetOwners`
+— who wrote the rows we actually hold. Exists because a channel that answers with nothing is
+indistinguishable from a flat book: see docs/data-sources.md),
+**`syncwrite.ts`** (the ONLY place a synced dataset is replaced — `writePositions`/
+`writeOrders`/`writeWatchlists`/`writeBalance`: guard, atomic delete+insert in one
+transaction, per-row `source` stamp, health record. Both channels write through it),
+**`ibagent.ts`** (the read-only `ib-agent` CLI client: argv only — never a shell — `--json`,
+`schema` refusal, kill timeouts, an exit-code taxonomy (`retryable`/`needsHuman`/`kind`) and
+`payloadAsOf`. **Never called from the request path**: a hung Gateway must not hang a render),
 `balances.ts` (`getLatestBalance`/`getBalanceHistory` — daily IB account balances),
 `enrich.ts` (shared ingest pipeline), `ibparse.ts`/`txparse.ts` (IB CSV +
 Client-Portal JSON parsers: `parseIbPortal{Positions,Orders,Watchlists}`,
@@ -409,15 +471,26 @@ Scripts (`scripts/`):
 - Ingest: `ingest-sp500.ts` (`ingest`), `ingest-history.ts` (`ingest:history`),
   `ingest-spreads.ts` (`ingest:spreads`), `iv.ts` (`getAtmIv`), `backfill-iv-history.ts`
   (`ingest:iv-backfill`), `backfill-earnings.ts`, `snapshot-oh.ts` (`snapshot:oh` —
-  daily OH-watchlist screen snapshot for the /wl-log change log; last step of daily.sh).
+  daily OH-watchlist screen snapshot for the /wl-log change log; last step of daily.sh),
+  `snapshot-risk.ts` (`snapshot:risk` — records one `/risk` analysis: the position half every
+  run, the strategy half only when the closed record or the rule version moved. Idempotent by
+  fingerprint, so the daily run and a manual run after a Sync both do the right thing;
+  `--dry-run` prints without writing).
 - CC model (Python): `predict-cc.py` (`predict`, daily), `cc_model.py` (shared model),
   `backtest-cc.py`, `calibrate-cc.py`, `validate-cc.py`, `iv-rv-screen.py` — see
   `docs/cc-target-strategy.md`. Predictions written to `predictions/cc-*.jsonl`.
 - Entrypoints: `daily.sh`, `spreads.sh`, `server.sh`.
+- **ib_agent channel**: `sync-ibagent.ts` (`npm run sync:ib`, `sync:ib:test`) — the CLI
+  counterpart to the extension, a separate program on purpose so neither channel can take the
+  other down. **Shadow by default** (fetch → parse → diff → write nothing); `--write`
+  persists, `--live` asks the Gateway instead of the stored snapshot, `--only positions`
+  migrates one flow at a time, `--strict` exits non-zero when a channel is unusable. A dead
+  Gateway records the failure and changes nothing. See docs/data-sources.md.
 - Self-checks: `*-check.ts` (`pnl`, `posanalysis`, `positions`, `trades`, `news`, `roic`,
-  `leveraged`, `bookrisk`, `riskbrief`, `shortcall`, `sc-rules`, `sc-lifecycle`, `sc-analyzer`, `greeks`, `riskbrief`, `acqputs`) —
-  see test plan. **`npm run check`** runs the short-call suite + the delta-freshness and
-  risk-brief checks (629 assertions over nine scripts) and is the gate for any change under `/short-call`,
+  `leveraged`, `bookrisk`, `riskbrief`, `risksnap`, `shortcall`, `sc-rules`, `sc-lifecycle`, `sc-analyzer`, `greeks`, `acqputs`, `datasource`) —
+  see test plan. **`npm run check`** runs the short-call suite + the delta-freshness, risk-brief
+  and risk-snapshot checks (**2078 assertions over twenty scripts**, measured 2026-09-14) and is
+  the gate for any change under `/short-call`,
   `/risk` or anything that renders a Δ; `npm run check:sc`
   is the analyzer-only subset. **`npm run reconcile:sc`** (`sc-reconcile.ts`) is the one
   that touches the DB — read-only — and fails if leg totals and chain totals disagree.

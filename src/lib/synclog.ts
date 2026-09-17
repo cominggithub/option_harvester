@@ -17,6 +17,8 @@ export type SyncDataset = {
 export type SyncRunRow = {
   id: number;
   at: string;
+  /** Which channel ran: "ext" (Chrome extension) or "ib-agent" (the CLI). */
+  channel: string;
   source: string;
   acct: string | null;
   positions: number | null;
@@ -256,6 +258,7 @@ export async function getSyncSummary(): Promise<{ datasets: SyncDataset[]; runs:
   const runs: SyncRunRow[] = runsRaw.map((r) => ({
     id: r.id,
     at: r.at.toISOString(),
+    channel: r.channel ?? "ext",
     source: r.source,
     acct: r.acct,
     positions: r.positions,

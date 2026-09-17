@@ -29,6 +29,68 @@ model SecurityConid {
   @@map("option_harvest_security_conids")
 }
 
+/// One recorded `/risk` analysis of the LIVE BOOK — the position half of the split
+/// (src/lib/risksnap.ts § THE SPLIT). Written by scripts/snapshot-risk.ts, which is
+/// idempotent by `fingerprint`: an analysis is identified by its INPUTS (the freshness
+/// stamps of positions/balances/margin/greeks/ingest, the structural legs, the findings
+/// and the headline metrics at coarse precision), so re-running against unchanged data
+/// writes nothing and the history cannot be padded by a page reload.
+///
+/// `seq` is the analysis number the operator cites. The columns below `payload` are
+/// promoted copies of metrics inside it — enough to render the history list and chart it
+/// without deserialising every payload; `payload` remains the source of truth.
+///
+/// `strategySeq` points at the RiskStrategySnapshot in force when this ran. The closed
+/// record is deliberately NOT copied in here: it moves on a different clock (a chain
+/// closing, a rule revision), so it is stored once per change and referenced by the many
+/// analyses that ran against it.
+model RiskSnapshot {
+  seq         Int      @id @default(autoincrement())
+  at          DateTime @default(now())
+  date        DateTime @db.Date
+  /// "position" — reserved so a future kind cannot collide on the sequence.
+  kind        String   @default("position")
+  fingerprint String   @unique
+  strategySeq Int?     @map("strategy_seq")
+  /// Promoted for the list view (see above).
+  level       String
+  legs        Int
+  credit      Decimal?
+  nlv         Decimal?
+  marginPct   Decimal? @map("margin_pct")
+  cushionPct  Decimal? @map("cushion_pct")
+  findings    Int      @default(0)
+  critical    Int      @default(0)
+  /// Why this analysis was taken: "daily" | "manual".
+  trigger     String   @default("daily")
+  note        String?
+  payload     Json
+
+  @@index([date])
+  @@map("option_harvest_risk_snapshots")
+}
+
+/// The STRATEGY half of the split — the closed record and the rule registry version, as
+/// they stood. One row per CHANGE, not per analysis: the fingerprint covers the chain
+/// count, realized, roll quality, the failure findings and `ruleVersion`, so a day with
+/// four analyses and no closes adds one strategy row (or none). Consumed by /risk's
+/// history section, which reports which analyses ran against each record.
+model RiskStrategySnapshot {
+  seq         Int      @id @default(autoincrement())
+  at          DateTime @default(now())
+  date        DateTime @db.Date
+  fingerprint String   @unique
+  ruleVersion String   @map("rule_version")
+  chains      Int
+  realized    Decimal?
+  badRolls    Int      @default(0) @map("bad_rolls")
+  failures    Int      @default(0)
+  payload     Json
+
+  @@index([date])
+  @@map("option_harvest_risk_strategy_snapshots")
+}
+
 /// Daily snapshot of the OH-watchlist screen drivers, one row per (date, ticker),
 /// written by the daily ingest (scripts/snapshot-oh.ts). It records the exact inputs
 /// each OH list's membership rule depends on, so the change log (src/lib/ohhistory.ts)
@@ -237,6 +299,13 @@ model Position {
   expiry      String? // option expiry, YYYY-MM-DD
   raw         Json? // the original parsed CSV row, by header name
   uploadId    Int?     @map("upload_id") // which PositionUpload produced this row
+  /// WHICH CHANNEL produced this row — see src/lib/datasource.ts (`DataSource`):
+  /// "ext" (Chrome extension / Client Portal), "ib-agent" (read-only CLI over the TWS
+  /// socket or Flex), "csv" (manual upload), "manual". Null on rows written before
+  /// 2026-09-14. The book is full-replace, so this is the answer to "who wrote what I am
+  /// looking at" — a question that had no answer once two channels could write it, and
+  /// the reason a silent ib_agent failure was indistinguishable from a quiet market.
+  source      String?
   uploadedAt  DateTime @default(now()) @map("uploaded_at")
 
   @@index([symbol])
@@ -264,6 +333,7 @@ model Order {
   expiry      String? // YYYY-MM-DD
   currency    String?
   raw         Json? // the original portal record
+  source      String? // channel that wrote this row — see src/lib/datasource.ts
   uploadedAt  DateTime @default(now()) @map("uploaded_at")
 
   @@index([symbol])
@@ -303,6 +373,7 @@ model Transaction {
   currency    String?
   raw         Json?
   uploadId    Int?     @map("upload_id")
+  source      String? // channel that wrote this row — see src/lib/datasource.ts
   uploadedAt  DateTime @default(now()) @map("uploaded_at")
 
   @@index([symbol])
@@ -385,6 +456,7 @@ model WatchlistItem {
   secType       String?  @map("sec_type") // "STK" | "ETF" | …
   assetClass    String?  @map("asset_class")
   raw           Json?
+  source        String? // channel that wrote this row — see src/lib/datasource.ts
   syncedAt      DateTime @default(now()) @map("synced_at")
 
   @@index([ticker])
@@ -424,6 +496,11 @@ model OptionGreek {
   vega    Decimal?
   iv      Decimal? // implied vol % of THIS strike, IB-computed (field 7633; 7283 is
   //                  the underlying's 30-day vol and is never served on an option conid)
+  /// Channel that took this snapshot: "ext" (Client-Portal market data) or "ib-agent"
+  /// (`Ticker.modelGreeks` over the socket). The two do not measure the same way — the
+  /// portal path polls for a field to appear, the socket path returns the model set at
+  /// once — so a delta's provenance is part of reading it (src/lib/greekage.ts).
+  source  String?
   at      DateTime  @default(now()) // when the snapshot last returned ANY greek
 
   @@map("option_harvest_option_greeks")
@@ -439,6 +516,7 @@ model PositionMargin {
   maintMargin Decimal? @map("maint_margin") // maintenance margin the position ties up
   initMargin  Decimal? @map("init_margin") // initial margin the position ties up
   currency    String? // account base currency of the figures
+  source      String? // channel that wrote this row — always "ext": ReadOnlyApi rejects a what-if
   at          DateTime @default(now()) // when the what-if was captured
 
   @@map("option_harvest_position_margin")
@@ -450,6 +528,12 @@ model PositionMargin {
 model SyncRun {
   id         Int      @id @default(autoincrement())
   at         DateTime @default(now())
+  /// WHICH CHANNEL ran: "ext" (Chrome extension) or "ib-agent" (the CLI). Defaults to
+  /// "ext" because every row written before 2026-09-14 came from the extension. Kept
+  /// separate from `source` because that field is the extension's own TIER vocabulary
+  /// (full/quick/auto/login/deep) and mixing a second channel's runs into it would make
+  /// "when did the extension last run?" unanswerable.
+  channel    String   @default("ext")
   source     String   @default("manual") // "manual" | "auto"
   acct       String? // IB account the sync ran against
   positions  Int? // positions upserted
@@ -517,9 +601,46 @@ model AccountBalance {
   currency           String? // account base currency
   acct               String? // IB account id
   raw                Json? // full /portfolio/{acct}/summary object
+  source             String? // channel that wrote this row — see src/lib/datasource.ts
   at                 DateTime @updatedAt // last update for the day
 
   @@map("option_harvest_account_balances")
+}
+
+/// Per-(dataset, source) sync health — the answer to "is this feed still alive, and
+/// which one am I looking at?".
+///
+/// Two channels can now write the same datasets: the Chrome extension (Client Portal,
+/// needs a logged-in browser tab) and `ib-agent` (read-only CLI over the TWS socket or
+/// Flex). They fail differently and independently: the extension needs a foreground tab,
+/// ib_agent needs a Gateway session that IBKR can revoke, hang, or answer with an empty
+/// snapshot. Row-level `source` says who wrote what we hold; this table says what each
+/// channel TRIED to do and how it went — including the attempts that wrote nothing, which
+/// leave no trace anywhere else. Without it a dead ib_agent looks exactly like a healthy
+/// one whose last write happens to still be current.
+///
+/// One row per (dataset, source), overwritten in place: this is a state, not a log
+/// (SyncRun is the log). `refusedAt`/`refusedReason` record the guard firing — a
+/// full-replace write refused because it was empty or improbably short (see
+/// `checkReplace` in src/lib/datasource.ts), which is a SUCCESSFUL defence, not a bug,
+/// and the one event a user must be able to see: their book was NOT overwritten.
+model SyncSourceState {
+  dataset       String // "positions" | "orders" | "transactions" | "watchlists" | "greeks" | "margin" | "balances" | …
+  source        String // "ext" | "ib-agent" | "csv" | "manual"
+  lastAttemptAt DateTime  @map("last_attempt_at") // when this channel last TRIED
+  lastOkAt      DateTime? @map("last_ok_at") // when it last actually wrote
+  lastRows      Int?      @map("last_rows") // rows written by the last successful attempt
+  asOf          DateTime? @map("as_of") // the SOURCE's own timestamp for the data (ib-agent `as_of`)
+  ok            Boolean   @default(false) // did the last attempt succeed
+  lastError     String?   @map("last_error") // why it didn't
+  failures      Int       @default(0) // consecutive failures — resets on a success
+  refusedAt     DateTime? @map("refused_at") // last time the replace guard refused a write
+  refusedReason String?   @map("refused_reason")
+  detail        Json? // channel-specific extras (exit code, CLI `source`, diff counts)
+
+  @@id([dataset, source])
+  @@index([source])
+  @@map("option_harvest_sync_state")
 }
 
 /// Self-reported diagnostics from the Chrome extension: who it is (`extId`,

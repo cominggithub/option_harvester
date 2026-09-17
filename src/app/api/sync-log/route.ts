@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { sourceFromRequest } from "@/lib/datasource";
 
 // Records one IB→web sync run for the /sync page's run history. The Chrome
 // extension POSTs its runSync summary object here at the end of each sync (manual
@@ -20,7 +21,7 @@ function count(section: unknown, ...keys: string[]): number | null {
 }
 
 export async function POST(req: Request) {
-  let body: { summary?: Record<string, unknown>; source?: unknown };
+  let body: { summary?: Record<string, unknown>; source?: unknown; channel?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -43,9 +44,18 @@ export async function POST(req: Request) {
   const source = known.has(raw) ? raw : /^[a-z][a-z-]{0,11}$/.test(raw) ? raw : "manual";
   const errTop = typeof s.error === "string" ? s.error : null;
 
+  // WHICH CHANNEL this run belongs to, kept separate from the tier vocabulary above. The
+  // extension is identified by the version header it already sends, so nothing on its side
+  // has to change; ib-agent runs (scripts/sync-ibagent.ts) say so explicitly. Without this
+  // split, "when did the extension last run?" becomes unanswerable the moment a second
+  // channel starts posting into the same history — which is exactly the confusion the
+  // `source` field itself caused when unknown tiers were coerced to "manual".
+  const channel = sourceFromRequest(req, body.channel, "ext");
+
   try {
     const run = await prisma.syncRun.create({
       data: {
+        channel,
         source,
         acct: typeof s.acct === "string" ? s.acct : null,
         positions: count(s.positions, "count", "upserted"),

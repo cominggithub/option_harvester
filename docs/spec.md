@@ -208,8 +208,12 @@ a star (favorite) + bullseye (option target) toggle and a ▾ downtrend flag.
   change; (2) **Balance history** — a multi-line chart (NAV/Cash/RegT/Position) and a
   day-by-day table, **forward-filled** so days you forget to sync carry the last snapshot
   (marked "carried"); (3) **Synced data** — per-dataset row counts + freshness
-  (positions/orders/transactions/watchlists/greeks/margin/IB-options); (4) **Recent syncs**
-  — the extension's per-run history (`option_harvest_sync_runs`).
+  (positions/orders/transactions/watchlists/greeks/margin/IB-options); (4) **Data sources ·
+  channels** — per dataset, how many rows we hold and *whose* they are (the row-level
+  `source`), what each channel (extension / ib_agent) last managed and when it last failed,
+  and the last **guard refusal**: the empty/truncated/out-of-order payload that was rejected
+  so the previous data survived (docs/data-sources.md); (5) **Recent syncs**
+  — the per-run history (`option_harvest_sync_runs`), tagged with the channel that ran it.
 - **WL Log** (`/wl-log`, `getOhChangeLog`) — OH-watchlist change log. Snapshots each
   day's screen (`option_harvest_oh_screen_snapshots`, written at the end of the daily
   refresh) and shows, per OH list (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC/LEV/LEVHIV/LEVMIX/ETFHIV/ETFMIX), what was **added** /
@@ -489,8 +493,24 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
 - **trends** — per-ticker: sma50, sma200, pct_from_high, bars, `windows` JSONB.
 - **positions** — current IB positions (snapshot, replaced each upload): symbol,
   description, sec_type, quantity, avg_cost, market_value, currency, right (C/P),
-  strike, expiry, raw, upload_id. Parser extracts right/strike/expiry from the OCC
+  strike, expiry, raw, upload_id, **source**. Parser extracts right/strike/expiry from the OCC
   symbol. **position_uploads** keeps every raw CSV (re-importable).
+- **Provenance — `source` on every synced table.** `positions`, `orders`, `transactions`,
+  `watchlist`, `option_greeks`, `position_margin` and `account_balances` each carry a
+  `source`: `ext` (Chrome extension via the Client Portal), `ib-agent` (the read-only CLI
+  over the headless Gateway), `csv` (hand upload) or `manual`. Null on rows written before
+  2026-09-14. Two channels can write the same table, they fail independently, and without
+  this the row cannot say which one produced it — see **docs/data-sources.md** and
+  `src/lib/datasource.ts`.
+- **sync_state** — per **(dataset, source)** channel health (PK `(dataset, source)`):
+  last_attempt_at, last_ok_at, last_rows, as_of (the source's own timestamp), ok, last_error,
+  failures (consecutive), **refused_at / refused_reason**, detail. This is the only record of
+  an attempt that wrote *nothing* — a failed pull leaves no trace in the data itself, so
+  "ib_agent has been down since Tuesday and what you are reading came from the extension"
+  is otherwise unanswerable. `refused_*` records the **replace guard** firing: an empty,
+  truncated (>50% shrink) or backwards (older than the other channel's data) full replace is
+  rejected, the previous data kept, and the route answers 409. Rendered on `/sync` →
+  *Data sources · channels*.
 - **option_greeks** — per-contract greeks keyed by **conid** (PK): delta, **delta_at**,
   gamma, theta, vega, iv, at. Synced from the IB Client-Portal market-data snapshot by the
   extension (fields 7308/7309/7310/7311/7633) and joined to held positions by conid at read
@@ -529,9 +549,13 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   option_value, currency, acct, raw. Pulled from `/portfolio/{acct}/summary` by the
   extension on every sync; stock-vs-option value computed from positions. Feeds the
   `/sync` balances panel + history chart (`lib/balances.ts`).
-- **sync_runs** — audit log of each IB→web sync (Chrome extension): at, source
-  (full/quick/auto/login/deep; `manual` pre-0.9.10), acct, per-dataset counts (positions/orders/trades/watchlists/greeks/
-  margin/oh_push), error, raw. Powers the `/sync` run history (`lib/synclog.ts`).
+- **sync_runs** — audit log of each IB→web sync: at, **channel** (`ext` | `ib-agent` — which
+  of the two sync channels ran; defaults to `ext`, which every row before 2026-09-14 was),
+  source (the channel's own tier: full/quick/auto/login/deep for the extension, `manual`
+  pre-0.9.10; shadow/stored/live for the CLI), acct, per-dataset counts (positions/orders/trades/watchlists/greeks/
+  margin/oh_push), error, raw. Powers the `/sync` run history (`lib/synclog.ts`). Channel and
+  tier are separate columns because mixing a second channel into the tier vocabulary makes
+  "when did the extension last run?" unanswerable.
 - **ext_logs** — the extension's own lifecycle log (`/api/ext-log`): at, ext_id, version,
   event (`status` | `login-watch` | `alarm` | `rearm` | …), level, status line, `state`
   (the chrome.storage snapshot: autoOn/loginSyncOn/ibAuthed/loginTries/busy) and an
@@ -554,6 +578,42 @@ All tables prefixed `option_harvest_`; Prisma models map via `@@map`.
   weekly_buckets, iv_pct, trend_m1/m3/m6). Written by `scripts/snapshot-oh.ts` at the end
   of the daily refresh; the **WL Log** (`/wl-log`) diffs consecutive days per OH list
   (NC/NCcan/Cpos/Ppos/RED/HIV/HIVS/HIVSC/OTC/ROIC/LEV/LEVHIV/LEVMIX/ETFHIV/ETFMIX) and explains each add/remove (`lib/ohhistory.ts`).
+- **risk_snapshots** — one recorded `/risk` analysis of the **live book**, PK `seq`
+  (the analysis number the operator cites): at, date, kind, `fingerprint` (unique),
+  `strategy_seq` → the strategy record in force, plus promoted scalars for the history list
+  (level, legs, credit, nlv, margin_pct, cushion_pct, findings, critical, trigger, note) and
+  the full `payload` JSON. Written by `scripts/snapshot-risk.ts` (`npm run snapshot:risk`,
+  last step of the daily refresh; also safe by hand after a Sync).
+- **risk_strategy_snapshots** — the **closed record + rule version** as they stood, PK `seq`,
+  one row per *change* rather than per analysis: at, date, `fingerprint` (unique),
+  rule_version, chains, realized, bad_rolls, failures, `payload`.
+
+  **The split, and why it is two tables.** `/risk` mixes two clocks. Everything derived from
+  the synced book and the balances (the brief's findings, KPIs, conformance, flags, earnings
+  exposure, the shock table, the cushion ladder, every distribution, the per-leg verdicts, the
+  acquisition book, the §6.2 opening gates) moves on **every sync** — that is the *position*
+  record, one per analysis, and it is what a diff is about. Everything derived from the
+  **closed** record and the rule registry (why the strategy fails, chain totals, terminal-state
+  split, per-version cohorts, roll quality, loss attribution, exit audit) moves only when a
+  chain closes or `sc-rules.ts` is revised — that is the *strategy* record, stored once per
+  change and referenced by the many analyses taken against it. Copying the record into every
+  analysis would triple the payload and would report it as "unchanged" on twenty consecutive
+  diffs while hiding the one where it moved. **Not recorded at all:** the candidate list
+  ("what to sell next") and the vol regime — screens over the whole universe rather than
+  measurements of this book, already tracked by `/wl-log`; the doctrine constants (the
+  `rule_version` identifies them); and all rendered prose, so a wording change never reads as a
+  data change. An analysis is identified by its **inputs** — the freshness stamps of
+  positions/balances/margin/greeks/ingest plus the structural legs, verdicts, findings and the
+  headline metrics at coarse precision ($10 / 0.1pp) — so a mark tick is the same analysis and
+  re-running the script against unchanged data writes nothing. Engine `lib/risksnap.ts`
+  (pure: registry, builders, fingerprints, diff) + `lib/riskhistory.ts` (the only write path;
+  pages never write). **Addressing.** Each analysis has its own page:
+  `/risk/history` is the index grouped by date; `/risk/history/<seq>` is one analysis
+  (`/risk/history/7`); `/risk/history/<YYYY-MM-DD>` resolves to that day's newest and lists the
+  day's others; `latest` also works; `?vs=N` re-points the diff at any other analysis. Anything
+  outside those three shapes is refused — the segment becomes a DB filter (`parseRiskRef`).
+  A detail page renders **only** from the stored payload, so a superseded number stays visible.
+  `/risk` § *Analysis history* keeps the newest eight and links here.
 
 ### IB parsers
 - **ibparse.ts** (positions): IB Activity Statements are multi-section CSVs;

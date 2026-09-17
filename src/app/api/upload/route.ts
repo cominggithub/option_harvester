@@ -2,10 +2,17 @@ import { prisma } from "@/lib/db";
 import { parseIbPositions } from "@/lib/ibparse";
 import { parseTransactions } from "@/lib/txparse";
 import { detectUploadKind } from "@/lib/uploadkind";
+import { recordSyncAttempt } from "@/lib/datasource";
+import { writePositions } from "@/lib/syncwrite";
 
 // Single upload entry point: auto-detect whether the file is an IB positions
 // export or a transactions/trades export, parse with the right parser, and
 // replace that data set. Body: { filename?: string, content: string }.
+//
+// Everything written here is attributed to the `csv` channel, and the replace runs with the
+// guard OVERRIDDEN: a human picked this file, so a smaller book is a decision rather than a
+// truncated read. The automated channels (`ext`, `ib-agent`) do not get that latitude —
+// see lib/datasource.ts.
 export async function POST(req: Request) {
   let content = "";
   let filename: string | null = null;
@@ -28,9 +35,18 @@ export async function POST(req: Request) {
         { status: 422 },
       );
     const upload = await prisma.transactionUpload.create({ data: { filename, content, rowCount: parsed.length } });
-    await prisma.transaction.deleteMany({});
-    await prisma.transaction.createMany({
-      data: parsed.map((t) => ({ ...t, uploadId: upload.id })),
+    await prisma.$transaction([
+      prisma.transaction.deleteMany({}),
+      prisma.transaction.createMany({
+        data: parsed.map((t) => ({ ...t, uploadId: upload.id, source: "csv" })),
+      }),
+    ]);
+    await recordSyncAttempt({
+      dataset: "transactions",
+      source: "csv",
+      ok: true,
+      rows: parsed.length,
+      detail: { filename, replacedAll: true },
     });
     return Response.json({ ok: true, kind, count: parsed.length, message: `Imported ${parsed.length} transactions.` });
   }
@@ -41,12 +57,19 @@ export async function POST(req: Request) {
       { error: "No positions or transactions found — expected an IB CSV export." },
       { status: 422 },
     );
-  const upload = await prisma.positionUpload.create({ data: { filename, content, rowCount: parsed.length } });
-  await prisma.position.deleteMany({});
-  await prisma.position.createMany({
-    data: parsed.map((p) => ({ ...p, uploadId: upload.id })),
+  const res = await writePositions(parsed, {
+    source: "csv",
+    force: true, // a human chose this file
+    archive: { filename, content },
+    detail: { filename },
   });
-  return Response.json({ ok: true, kind, count: parsed.length, message: `Imported ${parsed.length} positions.` });
+  return Response.json({
+    ok: res.ok,
+    kind,
+    count: parsed.length,
+    uploadId: res.uploadId,
+    message: `Imported ${parsed.length} positions.`,
+  });
 }
 
 // Clear everything uploaded (both data sets); ?uploads=1 also wipes file history.

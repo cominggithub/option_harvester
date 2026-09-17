@@ -730,3 +730,267 @@ export function parseIbAccountSummary(summary: unknown): MappedBalance | null {
     currency: sumCurrency(s, "netliquidation", "totalcashvalue"),
   };
 }
+
+// ── ib_agent parsers (the CLI channel) ────────────────────────────────────────
+//
+// Same output shapes as the Client-Portal parsers above, so every downstream reader
+// (positions.ts, the greeks/margin GET routes, ohpush.ts) is indifferent to which channel
+// filled the table. Field names come from ib_agent's own dataclasses — `PositionRow`
+// (src/ib_agent/portfolio.py), `OrderRow` (activity.py) and the `balances` roll-up
+// (api.py) — not from a sample payload, because the sample can be empty and a guessed
+// field silently becomes a null column.
+//
+// Two compatibility obligations that are easy to miss and expensive to get wrong:
+//
+// 1. **`raw.conid`.** `/api/greeks`, `/api/margin`, `/api/underlying-conids`, ohpush and
+//    marginbrief all read the conid out of the row's `raw` blob under exactly that key.
+//    ib_agent calls it `con_id`, so the parser writes BOTH: the mirror is what keeps the
+//    greeks and margin passes working when a position row came from the CLI.
+// 2. **`raw` money keys.** positions.ts falls back to `raw.marketPrice` / `raw.marketValue`
+//    / `raw.unrealizedPnl` / `raw["Cost Basis"]` when a column is null, so those aliases are
+//    written too. The untouched ib_agent row is kept under `ibAgent` for audit.
+
+type IbAgentPositionRow = {
+  account?: string;
+  con_id?: number | string | null;
+  symbol?: string;
+  sec_type?: string;
+  exchange?: string;
+  currency?: string;
+  quantity?: number | null;
+  avg_cost?: number | null;
+  market_price?: number | null;
+  market_value?: number | null;
+  unrealized_pnl?: number | null;
+  realized_pnl?: number | null;
+  underlying?: string;
+  expiry?: string; // ISO "2026-09-18"
+  strike?: number | null;
+  right?: string; // "C" | "P" | ""
+  multiplier?: number | null;
+  asset_class?: string;
+  cost_basis?: number | null;
+  days_to_expiry?: number | null;
+  side?: string;
+};
+
+const MONTH_ABBR = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+
+/**
+ * Render an option leg the way this account's IB exports do — `ADBE 17JUL26 230 C`.
+ *
+ * Not cosmetic: `optionMeta` above round-trips that shape, so a description built here
+ * re-parses to the same right/strike/expiry if anything downstream re-derives them from the
+ * text, and a leg from either channel reads identically on the page.
+ */
+export function ibAgentOptionDescription(
+  underlying: string,
+  expiryIso: string,
+  strike: number | null,
+  right: string,
+): string {
+  const d = expiryIso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const stamp = d ? `${d[3]}${MONTH_ABBR[Number(d[2]) - 1] ?? "???"}${d[1].slice(2)}` : expiryIso;
+  const k = strike == null ? "" : ` ${Number.isInteger(strike) ? strike : strike.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}`;
+  const r = right ? ` ${right.toUpperCase()[0]}` : "";
+  return `${underlying.toUpperCase()} ${stamp}${k}${r}`.trim();
+}
+
+/**
+ * `ib-agent positions --json` (or the `positions` array of `show` / the export bundle) →
+ * the same `ParsedPosition[]` the extension produces.
+ *
+ * Flat legs are dropped, matching `parseIbPortalPositions`: a zero-quantity row is a closed
+ * position IB still lists, and keeping it would put a phantom leg on the action board.
+ */
+export function parseIbAgentPositions(payload: unknown): ParsedPosition[] {
+  const rows: IbAgentPositionRow[] = Array.isArray(payload)
+    ? (payload as IbAgentPositionRow[])
+    : (((payload as { positions?: unknown } | null)?.positions as IbAgentPositionRow[]) ?? []);
+  const out: ParsedPosition[] = [];
+  for (const r of rows) {
+    if (!r || typeof r !== "object") continue;
+    const qty = numOrNull(r.quantity);
+    if (qty === 0) continue;
+    const isOpt = String(r.sec_type ?? "").toUpperCase() === "OPT";
+    const right = String(r.right ?? "").toUpperCase()[0];
+    const rightNorm = right === "C" || right === "P" ? (right as "C" | "P") : null;
+    // Contract.symbol IS the underlying for an option, but ib_agent also fills
+    // `underlying` explicitly (from undConId) — prefer that, it is IB's own answer.
+    const underlying = String(r.underlying || r.symbol || "").toUpperCase();
+    if (!underlying) continue;
+    const strike = numOrNull(r.strike);
+    const expiry = r.expiry && /^\d{4}-\d{2}-\d{2}$/.test(r.expiry) ? r.expiry : null;
+    const description = isOpt && expiry ? ibAgentOptionDescription(underlying, expiry, strike, right) : underlying;
+    const conid = r.con_id != null && r.con_id !== "" ? String(r.con_id) : null;
+    const mv = numOrNull(r.market_value);
+    const raw: Record<string, unknown> = {
+      // Keys the rest of the app reads by name (see the note above).
+      conid,
+      symbol: description,
+      description,
+      secType: isOpt ? "OPT" : (r.sec_type ?? null),
+      marketPrice: numOrNull(r.market_price),
+      marketValue: mv,
+      unrealizedPnl: numOrNull(r.unrealized_pnl),
+      "Cost Basis": numOrNull(r.cost_basis),
+      currency: r.currency ?? null,
+      assetClass: r.asset_class ?? null,
+      multiplier: numOrNull(r.multiplier),
+      account: r.account ?? null,
+      // Provenance + the untouched source row.
+      ohSource: "ib-agent",
+      ibAgent: r as unknown,
+    };
+    out.push({
+      symbol: underlying,
+      description: description || null,
+      secType: isOpt ? "OPT" : ((r.sec_type as string) ?? null),
+      quantity: qty,
+      avgCost: numOrNull(r.avg_cost),
+      marketValue: mv,
+      currency: (r.currency as string) ?? null,
+      right: isOpt ? rightNorm : null,
+      strike: isOpt ? strike : null,
+      expiry: isOpt ? expiry : null,
+      raw: raw as unknown as Record<string, string>,
+    });
+  }
+  return out;
+}
+
+type IbAgentOrderRow = {
+  order_id?: number | string | null;
+  perm_id?: number | string | null;
+  account?: string;
+  con_id?: number | string | null;
+  symbol?: string;
+  underlying?: string;
+  sec_type?: string;
+  currency?: string;
+  action?: string;
+  quantity?: number | null;
+  order_type?: string;
+  limit_price?: number | null;
+  stop_price?: number | null;
+  tif?: string;
+  status?: string;
+  remaining?: number | null;
+  expiry?: string;
+  strike?: number | null;
+  right?: string;
+  is_active?: boolean;
+};
+
+/**
+ * `ib-agent orders --json` → `ParsedOrder[]`.
+ *
+ * Keeps only what IB still calls active (`is_active`, ib_agent's own read of the status),
+ * falling back to the same pending-status regex the portal parser uses when the flag is
+ * absent. An empty result is NOT proof that nothing is working: orders placed from IBKR
+ * Mobile need `OverrideTwsMasterClientID` in the Gateway config, which is why the payload
+ * carries `master_client_id_hint` and why the orders dataset is guarded against a silent
+ * zeroing by the caller, not here.
+ */
+export function parseIbAgentOrders(payload: unknown): ParsedOrder[] {
+  const rows: IbAgentOrderRow[] = Array.isArray(payload)
+    ? (payload as IbAgentOrderRow[])
+    : (((payload as { orders?: unknown } | null)?.orders as IbAgentOrderRow[]) ?? []);
+  const out: ParsedOrder[] = [];
+  for (const r of rows) {
+    if (!r || typeof r !== "object") continue;
+    const active = typeof r.is_active === "boolean" ? r.is_active : PENDING_STATUS.test(String(r.status ?? ""));
+    if (!active) continue;
+    const isOpt = String(r.sec_type ?? "").toUpperCase() === "OPT";
+    const right = String(r.right ?? "").toUpperCase()[0];
+    const underlying = String(r.underlying || r.symbol || "").toUpperCase();
+    const expiry = r.expiry && /^\d{4}-\d{2}-\d{2}$/.test(r.expiry) ? r.expiry : null;
+    const strike = numOrNull(r.strike);
+    out.push({
+      orderId: r.order_id != null ? String(r.order_id) : null,
+      symbol: underlying,
+      description: isOpt && expiry ? ibAgentOptionDescription(underlying, expiry, strike, right) : (r.symbol ?? null),
+      secType: (r.sec_type as string) ?? null,
+      action: r.action ? String(r.action).toUpperCase() : null,
+      quantity: numOrNull(r.quantity ?? r.remaining),
+      orderType: (r.order_type as string) ?? null,
+      limitPrice: numOrNull(r.limit_price),
+      auxPrice: numOrNull(r.stop_price),
+      tif: (r.tif as string) ?? null,
+      status: (r.status as string) ?? null,
+      right: isOpt && (right === "C" || right === "P") ? (right as "C" | "P") : null,
+      strike: isOpt ? strike : null,
+      expiry: isOpt ? expiry : null,
+      currency: (r.currency as string) ?? null,
+      raw: { ...(r as Record<string, unknown>), conid: r.con_id != null ? String(r.con_id) : null, ohSource: "ib-agent" },
+    });
+  }
+  return out;
+}
+
+/**
+ * ib_agent's `balances` roll-up (`{account: {tag: number}}`, from `show` / `sync` /
+ * the export bundle) → the same `MappedBalance` the Client-Portal summary produces.
+ *
+ * IB's socket tag names differ from the portal's lowercased keys, and there is no
+ * `RegTMargin`/`RegTEquity` on this path for every account — a missing tag stays null
+ * instead of being approximated, so the /sync tile reads "—" rather than a number nobody
+ * can source. `account` picks the requested account, else the only one, else the first
+ * with a NetLiquidation.
+ */
+export function parseIbAgentBalances(
+  payload: unknown,
+  wantAccount?: string | null,
+): (MappedBalance & { acct: string | null }) | null {
+  const p = (payload ?? {}) as { balances?: Record<string, Record<string, number>>; account_values?: { account?: string; tag?: string; currency?: string; value?: unknown }[] };
+  const balances = p.balances;
+  if (!balances || typeof balances !== "object") return null;
+  const accounts = Object.keys(balances);
+  if (!accounts.length) return null;
+  const acct =
+    (wantAccount && accounts.includes(wantAccount) ? wantAccount : null) ??
+    (accounts.length === 1 ? accounts[0] : null) ??
+    accounts.find((a) => balances[a]?.NetLiquidation != null) ??
+    accounts[0];
+  const t = balances[acct] ?? {};
+  const tag = (...keys: string[]): number | null => {
+    for (const k of keys) {
+      const v = t[k];
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+    }
+    return null;
+  };
+  // Currency of the figures: the concrete (non-BASE) currency of NetLiquidation.
+  const currency =
+    (p.account_values ?? []).find(
+      (v) => v?.tag === "NetLiquidation" && v.account === acct && v.currency && v.currency !== "BASE",
+    )?.currency ?? null;
+  const cushionRaw = tag("Cushion");
+  return {
+    netLiquidation: tag("NetLiquidation"),
+    totalCash: tag("TotalCashValue"),
+    settledCash: tag("SettledCash"),
+    availableFunds: tag("AvailableFunds"),
+    excessLiquidity: tag("ExcessLiquidity"),
+    buyingPower: tag("BuyingPower"),
+    grossPositionValue: tag("GrossPositionValue"),
+    equityWithLoan: tag("EquityWithLoanValue"),
+    regtEquity: tag("RegTEquity"),
+    regtMargin: tag("RegTMargin"),
+    initMargin: tag("InitMarginReq"),
+    maintMargin: tag("MaintMarginReq"),
+    fullInitMargin: tag("FullInitMarginReq"),
+    fullMaintMargin: tag("FullMaintMarginReq"),
+    // IB serves Cushion as a 0-1 ratio on the socket; the portal serves the same. Guard
+    // against a percentage slipping through, because /sync colours below 5%.
+    cushion: cushionRaw != null && cushionRaw > 1.5 ? cushionRaw / 100 : cushionRaw,
+    currency: currency ?? null,
+    acct,
+  };
+}
+
+const numOrNull = (v: unknown): number | null => {
+  if (v == null || v === "") return null;
+  const n = typeof v === "number" ? v : Number(String(v).replace(/[, ]/g, ""));
+  return Number.isFinite(n) ? n : null;
+};

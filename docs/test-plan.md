@@ -23,9 +23,11 @@ Each pure engine ships one `assert`-based `_selfCheck`, run via a tiny script. A
 must print `... self-check OK`:
 
 ```bash
-npm run check                         # every engine self-check (1527 assertions, thirteen scripts)
+npm run check                         # every engine self-check (2078 assertions, twenty scripts)
 npm run check:sc                      # just the analyzer engines (rules, lifecycle, pages)
 npm run check:greeks                  # delta freshness / model cross-check (also inside `npm run check`)
+npm run check:sources                 # data-source channels: guard branches (empty/shrink/backwards), source
+                                      # attribution from headers, ib_agent parsers vs ib_agent's own field names
 npm run audit:metadata                # instrument metadata: exits 1 on any BLOCKING defect (read-only, prod)
 npm run iv:compare                    # our IV vs IB's field 7283, and which screen floors it flips
 npx tsx scripts/pnl-check.ts          # P/L engine
@@ -38,10 +40,16 @@ npx tsx scripts/sc-analyzer-check.ts  # loss anatomy, timeline weeks, roll targe
 npx tsx scripts/leveraged-check.ts    # LEV list: 2x/3x long ETFs, inverse/short excluded
 npx tsx scripts/bookrisk-check.ts     # /risk engine: σ cushion, themes, HHI, shock, verdicts
 npx tsx scripts/riskbrief-check.ts    # /risk brief: severity order, mechanisms, no alarm without a number
+npx tsx scripts/risksnap-check.ts     # /risk analysis history: the position/strategy split, fingerprint
+                                      # semantics (a mark tick is the same analysis, a sync is not), the diff
 npx tsx scripts/shortcall-check.ts    # /short-call: BS implied vol/Δ, path, attribution, zones
 npx tsx scripts/page-markdown-check.ts # Markdown route mapping + HTML conversion
 npx tsx scripts/positions-check.ts    # IB symbol recovery + expiry→week roll-up (then a read-only file↔display reconcile)
 npx tsx scripts/greeks-check.ts       # delta freshness: age read, mark-implied Δ, which one a gate gets
+npx tsx scripts/datasource-check.ts   # two sync channels: source vocabulary + header attribution, the
+                                      # full-replace guard (empty / >50% shrink / older-than-the-other-channel),
+                                      # the CLI exit-code taxonomy, and the ib_agent parsers (conid mirror,
+                                      # raw money-key aliases, socket balance tags)
 ```
 
 Read-only reports (not gates, no `_selfCheck`):
@@ -163,6 +171,28 @@ What they cover:
   everything else; the components sum exactly to the total (no hidden term); tier 1 outranks
   tier 2 regardless of fit; a near miss carries its gate id and margin; and an unevaluable
   gate becomes a caution rather than being swallowed.
+- **risksnap-check** — the `/risk` analysis history (`lib/risksnap.ts`). **The split is the
+  invariant**: a position record must contain no closed-record metric and a strategy record no
+  live-book metric, every metric it stores must be declared in the matching registry, and the
+  strategy builder must be derivable *without* the book (otherwise two analyses on the same day
+  would produce two "different" strategy records and the dedupe would never fire). What §C says
+  is not stored genuinely is not: no candidate list, no vol regime, no rendered `verdictWhy`.
+  **Fingerprint semantics**: identical inputs give an identical fingerprint (so re-running
+  records nothing), a $1 mark move is the *same* analysis, while a fresh positions sync, a new
+  balance date, a leg opened, a size change or a materially different margin picture are each a
+  *new* one — and the wall clock is not part of it. **The diff** never invents or loses an item
+  (every finding on either side appears exactly once), the better/worse verdict follows the
+  metric's declared direction rather than the sign of the delta (a falling cushion is worse; a
+  rising credit is only a movement), a move under a metric's epsilon is not reported, an
+  undeclared key is ignored, crossing into and out of 1σ are both events, and an unchanged pair
+  says "nothing material moved" instead of going silent. Plus: a change in a ratio renders as
+  percentage **points**, and cohorts count only *closed* chains for outcomes while bad rolls
+  count everywhere (a bad roll already happened). **Addressing** (`parseRiskRef`): a sequence
+  number, `#7`, an ISO date or `latest` resolve; a date *shape* that is not a date
+  (`2026-13-45`, `2026-02-30`), an unpadded date, zero, a negative, a traversal attempt, an
+  appended payload and a malformed `%`-escape are all refused — the segment becomes a DB filter,
+  so refusal is the security property, not a nicety. `page-markdown-check` pins the matching
+  mirror paths (`/md/risk/history/7.md` mirrors, `/md/risk/history/bogus.md` does not).
 - **acqputs-check** — the acquisition book (`lib/acqputs.ts`): declaring a name changes only
   its **puts** (a call on GDX is still a premium trade) and an undeclared put can never claim
   the intent after the fact; every declaration carries a reason and a date; delivery cost and

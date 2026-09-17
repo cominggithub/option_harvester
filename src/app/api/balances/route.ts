@@ -1,85 +1,64 @@
-import { prisma } from "@/lib/db";
-import { parseIbAccountSummary } from "@/lib/ibparse";
+import { parseIbAccountSummary, parseIbAgentBalances } from "@/lib/ibparse";
+import { sourceFromRequest, type DataSource } from "@/lib/datasource";
+import { positionValueSplit, writeBalance } from "@/lib/syncwrite";
 
-// Daily IB account-balance snapshot. The Chrome extension pulls
-// /portfolio/{acct}/summary and POSTs it here on every sync; we parse the balance
-// tags, compute stock-vs-option market value from the freshly-synced positions
-// (the summary doesn't split by asset class), and upsert one row per calendar day
-// (option_harvest_account_balances) so a daily cash/NLV/margin series accumulates.
-
-// Local (server-tz) calendar day as a @db.Date key — stable across intraday
-// re-syncs so the last sync of the day wins.
-function todayKey(): Date {
-  const local = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD in server tz
-  return new Date(`${local}T00:00:00.000Z`);
-}
-
-// Σ market value split by asset class from the current positions snapshot.
-async function positionValueSplit(): Promise<{ stock: number | null; option: number | null }> {
-  const rows = await prisma.position.findMany({ select: { right: true, marketValue: true } });
-  let stock = 0;
-  let option = 0;
-  let sawStock = false;
-  let sawOption = false;
-  for (const r of rows) {
-    if (r.marketValue == null) continue;
-    const mv = Number(r.marketValue);
-    if (r.right === "C" || r.right === "P") {
-      option += mv;
-      sawOption = true;
-    } else {
-      stock += mv;
-      sawStock = true;
-    }
-  }
-  return { stock: sawStock ? stock : null, option: sawOption ? option : null };
-}
-
+// Daily IB account-balance snapshot — one row per calendar day, upserted, so a daily
+// cash / NLV / margin series accumulates. Two channels can fill it:
+//
+//   { summary: {...} }   the Chrome extension's /portfolio/{acct}/summary  (source "ext")
+//   { ibAgent: {...} }   an ib-agent `show` / `sync` payload               (source "ib-agent")
+//
+// Stock-vs-option market value is computed from our synced positions (neither source splits
+// by asset class). The guard in lib/syncwrite.ts refuses a snapshot with no NetLiquidation:
+// there is exactly one slot per day, so overwriting a good snapshot with nulls loses the day
+// permanently — and a null-only payload is what a failing channel produces.
 export async function POST(req: Request) {
-  let body: { summary?: unknown; acct?: unknown };
+  let body: { summary?: unknown; acct?: unknown; ibAgent?: unknown; source?: unknown; asOf?: unknown };
   try {
     body = await req.json();
   } catch {
-    return Response.json({ error: "Expected JSON { summary }" }, { status: 400 });
+    return Response.json({ error: "Expected JSON { summary } or { ibAgent }" }, { status: 400 });
   }
-  const b = parseIbAccountSummary(body.summary);
-  if (!b) return Response.json({ error: "Expected { summary: {...} } from /portfolio/{acct}/summary" }, { status: 400 });
 
-  const { stock, option } = await positionValueSplit();
-  const date = todayKey();
-  const data = {
-    netLiquidation: b.netLiquidation,
-    totalCash: b.totalCash,
-    settledCash: b.settledCash,
-    availableFunds: b.availableFunds,
-    excessLiquidity: b.excessLiquidity,
-    buyingPower: b.buyingPower,
-    grossPositionValue: b.grossPositionValue,
-    equityWithLoan: b.equityWithLoan,
-    regtEquity: b.regtEquity,
-    regtMargin: b.regtMargin,
-    initMargin: b.initMargin,
-    maintMargin: b.maintMargin,
-    fullInitMargin: b.fullInitMargin,
-    fullMaintMargin: b.fullMaintMargin,
-    cushion: b.cushion,
-    stockValue: stock,
-    optionValue: option,
-    currency: b.currency,
-    acct: typeof body.acct === "string" ? body.acct : null,
-    raw: body.summary as object,
-  };
+  let channel: DataSource = sourceFromRequest(req, body.source, "ext");
+  let asOf: Date | null = null;
+  let mapped: ReturnType<typeof parseIbAccountSummary> | null = null;
+  let acct: string | null = typeof body.acct === "string" ? body.acct : null;
+  let raw: unknown = body.summary;
 
+  if (body.ibAgent && typeof body.ibAgent === "object") {
+    const b = parseIbAgentBalances(body.ibAgent, acct);
+    if (!b)
+      return Response.json({ error: "No `balances` roll-up in the ib-agent payload" }, { status: 400 });
+    mapped = b;
+    acct = b.acct ?? acct;
+    channel = "ib-agent";
+    raw = (body.ibAgent as { balances?: unknown }).balances ?? body.ibAgent;
+    const stamp = (body.ibAgent as { as_of?: unknown }).as_of;
+    const t = typeof stamp === "string" ? Date.parse(stamp) : NaN;
+    if (Number.isFinite(t)) asOf = new Date(t);
+  } else {
+    mapped = parseIbAccountSummary(body.summary);
+    if (!mapped)
+      return Response.json({ error: "Expected { summary: {...} } from /portfolio/{acct}/summary" }, { status: 400 });
+  }
+
+  const split = await positionValueSplit();
   try {
-    await prisma.accountBalance.upsert({ where: { date }, update: data, create: { date, ...data } });
+    const res = await writeBalance(mapped, { source: channel, asOf, acct, raw, split });
+    if (!res.ok)
+      return Response.json(
+        { error: res.refused?.reason ?? "refused", refused: res.refused?.code ?? "guard", source: channel },
+        { status: 409 },
+      );
+    return Response.json({
+      ok: true,
+      date: res.date,
+      source: channel,
+      netLiquidation: mapped.netLiquidation,
+      maintMargin: mapped.maintMargin,
+    });
   } catch (e) {
     return Response.json({ error: String(e) }, { status: 500 });
   }
-
-  return Response.json({
-    ok: true,
-    date: date.toISOString().slice(0, 10),
-    netLiquidation: b.netLiquidation,
-    maintMargin: b.maintMargin,
-  });
 }

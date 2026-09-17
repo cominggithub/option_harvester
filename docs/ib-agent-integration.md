@@ -8,6 +8,11 @@ model) and `CLAUDE.md` (ops).
 `/mnt/d/project/ib_agent/docs/OH-INTEGRATION-PLAN.md`; its full CLI reference is
 `man ib-agent`.
 
+**What** the Gateway channel has to deliver — dataset by dataset, field by field, with the
+freshness bounds and the acceptance tests, and what stays extension-only — is
+**[docs/ib-gateway-requirements.md](ib-gateway-requirements.md)**. That file is requirements
+only; this one is how the channel is called.
+
 ---
 
 ## 1. Why
@@ -90,7 +95,25 @@ see a partial file.
 
 ---
 
-## 3. Client sketch — `src/lib/ibagent.ts`
+## 3. The client — `src/lib/ibagent.ts` (implemented 2026-09-14)
+
+Shipped, with the failure handling the sketch below only implied — see
+**`docs/data-sources.md`** for the channel model this plugs into (per-row provenance, the
+full-replace guard, per-(dataset, source) health). What the real file adds over the sketch:
+
+- **A kill timeout on every call**, not a hope. Measured the day it was written:
+  `status` answered `ready: true` while `positions --stored` exited **4** (nothing stored) and
+  a live `sync` was still hanging on *"executions request timed out"* past 90 s.
+- **An exit-code taxonomy** — `retryable` (3, timeout) vs `needsHuman` (2, 4, 5) vs a named
+  `kind` that lands in the sync-state row, so /sync can say *gateway-unreachable* rather than
+  *failed*.
+- **Exit 0 with non-JSON stdout is treated as no-data**, because that is what the CLI does
+  when nothing is stored: it prints a human line where a payload was promised.
+- **`schema` refusal**, `payloadAsOf`/`assertFresh`, and a `readExport` that returns `null`
+  for a missing file (the `watch` loop may never have run) but throws on a stale one.
+- **Nothing in the request path may call it.** Pages read the DB; only scripts call the CLI.
+
+The original sketch, kept because it is the minimum shape of the contract:
 
 ```ts
 import { execFile } from "node:child_process";
@@ -173,8 +196,15 @@ extension's green tick used to imply.
 | OH push + `POST /api/oh-verify` | **stays on the extension** | see §5 |
 | `POST /api/ib-capture` | unchanged (dev recon only) | — |
 
-`POST /api/sync-log` keeps working; add the source values `ib-agent` and
-`ib-agent-auto` so `/sync` history distinguishes bridge from CLI runs.
+`POST /api/sync-log` keeps working, and now carries a **`channel`** (`ext` | `ib-agent`)
+beside the extension's tier vocabulary, so the /sync history separates the two rather than
+mixing a CLI run into the `full`/`quick`/`auto`/`login`/`deep` labels. The CLI channel writes
+its own runs directly (`scripts/sync-ibagent.ts`), with `source` = `shadow` | `stored` |
+`live`.
+
+Every write route also records **who wrote what**: a per-row `source` column on the synced
+tables, a `(dataset, source)` health row per attempt, and a guard that refuses an empty,
+truncated or out-of-order full replace with a 409. Details: `docs/data-sources.md`.
 
 ---
 
@@ -200,10 +230,12 @@ extension edit, as always.
 
 ## 6. Phasing
 
-1. **Read-only shadow.** Add `src/lib/ibagent.ts` and a script that fetches both
-   ways and diffs — ib_agent positions vs the extension's last `POST /api/positions`
-   payload. Cut over nothing. Expect differences in symbol formatting and
-   multiplier handling; resolve those in the parser, not by loosening the diff.
+1. **Read-only shadow.** ✅ **Done 2026-09-14** — `src/lib/ibagent.ts` plus
+   `scripts/sync-ibagent.ts` (`npm run sync:ib`), which fetches, parses and **diffs against
+   what we hold** (per-leg: only-in-ib_agent / only-in-db / quantity differs) and writes
+   nothing unless `--write`. Cut over nothing yet. Expect differences in symbol formatting and
+   multiplier handling; resolve those in the parser, not by loosening the diff — the parsers
+   are pinned to ib_agent's own field names by `scripts/datasource-check.ts`.
 2. **Positions + balances** from ib_agent, extension paths left in place but
    unused. Watch `/sync` for one day.
 3. **Conids.** Delete the `/trsrv` resolver and the underlying-pin flow once
